@@ -1,22 +1,25 @@
 name: Frontend Build
 
 on:
-  push:
-    branches:
-      - main
-      - dev
-    paths-ignore:
-      - 'backend/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-  pull_request:
-    branches:
-      - main
-      - dev
-    paths-ignore:
-      - 'backend/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
+  workflow_dispatch:
+  # Auto triggers disabled; use workflow_dispatch.
+  # push:
+  #   branches:
+  #     - main
+  #     - dev
+  #   paths-ignore:
+  #     - 'backend/**'
+  #     - 'pyproject.toml'
+  #     - 'uv.lock'
+  # Auto triggers disabled; use workflow_dispatch.
+  # pull_request:
+  #   branches:
+  #     - main
+  #     - dev
+  #   paths-ignore:
+  #     - 'backend/**'
+  #     - 'pyproject.toml'
+  #     - 'uv.lock'
 
 jobs:
   build:

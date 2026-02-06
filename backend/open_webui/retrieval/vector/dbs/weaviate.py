@@ -159,11 +159,7 @@ class WeaviateClient(VectorDBBase):
                 )
 
     def search(
-        self,
-        collection_name: str,
-        vectors: List[List[Union[float, int]]],
-        filter: Optional[dict] = None,
-        limit: int = 10,
+        self, collection_name: str, vectors: List[List[Union[float, int]]], limit: int
     ) -> Optional[SearchResult]:
         sane_collection_name = self._sanitize_collection_name(collection_name)
         if not self.client.collections.exists(sane_collection_name):

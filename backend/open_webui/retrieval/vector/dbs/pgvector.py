@@ -90,9 +90,9 @@ class PgvectorClient(VectorDBBase):
 
         # if no pgvector uri, use the existing database connection
         if not PGVECTOR_DB_URL:
-            from open_webui.internal.db import ScopedSession
+            from open_webui.internal.db import Session
 
-            self.session = ScopedSession
+            self.session = Session
         else:
             if isinstance(PGVECTOR_POOL_SIZE, int):
                 if PGVECTOR_POOL_SIZE > 0:
@@ -427,8 +427,7 @@ class PgvectorClient(VectorDBBase):
         self,
         collection_name: str,
         vectors: List[List[float]],
-        filter: Optional[Dict[str, Any]] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
     ) -> Optional[SearchResult]:
         try:
             if not vectors:
@@ -476,47 +475,9 @@ class PgvectorClient(VectorDBBase):
             )
 
             # Build the lateral subquery for each query vector
-            where_clauses = [DocumentChunk.collection_name == collection_name]
-
-            # Apply metadata filter if provided
-            if filter:
-                for key, value in filter.items():
-                    if isinstance(value, dict) and "$in" in value:
-                        # Handle $in operator: {"field": {"$in": [values]}}
-                        in_values = value["$in"]
-                        if PGVECTOR_PGCRYPTO:
-                            where_clauses.append(
-                                pgcrypto_decrypt(
-                                    DocumentChunk.vmetadata,
-                                    PGVECTOR_PGCRYPTO_KEY,
-                                    JSONB,
-                                )[key].astext.in_([str(v) for v in in_values])
-                            )
-                        else:
-                            where_clauses.append(
-                                DocumentChunk.vmetadata[key].astext.in_(
-                                    [str(v) for v in in_values]
-                                )
-                            )
-                    else:
-                        # Handle simple equality: {"field": "value"}
-                        if PGVECTOR_PGCRYPTO:
-                            where_clauses.append(
-                                pgcrypto_decrypt(
-                                    DocumentChunk.vmetadata,
-                                    PGVECTOR_PGCRYPTO_KEY,
-                                    JSONB,
-                                )[key].astext
-                                == str(value)
-                            )
-                        else:
-                            where_clauses.append(
-                                DocumentChunk.vmetadata[key].astext == str(value)
-                            )
-
             subq = (
                 select(*result_fields)
-                .where(*where_clauses)
+                .where(DocumentChunk.collection_name == collection_name)
                 .order_by(
                     (DocumentChunk.vector.cosine_distance(query_vectors.c.q_vector))
                 )

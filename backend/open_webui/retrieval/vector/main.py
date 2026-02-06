@@ -53,11 +53,7 @@ class VectorDBBase(ABC):
 
     @abstractmethod
     def search(
-        self,
-        collection_name: str,
-        vectors: List[List[Union[float, int]]],
-        filter: Optional[Dict] = None,
-        limit: int = 10,
+        self, collection_name: str, vectors: List[List[Union[float, int]]], limit: int
     ) -> Optional[SearchResult]:
         """Search for similar vectors in a collection."""
         pass

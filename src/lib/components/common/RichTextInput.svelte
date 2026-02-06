@@ -416,7 +416,7 @@
 	};
 
 	export const setText = (text: string) => {
-		if (!editor || !editor.view) return;
+		if (!editor) return;
 		text = text.replaceAll('\n\n', '\n');
 
 		// reset the editor content
@@ -448,13 +448,11 @@
 		}
 
 		selectNextTemplate(editor.view.state, editor.view.dispatch);
-
-		// Ensure the editor is still valid before trying to focus
 		focus();
 	};
 
 	export const insertContent = (content) => {
-		if (!editor || !editor.view) return;
+		if (!editor) return;
 		const { state, view } = editor;
 		const { schema, tr } = state;
 
@@ -468,7 +466,7 @@
 	};
 
 	export const replaceVariables = (variables) => {
-		if (!editor || !editor.view) return;
+		if (!editor) return;
 		const { state, view } = editor;
 		const { doc } = state;
 
@@ -511,16 +509,11 @@
 	};
 
 	export const focus = () => {
-		if (editor && editor.view) {
-			// Check if the editor is destroyed
-			if (editor.isDestroyed) {
-				return;
-			}
-
+		if (editor) {
 			try {
-				editor.view.focus();
+				editor.view?.focus();
 				// Scroll to the current selection
-				editor.view.dispatch(editor.view.state.tr.scrollIntoView());
+				editor.view?.dispatch(editor.view.state.tr.scrollIntoView());
 			} catch (e) {
 				// sometimes focusing throws an error, ignore
 				console.warn('Error focusing editor', e);
@@ -760,14 +753,6 @@
 									placement: 'top',
 									theme: 'transparent',
 									offset: [0, 2]
-								},
-								shouldShow: ({ editor, view, state, oldState, from, to }) => {
-									// safety check
-									if (!editor || !editor.view || editor.isDestroyed) {
-										return false;
-									}
-									// default logic
-									return from !== to;
 								}
 							}),
 							FloatingMenu.configure({
@@ -778,14 +763,6 @@
 									placement: floatingMenuPlacement,
 									theme: 'transparent',
 									offset: [-12, 4]
-								},
-								shouldShow: ({ editor, view, state, oldState }) => {
-									// safety check
-									if (!editor || !editor.view || editor.isDestroyed) {
-										return false;
-									}
-									// default logic
-									return editor.isActive('paragraph');
 								}
 							})
 						]
@@ -1179,6 +1156,5 @@
 
 <div
 	bind:this={element}
-	dir="auto"
 	class="relative w-full min-w-full {className} {!editable ? 'cursor-not-allowed' : ''}"
 />
