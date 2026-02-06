@@ -62,12 +62,12 @@ dependencies = [
     "opensearch-py==3.1.0",
     "PyMySQL==1.1.2",
     "boto3==1.42.14",
-    
+
     "transformers==4.57.3",
-    "sentence-transformers==5.2.0",
-    "accelerate",
+    # "sentence-transformers==5.2.0",
+    # "accelerate",
     "pyarrow==20.0.0", # fix: pin pyarrow version to 20 for rpi compatibility #15897
-    "einops==0.8.1",
+    # "einops==0.8.1",
 
     "ftfy==6.3.1",
     "chardet==5.2.0",
@@ -87,17 +87,17 @@ dependencies = [
     "xlrd==2.0.2",
     "validators==0.35.0",
     "psutil",
-    "sentencepiece",
+    # "sentencepiece",
     "soundfile==0.13.1",
     "azure-ai-documentintelligence==1.0.2",
 
     "pillow==12.0.0",
-    "opencv-python-headless==4.12.0.88",
-    "rapidocr-onnxruntime==1.4.4",
+    # "opencv-python-headless==4.12.0.88",
+    # "rapidocr-onnxruntime==1.4.4",
     "rank-bm25==0.2.2",
 
-    "onnxruntime==1.23.2",
-    "faster-whisper==1.2.1",
+    # "onnxruntime==1.23.2",
+    # "faster-whisper==1.2.1",
 
     "black==25.12.0",
     "youtube-transcript-api==1.2.3",
