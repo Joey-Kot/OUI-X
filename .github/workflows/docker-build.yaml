@@ -575,15 +575,39 @@ jobs:
           flavor: |
             latest=${{ github.ref == 'refs/heads/main' }}
 
+      - name: Debug metadata output
+        run: |
+          echo "Metadata tags:"
+          printf '%s\n' "${{ steps.meta.outputs.tags }}"
+          echo "Metadata JSON:"
+          printf '%s\n' "${{ steps.meta.outputs.json }}"
+
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+          set -euo pipefail
+          TAG_ARGS=()
+          if [[ -n "${{ steps.meta.outputs.tags }}" ]]; then
+            while IFS= read -r t; do
+              [[ -n "$t" ]] && TAG_ARGS+=("-t" "$t")
+            done <<< "${{ steps.meta.outputs.tags }}"
+          fi
+
+          # Ensure main is always present.
+          TAG_ARGS+=("-t" "${{ env.FULL_IMAGE_NAME }}:main")
+
+          # Add latest when running on main.
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            TAG_ARGS+=("-t" "${{ env.FULL_IMAGE_NAME }}:latest")
+          fi
+
+          echo "Using tags: ${TAG_ARGS[*]}"
+          docker buildx imagetools create "${TAG_ARGS[@]}" \
             $(printf '${{ env.FULL_IMAGE_NAME }}@sha256:%s ' *)
 
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ env.FULL_IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          docker buildx imagetools inspect ${{ env.FULL_IMAGE_NAME }}:main
 
 #   merge-cuda-images:
 #     runs-on: ubuntu-latest
