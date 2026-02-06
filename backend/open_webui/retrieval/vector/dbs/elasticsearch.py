@@ -153,11 +153,7 @@ class ElasticsearchClient(VectorDBBase):
 
     # Status: works
     def search(
-        self,
-        collection_name: str,
-        vectors: list[list[float]],
-        filter: Optional[dict] = None,
-        limit: int = 10,
+        self, collection_name: str, vectors: list[list[float]], limit: int
     ) -> Optional[SearchResult]:
         query = {
             "size": limit,

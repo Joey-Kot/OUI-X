@@ -126,7 +126,7 @@
 				}
 			}
 
-			text = text.replaceAll('{{CLIPBOARD}}', clipboardText.replaceAll('\r\n', '\n'));
+			text = text.replaceAll('{{CLIPBOARD}}', clipboardText);
 		}
 
 		if (text.includes('{{USER_LOCATION}}')) {

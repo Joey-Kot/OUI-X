@@ -8,11 +8,7 @@
 	const i18n = getContext('i18n');
 
 	import { WEBUI_NAME, knowledge, user } from '$lib/stores';
-	import {
-		deleteKnowledgeById,
-		searchKnowledgeBases,
-		exportKnowledgeById
-	} from '$lib/apis/knowledge';
+	import { deleteKnowledgeById, searchKnowledgeBases } from '$lib/apis/knowledge';
 
 	import { goto } from '$app/navigation';
 	import { capitalizeFirstLetter } from '$lib/utils';
@@ -105,25 +101,6 @@
 		if (res) {
 			toast.success($i18n.t('Knowledge deleted successfully.'));
 			init();
-		}
-	};
-
-	const exportHandler = async (item) => {
-		try {
-			const blob = await exportKnowledgeById(localStorage.token, item.id);
-			if (blob) {
-				const url = URL.createObjectURL(blob);
-				const a = document.createElement('a');
-				a.href = url;
-				a.download = `${item.name}.zip`;
-				document.body.appendChild(a);
-				a.click();
-				document.body.removeChild(a);
-				URL.revokeObjectURL(url);
-				toast.success($i18n.t('Knowledge exported successfully'));
-			}
-		} catch (e) {
-			toast.error(`${e}`);
 		}
 	};
 
@@ -262,11 +239,6 @@
 											<div class="flex items-center gap-2">
 												<div class=" flex self-center">
 													<ItemMenu
-														onExport={$user.role === 'admin'
-															? () => {
-																	exportHandler(item);
-																}
-															: null}
 														on:delete={() => {
 															selectedItem = item;
 															showDeleteConfirm = true;

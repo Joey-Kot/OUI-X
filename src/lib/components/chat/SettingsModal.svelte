@@ -487,17 +487,6 @@
 				);
 			}
 
-			if (tab.id === 'interface') {
-				return $user?.role === 'admin' || ($user?.permissions?.settings?.interface ?? true);
-			}
-
-			if (tab.id === 'personalization') {
-				return (
-					$config?.features?.enable_memories &&
-					($user?.role === 'admin' || ($user?.permissions?.features?.memories ?? true))
-				);
-			}
-
 			return true;
 		});
 	};

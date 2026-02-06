@@ -194,7 +194,7 @@
 					>
 						{#each message.files as file}
 							{@const fileUrl =
-								file.url?.startsWith('data') || file.url?.startsWith('http')
+								file.url.startsWith('data') || file.url.startsWith('http')
 									? file.url
 									: `${WEBUI_API_BASE_URL}/files/${file.url}${file?.content_type ? '/content' : ''}`}
 							<div class={($settings?.chatBubble ?? true) ? 'self-end' : ''}>
@@ -221,15 +221,11 @@
 					{#if (editedFiles ?? []).length > 0}
 						<div class="flex items-center flex-wrap gap-2 -mx-2 mb-1">
 							{#each editedFiles as file, fileIdx}
-								{#if file.type === 'image' || (file?.content_type ?? '').startsWith('image/')}
-									{@const fileUrl =
-										file.url?.startsWith('data') || file.url?.startsWith('http')
-											? file.url
-											: `${WEBUI_API_BASE_URL}/files/${file.url}${file?.content_type ? '/content' : ''}`}
+								{#if file.type === 'image'}
 									<div class=" relative group">
 										<div class="relative flex items-center">
 											<Image
-												src={fileUrl}
+												src={file.url}
 												alt="input"
 												imageClassName=" size-14 rounded-xl object-cover"
 											/>

@@ -25,11 +25,6 @@
 			if (!model) {
 				goto('/workspace/models');
 			}
-
-			if (!model?.write_access) {
-				toast.error($i18n.t('You do not have permission to edit this model'));
-				goto('/workspace/models');
-			}
 		} else {
 			goto('/workspace/models');
 		}
