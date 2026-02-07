@@ -9,6 +9,7 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
+from functools import lru_cache
 from typing import Iterator, List, Optional, Sequence, Union
 
 from fastapi import (
@@ -26,14 +27,10 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
-import tiktoken
-from transformers import AutoTokenizer
 
 
 from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
-    TokenTextSplitter,
-    MarkdownHeaderTextSplitter,
 )
 from langchain_core.documents import Document
 
@@ -99,6 +96,7 @@ from open_webui.config import (
     RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE,
     RAG_RERANKING_MODEL_AUTO_UPDATE,
     RAG_RERANKING_MODEL_TRUST_REMOTE_CODE,
+    VOYAGE_TOKENIZER_MODEL as DEFAULT_VOYAGE_TOKENIZER_MODEL,
     UPLOAD_DIR,
     DEFAULT_LOCALE,
     RAG_EMBEDDING_CONTENT_PREFIX,
@@ -117,13 +115,34 @@ from open_webui.constants import ERROR_MESSAGES
 
 log = logging.getLogger(__name__)
 
-VOYAGE_TOKENIZER = AutoTokenizer.from_pretrained("voyageai/voyage-3-lite", use_fast=True)
-
 ##########################################
 #
 # Utility functions
 #
 ##########################################
+
+
+@lru_cache(maxsize=8)
+def get_tiktoken_encoder(encoding_name: str):
+    import tiktoken
+
+    return tiktoken.get_encoding(encoding_name)
+
+
+@lru_cache(maxsize=4)
+def get_voyage_tokenizer(model: str):
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(model, use_fast=True)
+
+
+def warm_voyage_tokenizer(model: str) -> None:
+    try:
+        tokenizer = get_voyage_tokenizer(model)
+        tokenizer("warmup", add_special_tokens=False)
+        log.info(f"Warmed voyage tokenizer: {model}")
+    except Exception as e:
+        log.warning(f"Failed to warm voyage tokenizer: {e}")
 
 
 def get_ef(
@@ -497,6 +516,7 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         "RAG_EXTERNAL_RERANKER_TIMEOUT": request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
         # Chunking settings
         "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
+        "VOYAGE_TOKENIZER_MODEL": request.app.state.config.VOYAGE_TOKENIZER_MODEL,
         "CHUNK_SIZE": request.app.state.config.CHUNK_SIZE,
         "CHUNK_OVERLAP": request.app.state.config.CHUNK_OVERLAP,
         # File upload settings
@@ -686,6 +706,7 @@ class ConfigForm(BaseModel):
 
     # Chunking settings
     TEXT_SPLITTER: Optional[str] = None
+    VOYAGE_TOKENIZER_MODEL: Optional[str] = None
     CHUNK_SIZE: Optional[int] = None
     CHUNK_OVERLAP: Optional[int] = None
 
@@ -984,11 +1005,24 @@ async def update_rag_config(
         )
 
     # Chunking settings
+    previous_text_splitter = request.app.state.config.TEXT_SPLITTER
     request.app.state.config.TEXT_SPLITTER = (
         form_data.TEXT_SPLITTER
         if form_data.TEXT_SPLITTER is not None
         else request.app.state.config.TEXT_SPLITTER
     )
+    request.app.state.config.VOYAGE_TOKENIZER_MODEL = (
+        form_data.VOYAGE_TOKENIZER_MODEL
+        if form_data.VOYAGE_TOKENIZER_MODEL is not None
+        else request.app.state.config.VOYAGE_TOKENIZER_MODEL
+    )
+    if (
+        request.app.state.config.TEXT_SPLITTER == "token_voyage"
+        and not (request.app.state.config.VOYAGE_TOKENIZER_MODEL or "").strip()
+    ):
+        request.app.state.config.VOYAGE_TOKENIZER_MODEL = (
+            DEFAULT_VOYAGE_TOKENIZER_MODEL.value
+        )
     request.app.state.config.CHUNK_SIZE = (
         form_data.CHUNK_SIZE
         if form_data.CHUNK_SIZE is not None
@@ -999,6 +1033,16 @@ async def update_rag_config(
         if form_data.CHUNK_OVERLAP is not None
         else request.app.state.config.CHUNK_OVERLAP
     )
+    if (
+        previous_text_splitter != "token_voyage"
+        and request.app.state.config.TEXT_SPLITTER == "token_voyage"
+    ):
+        asyncio.create_task(
+            run_in_threadpool(
+                warm_voyage_tokenizer,
+                request.app.state.config.VOYAGE_TOKENIZER_MODEL,
+            )
+        )
 
     # File upload settings
     request.app.state.config.FILE_MAX_SIZE = form_data.FILE_MAX_SIZE
@@ -1190,6 +1234,7 @@ async def update_rag_config(
         "RAG_EXTERNAL_RERANKER_TIMEOUT": request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
         # Chunking settings
         "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
+        "VOYAGE_TOKENIZER_MODEL": request.app.state.config.VOYAGE_TOKENIZER_MODEL,
         "CHUNK_SIZE": request.app.state.config.CHUNK_SIZE,
         "CHUNK_OVERLAP": request.app.state.config.CHUNK_OVERLAP,
         # File upload settings
@@ -1323,6 +1368,44 @@ class HFTokenTextSplitter:
         return out
 
 
+class TiktokenTextSplitter:
+    def __init__(
+        self,
+        encoding_name: str,
+        chunk_size: int,
+        chunk_overlap: int,
+        add_start_index: bool = True,
+    ):
+        if chunk_overlap >= chunk_size:
+            raise ValueError("chunk_overlap must be < chunk_size")
+        self.encoding_name = encoding_name
+        self.encoding = get_tiktoken_encoder(encoding_name)
+        self.chunk_size = int(chunk_size)
+        self.chunk_overlap = int(chunk_overlap)
+        self.add_start_index = bool(add_start_index)
+
+    def split_documents(self, docs):
+        out = []
+        for doc in docs:
+            text = doc.page_content
+            tokens = self.encoding.encode(text)
+            step = self.chunk_size - self.chunk_overlap
+            start_tok = 0
+            while start_tok < len(tokens):
+                end_tok = min(len(tokens), start_tok + self.chunk_size)
+                chunk_tokens = tokens[start_tok:end_tok]
+                chunk_text = self.encoding.decode(chunk_tokens)
+                meta = dict(doc.metadata or {})
+                if self.add_start_index:
+                    char_start = len(self.encoding.decode(tokens[:start_tok]))
+                    meta["start_index"] = char_start
+                out.append(Document(page_content=chunk_text, metadata=meta))
+                if end_tok == len(tokens):
+                    break
+                start_tok += step
+        return out
+
+
 def save_docs_to_vector_db(
     request: Request,
     docs,
@@ -1376,63 +1459,33 @@ def save_docs_to_vector_db(
             docs = text_splitter.split_documents(docs)
         elif request.app.state.config.TEXT_SPLITTER == "token":
             log.info(
-                "Using token text splitter: voyageai/voyage-3-lite (HF AutoTokenizer)"
+                f"Using token text splitter: tiktoken ({request.app.state.config.TIKTOKEN_ENCODING_NAME})"
             )
 
-            text_splitter = HFTokenTextSplitter(
-                tokenizer=VOYAGE_TOKENIZER,
+            text_splitter = TiktokenTextSplitter(
+                encoding_name=request.app.state.config.TIKTOKEN_ENCODING_NAME,
                 chunk_size=request.app.state.config.CHUNK_SIZE,
                 chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
                 add_start_index=True,
             )
 
             docs = text_splitter.split_documents(docs)
-        elif request.app.state.config.TEXT_SPLITTER == "markdown_header":
-            log.info("Using markdown header text splitter")
-
-            # Define headers to split on - covering most common markdown header levels
-            headers_to_split_on = [
-                ("#", "Header 1"),
-                ("##", "Header 2"),
-                ("###", "Header 3"),
-                ("####", "Header 4"),
-                ("#####", "Header 5"),
-                ("######", "Header 6"),
-            ]
-
-            markdown_splitter = MarkdownHeaderTextSplitter(
-                headers_to_split_on=headers_to_split_on,
-                strip_headers=False,  # Keep headers in content for context
+        elif request.app.state.config.TEXT_SPLITTER == "token_voyage":
+            log.info(
+                "Using token text splitter: "
+                f"{request.app.state.config.VOYAGE_TOKENIZER_MODEL} (HF AutoTokenizer)"
             )
 
-            md_split_docs = []
-            for doc in docs:
-                md_header_splits = markdown_splitter.split_text(doc.page_content)
-                text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=request.app.state.config.CHUNK_SIZE,
-                    chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
-                    add_start_index=True,
-                )
-                md_header_splits = text_splitter.split_documents(md_header_splits)
+            text_splitter = HFTokenTextSplitter(
+                tokenizer=get_voyage_tokenizer(
+                    request.app.state.config.VOYAGE_TOKENIZER_MODEL
+                ),
+                chunk_size=request.app.state.config.CHUNK_SIZE,
+                chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
+                add_start_index=True,
+            )
 
-                # Convert back to Document objects, preserving original metadata
-                for split_chunk in md_header_splits:
-                    headings_list = []
-                    # Extract header values in order based on headers_to_split_on
-                    for _, header_meta_key_name in headers_to_split_on:
-                        if header_meta_key_name in split_chunk.metadata:
-                            headings_list.append(
-                                split_chunk.metadata[header_meta_key_name]
-                            )
-
-                    md_split_docs.append(
-                        Document(
-                            page_content=split_chunk.page_content,
-                            metadata={**doc.metadata, "headings": headings_list},
-                        )
-                    )
-
-            docs = md_split_docs
+            docs = text_splitter.split_documents(docs)
         else:
             raise ValueError(ERROR_MESSAGES.DEFAULT("Invalid text splitter"))
 
@@ -2629,4 +2682,3 @@ async def process_files_batch(
                 )
 
     return BatchProcessFilesResponse(results=file_results, errors=file_errors)
-

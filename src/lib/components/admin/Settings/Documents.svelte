@@ -735,10 +735,24 @@
 								>
 									<option value="">{$i18n.t('Default')} ({$i18n.t('Character')})</option>
 									<option value="token">{$i18n.t('Token')} ({$i18n.t('Tiktoken')})</option>
-									<option value="markdown_header">{$i18n.t('Markdown (Header)')}</option>
+									<option value="token_voyage">{$i18n.t('Token (Voyage)')}</option>
 								</select>
 							</div>
 						</div>
+
+						{#if RAGConfig.TEXT_SPLITTER === 'token_voyage'}
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="self-start text-xs font-medium mb-1">
+									{$i18n.t('Voyage Tokenizer Model')}
+								</div>
+								<input
+									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="text"
+									placeholder="voyageai/voyage-3-lite"
+									bind:value={RAGConfig.VOYAGE_TOKENIZER_MODEL}
+								/>
+							</div>
+						{/if}
 
 						<div class="  mb-2.5 flex w-full justify-between">
 							<div class=" flex gap-1.5 w-full">

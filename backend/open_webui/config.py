@@ -2822,6 +2822,13 @@ RAG_TEXT_SPLITTER = PersistentConfig(
 )
 
 
+VOYAGE_TOKENIZER_MODEL = PersistentConfig(
+    "VOYAGE_TOKENIZER_MODEL",
+    "rag.voyage_tokenizer_model",
+    os.environ.get("VOYAGE_TOKENIZER_MODEL", "voyageai/voyage-3-lite"),
+)
+
+
 TIKTOKEN_CACHE_DIR = os.environ.get("TIKTOKEN_CACHE_DIR", f"{CACHE_DIR}/tiktoken")
 TIKTOKEN_ENCODING_NAME = PersistentConfig(
     "TIKTOKEN_ENCODING_NAME",

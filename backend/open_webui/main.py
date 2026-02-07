@@ -37,6 +37,7 @@ from fastapi import (
     applications,
     BackgroundTasks,
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.openapi.docs import get_swagger_ui_html
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -280,6 +281,7 @@ from open_webui.config import (
     MISTRAL_OCR_API_BASE_URL,
     MISTRAL_OCR_API_KEY,
     RAG_TEXT_SPLITTER,
+    VOYAGE_TOKENIZER_MODEL,
     TIKTOKEN_ENCODING_NAME,
     PDF_EXTRACT_IMAGES,
     YOUTUBE_LOADER_LANGUAGE,
@@ -625,6 +627,16 @@ async def lifespan(app: FastAPI):
             None,
         )
 
+    if app.state.config.TEXT_SPLITTER == "token_voyage":
+        from open_webui.routers.retrieval import warm_voyage_tokenizer
+
+        asyncio.create_task(
+            run_in_threadpool(
+                warm_voyage_tokenizer,
+                app.state.config.VOYAGE_TOKENIZER_MODEL,
+            )
+        )
+
     yield
 
     if hasattr(app.state, "redis_task_command_listener"):
@@ -887,6 +899,7 @@ app.state.config.MINERU_API_TIMEOUT = MINERU_API_TIMEOUT
 app.state.config.MINERU_PARAMS = MINERU_PARAMS
 
 app.state.config.TEXT_SPLITTER = RAG_TEXT_SPLITTER
+app.state.config.VOYAGE_TOKENIZER_MODEL = VOYAGE_TOKENIZER_MODEL
 app.state.config.TIKTOKEN_ENCODING_NAME = TIKTOKEN_ENCODING_NAME
 
 app.state.config.CHUNK_SIZE = CHUNK_SIZE
