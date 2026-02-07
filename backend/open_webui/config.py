@@ -3548,34 +3548,6 @@ IMAGES_EDIT_COMFYUI_WORKFLOW_NODES = PersistentConfig(
 # Audio
 ####################################
 
-# Transcription
-WHISPER_MODEL = PersistentConfig(
-    "WHISPER_MODEL",
-    "audio.stt.whisper_model",
-    os.getenv("WHISPER_MODEL", "base"),
-)
-
-WHISPER_MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", f"{CACHE_DIR}/whisper/models")
-WHISPER_MODEL_AUTO_UPDATE = (
-    not OFFLINE_MODE
-    and os.environ.get("WHISPER_MODEL_AUTO_UPDATE", "").lower() == "true"
-)
-
-WHISPER_VAD_FILTER = PersistentConfig(
-    "WHISPER_VAD_FILTER",
-    "audio.stt.whisper_vad_filter",
-    os.getenv("WHISPER_VAD_FILTER", "False").lower() == "true",
-)
-
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "").lower() or None
-
-# Add Deepgram configuration
-DEEPGRAM_API_KEY = PersistentConfig(
-    "DEEPGRAM_API_KEY",
-    "audio.stt.deepgram.api_key",
-    os.getenv("DEEPGRAM_API_KEY", ""),
-)
-
 AUDIO_STT_OPENAI_API_BASE_URL = PersistentConfig(
     "AUDIO_STT_OPENAI_API_BASE_URL",
     "audio.stt.openai.api_base_url",
@@ -3591,7 +3563,7 @@ AUDIO_STT_OPENAI_API_KEY = PersistentConfig(
 AUDIO_STT_ENGINE = PersistentConfig(
     "AUDIO_STT_ENGINE",
     "audio.stt.engine",
-    os.getenv("AUDIO_STT_ENGINE", ""),
+    os.getenv("AUDIO_STT_ENGINE", "openai"),
 )
 
 AUDIO_STT_MODEL = PersistentConfig(
@@ -3640,24 +3612,6 @@ AUDIO_STT_AZURE_MAX_SPEAKERS = PersistentConfig(
     "AUDIO_STT_AZURE_MAX_SPEAKERS",
     "audio.stt.azure.max_speakers",
     os.getenv("AUDIO_STT_AZURE_MAX_SPEAKERS", ""),
-)
-
-AUDIO_STT_MISTRAL_API_KEY = PersistentConfig(
-    "AUDIO_STT_MISTRAL_API_KEY",
-    "audio.stt.mistral.api_key",
-    os.getenv("AUDIO_STT_MISTRAL_API_KEY", ""),
-)
-
-AUDIO_STT_MISTRAL_API_BASE_URL = PersistentConfig(
-    "AUDIO_STT_MISTRAL_API_BASE_URL",
-    "audio.stt.mistral.api_base_url",
-    os.getenv("AUDIO_STT_MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1"),
-)
-
-AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS = PersistentConfig(
-    "AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS",
-    "audio.stt.mistral.use_chat_completions",
-    os.getenv("AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS", "false").lower() == "true",
 )
 
 AUDIO_TTS_OPENAI_API_BASE_URL = PersistentConfig(

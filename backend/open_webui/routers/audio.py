@@ -4,7 +4,6 @@ import logging
 import os
 import uuid
 import html
-import base64
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
 from concurrent.futures import ThreadPoolExecutor
@@ -14,7 +13,6 @@ from fnmatch import fnmatch
 import aiohttp
 import aiofiles
 import requests
-import mimetypes
 
 from fastapi import (
     Depends,
@@ -35,19 +33,13 @@ from pydantic import BaseModel
 from open_webui.utils.misc import strict_match_mime_type
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers
-from open_webui.config import (
-    WHISPER_MODEL_AUTO_UPDATE,
-    WHISPER_MODEL_DIR,
-    CACHE_DIR,
-    WHISPER_LANGUAGE,
-)
+from open_webui.config import CACHE_DIR
 
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import (
     ENV,
     AIOHTTP_CLIENT_SESSION_SSL,
     AIOHTTP_CLIENT_TIMEOUT,
-    DEVICE_TYPE,
     ENABLE_FORWARD_USER_INFO_HEADERS,
 )
 
@@ -61,6 +53,8 @@ AZURE_MAX_FILE_SIZE_MB = 200
 AZURE_MAX_FILE_SIZE = AZURE_MAX_FILE_SIZE_MB * 1024 * 1024  # Convert MB to bytes
 
 log = logging.getLogger(__name__)
+
+VALID_STT_ENGINES = {"openai", "azure", "web"}
 
 SPEECH_CACHE_DIR = CACHE_DIR / "audio" / "speech"
 SPEECH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -119,28 +113,8 @@ def convert_audio_to_mp3(file_path):
         return None
 
 
-def set_faster_whisper_model(model: str, auto_update: bool = False):
-    whisper_model = None
-    if model:
-        from faster_whisper import WhisperModel
-
-        faster_whisper_kwargs = {
-            "model_size_or_path": model,
-            "device": DEVICE_TYPE if DEVICE_TYPE and DEVICE_TYPE == "cuda" else "cpu",
-            "compute_type": "int8",
-            "download_root": WHISPER_MODEL_DIR,
-            "local_files_only": not auto_update,
-        }
-
-        try:
-            whisper_model = WhisperModel(**faster_whisper_kwargs)
-        except Exception:
-            log.warning(
-                "WhisperModel initialization failed, attempting download with local_files_only=False"
-            )
-            faster_whisper_kwargs["local_files_only"] = False
-            whisper_model = WhisperModel(**faster_whisper_kwargs)
-    return whisper_model
+def normalize_stt_engine(engine: str) -> str:
+    return engine if engine in VALID_STT_ENGINES else "openai"
 
 
 ##########################################
@@ -170,16 +144,11 @@ class STTConfigForm(BaseModel):
     ENGINE: str
     MODEL: str
     SUPPORTED_CONTENT_TYPES: list[str] = []
-    WHISPER_MODEL: str
-    DEEPGRAM_API_KEY: str
     AZURE_API_KEY: str
     AZURE_REGION: str
     AZURE_LOCALES: str
     AZURE_BASE_URL: str
     AZURE_MAX_SPEAKERS: str
-    MISTRAL_API_KEY: str
-    MISTRAL_API_BASE_URL: str
-    MISTRAL_USE_CHAT_COMPLETIONS: bool
 
 
 class AudioConfigUpdateForm(BaseModel):
@@ -206,19 +175,14 @@ async def get_audio_config(request: Request, user=Depends(get_admin_user)):
         "stt": {
             "OPENAI_API_BASE_URL": request.app.state.config.STT_OPENAI_API_BASE_URL,
             "OPENAI_API_KEY": request.app.state.config.STT_OPENAI_API_KEY,
-            "ENGINE": request.app.state.config.STT_ENGINE,
+            "ENGINE": normalize_stt_engine(request.app.state.config.STT_ENGINE),
             "MODEL": request.app.state.config.STT_MODEL,
             "SUPPORTED_CONTENT_TYPES": request.app.state.config.STT_SUPPORTED_CONTENT_TYPES,
-            "WHISPER_MODEL": request.app.state.config.WHISPER_MODEL,
-            "DEEPGRAM_API_KEY": request.app.state.config.DEEPGRAM_API_KEY,
             "AZURE_API_KEY": request.app.state.config.AUDIO_STT_AZURE_API_KEY,
             "AZURE_REGION": request.app.state.config.AUDIO_STT_AZURE_REGION,
             "AZURE_LOCALES": request.app.state.config.AUDIO_STT_AZURE_LOCALES,
             "AZURE_BASE_URL": request.app.state.config.AUDIO_STT_AZURE_BASE_URL,
             "AZURE_MAX_SPEAKERS": request.app.state.config.AUDIO_STT_AZURE_MAX_SPEAKERS,
-            "MISTRAL_API_KEY": request.app.state.config.AUDIO_STT_MISTRAL_API_KEY,
-            "MISTRAL_API_BASE_URL": request.app.state.config.AUDIO_STT_MISTRAL_API_BASE_URL,
-            "MISTRAL_USE_CHAT_COMPLETIONS": request.app.state.config.AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS,
         },
     }
 
@@ -245,14 +209,12 @@ async def update_audio_config(
 
     request.app.state.config.STT_OPENAI_API_BASE_URL = form_data.stt.OPENAI_API_BASE_URL
     request.app.state.config.STT_OPENAI_API_KEY = form_data.stt.OPENAI_API_KEY
-    request.app.state.config.STT_ENGINE = form_data.stt.ENGINE
+    request.app.state.config.STT_ENGINE = normalize_stt_engine(form_data.stt.ENGINE)
     request.app.state.config.STT_MODEL = form_data.stt.MODEL
     request.app.state.config.STT_SUPPORTED_CONTENT_TYPES = (
         form_data.stt.SUPPORTED_CONTENT_TYPES
     )
 
-    request.app.state.config.WHISPER_MODEL = form_data.stt.WHISPER_MODEL
-    request.app.state.config.DEEPGRAM_API_KEY = form_data.stt.DEEPGRAM_API_KEY
     request.app.state.config.AUDIO_STT_AZURE_API_KEY = form_data.stt.AZURE_API_KEY
     request.app.state.config.AUDIO_STT_AZURE_REGION = form_data.stt.AZURE_REGION
     request.app.state.config.AUDIO_STT_AZURE_LOCALES = form_data.stt.AZURE_LOCALES
@@ -260,20 +222,6 @@ async def update_audio_config(
     request.app.state.config.AUDIO_STT_AZURE_MAX_SPEAKERS = (
         form_data.stt.AZURE_MAX_SPEAKERS
     )
-    request.app.state.config.AUDIO_STT_MISTRAL_API_KEY = form_data.stt.MISTRAL_API_KEY
-    request.app.state.config.AUDIO_STT_MISTRAL_API_BASE_URL = (
-        form_data.stt.MISTRAL_API_BASE_URL
-    )
-    request.app.state.config.AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS = (
-        form_data.stt.MISTRAL_USE_CHAT_COMPLETIONS
-    )
-
-    if request.app.state.config.STT_ENGINE == "":
-        request.app.state.faster_whisper_model = set_faster_whisper_model(
-            form_data.stt.WHISPER_MODEL, WHISPER_MODEL_AUTO_UPDATE
-        )
-    else:
-        request.app.state.faster_whisper_model = None
 
     return {
         "tts": {
@@ -292,19 +240,14 @@ async def update_audio_config(
         "stt": {
             "OPENAI_API_BASE_URL": request.app.state.config.STT_OPENAI_API_BASE_URL,
             "OPENAI_API_KEY": request.app.state.config.STT_OPENAI_API_KEY,
-            "ENGINE": request.app.state.config.STT_ENGINE,
+            "ENGINE": normalize_stt_engine(request.app.state.config.STT_ENGINE),
             "MODEL": request.app.state.config.STT_MODEL,
             "SUPPORTED_CONTENT_TYPES": request.app.state.config.STT_SUPPORTED_CONTENT_TYPES,
-            "WHISPER_MODEL": request.app.state.config.WHISPER_MODEL,
-            "DEEPGRAM_API_KEY": request.app.state.config.DEEPGRAM_API_KEY,
             "AZURE_API_KEY": request.app.state.config.AUDIO_STT_AZURE_API_KEY,
             "AZURE_REGION": request.app.state.config.AUDIO_STT_AZURE_REGION,
             "AZURE_LOCALES": request.app.state.config.AUDIO_STT_AZURE_LOCALES,
             "AZURE_BASE_URL": request.app.state.config.AUDIO_STT_AZURE_BASE_URL,
             "AZURE_MAX_SPEAKERS": request.app.state.config.AUDIO_STT_AZURE_MAX_SPEAKERS,
-            "MISTRAL_API_KEY": request.app.state.config.AUDIO_STT_MISTRAL_API_KEY,
-            "MISTRAL_API_BASE_URL": request.app.state.config.AUDIO_STT_MISTRAL_API_BASE_URL,
-            "MISTRAL_USE_CHAT_COMPLETIONS": request.app.state.config.AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS,
         },
     }
 
@@ -460,39 +403,13 @@ def transcription_handler(request, file_path, metadata, user=None):
     metadata = metadata or {}
 
     languages = [
-        metadata.get("language", None) if not WHISPER_LANGUAGE else WHISPER_LANGUAGE,
+        metadata.get("language", None),
         None,  # Always fallback to None in case transcription fails
     ]
 
-    if request.app.state.config.STT_ENGINE == "":
-        if request.app.state.faster_whisper_model is None:
-            request.app.state.faster_whisper_model = set_faster_whisper_model(
-                request.app.state.config.WHISPER_MODEL
-            )
+    stt_engine = normalize_stt_engine(request.app.state.config.STT_ENGINE)
 
-        model = request.app.state.faster_whisper_model
-        segments, info = model.transcribe(
-            file_path,
-            beam_size=5,
-            vad_filter=request.app.state.config.WHISPER_VAD_FILTER,
-            language=languages[0],
-        )
-        log.info(
-            "Detected language '%s' with probability %f"
-            % (info.language, info.language_probability)
-        )
-
-        transcript = "".join([segment.text for segment in list(segments)])
-        data = {"text": transcript.strip()}
-
-        # save the transcript to a json file
-        transcript_file = f"{file_dir}/{id}.json"
-        with open(transcript_file, "w") as f:
-            json.dump(data, f)
-
-        log.debug(data)
-        return data
-    elif request.app.state.config.STT_ENGINE == "openai":
+    if stt_engine == "openai":
         r = None
         try:
             for language in languages:
@@ -509,21 +426,20 @@ def transcription_handler(request, file_path, metadata, user=None):
                 if user and ENABLE_FORWARD_USER_INFO_HEADERS:
                     headers = include_user_info_headers(headers, user)
 
-                r = requests.post(
-                    url=f"{request.app.state.config.STT_OPENAI_API_BASE_URL}/audio/transcriptions",
-                    headers=headers,
-                    files={"file": (filename, open(file_path, "rb"))},
-                    data=payload,
-                )
+                with open(file_path, "rb") as audio_file:
+                    r = requests.post(
+                        url=f"{request.app.state.config.STT_OPENAI_API_BASE_URL}/audio/transcriptions",
+                        headers=headers,
+                        files={"file": (filename, audio_file)},
+                        data=payload,
+                    )
 
                 if r.status_code == 200:
-                    # Successful transcription
                     break
 
             r.raise_for_status()
             data = r.json()
 
-            # save the transcript to a json file
             transcript_file = f"{file_dir}/{id}.json"
             with open(transcript_file, "w") as f:
                 json.dump(data, f)
@@ -543,88 +459,15 @@ def transcription_handler(request, file_path, metadata, user=None):
 
             raise Exception(detail if detail else "Open WebUI: Server Connection Error")
 
-    elif request.app.state.config.STT_ENGINE == "deepgram":
-        try:
-            # Determine the MIME type of the file
-            mime, _ = mimetypes.guess_type(file_path)
-            if not mime:
-                mime = "audio/wav"  # fallback to wav if undetectable
-
-            # Read the audio file
-            with open(file_path, "rb") as f:
-                file_data = f.read()
-
-            # Build headers and parameters
-            headers = {
-                "Authorization": f"Token {request.app.state.config.DEEPGRAM_API_KEY}",
-                "Content-Type": mime,
-            }
-
-            for language in languages:
-                params = {}
-                if request.app.state.config.STT_MODEL:
-                    params["model"] = request.app.state.config.STT_MODEL
-
-                if language:
-                    params["language"] = language
-
-                # Make request to Deepgram API
-                r = requests.post(
-                    "https://api.deepgram.com/v1/listen?smart_format=true",
-                    headers=headers,
-                    params=params,
-                    data=file_data,
-                )
-
-                if r.status_code == 200:
-                    # Successful transcription
-                    break
-
-            r.raise_for_status()
-            response_data = r.json()
-
-            # Extract transcript from Deepgram response
-            try:
-                transcript = response_data["results"]["channels"][0]["alternatives"][
-                    0
-                ].get("transcript", "")
-            except (KeyError, IndexError) as e:
-                log.error(f"Malformed response from Deepgram: {str(e)}")
-                raise Exception(
-                    "Failed to parse Deepgram response - unexpected response format"
-                )
-            data = {"text": transcript.strip()}
-
-            # Save transcript
-            transcript_file = f"{file_dir}/{id}.json"
-            with open(transcript_file, "w") as f:
-                json.dump(data, f)
-
-            return data
-
-        except Exception as e:
-            log.exception(e)
-            detail = None
-            if r is not None:
-                try:
-                    res = r.json()
-                    if "error" in res:
-                        detail = f"External: {res['error'].get('message', '')}"
-                except Exception:
-                    detail = f"External: {e}"
-            raise Exception(detail if detail else "Open WebUI: Server Connection Error")
-
-    elif request.app.state.config.STT_ENGINE == "azure":
-        # Check file exists and size
+    elif stt_engine == "azure":
         if not os.path.exists(file_path):
             raise HTTPException(status_code=400, detail="Audio file not found")
 
-        # Check file size (Azure has a larger limit of 200MB)
         file_size = os.path.getsize(file_path)
         if file_size > AZURE_MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=400,
-                detail=f"File size exceeds Azure's limit of {AZURE_MAX_FILE_SIZE_MB}MB",
+                detail=f"File size exceeds Azure limit of {AZURE_MAX_FILE_SIZE_MB}MB",
             )
 
         api_key = request.app.state.config.AUDIO_STT_AZURE_API_KEY
@@ -633,7 +476,6 @@ def transcription_handler(request, file_path, metadata, user=None):
         base_url = request.app.state.config.AUDIO_STT_AZURE_BASE_URL
         max_speakers = request.app.state.config.AUDIO_STT_AZURE_MAX_SPEAKERS or 3
 
-        # IF NO LOCALES, USE DEFAULTS
         if len(locales) < 2:
             locales = [
                 "en-US",
@@ -660,7 +502,6 @@ def transcription_handler(request, file_path, metadata, user=None):
 
         r = None
         try:
-            # Prepare the request
             data = {
                 "definition": json.dumps(
                     {
@@ -676,7 +517,6 @@ def transcription_handler(request, file_path, metadata, user=None):
                 base_url or f"https://{region}.api.cognitive.microsoft.com"
             ) + "/speechtotext/transcriptions:transcribe?api-version=2024-11-15"
 
-            # Use context manager to ensure file is properly closed
             with open(file_path, "rb") as audio_file:
                 r = requests.post(
                     url=url,
@@ -690,18 +530,15 @@ def transcription_handler(request, file_path, metadata, user=None):
             r.raise_for_status()
             response = r.json()
 
-            # Extract transcript from response
             if not response.get("combinedPhrases"):
                 raise ValueError("No transcription found in response")
 
-            # Get the full transcript from combinedPhrases
             transcript = response["combinedPhrases"][0].get("text", "").strip()
             if not transcript:
                 raise ValueError("Empty transcript in response")
 
             data = {"text": transcript}
 
-            # Save transcript to json file (consistent with other providers)
             transcript_file = f"{file_dir}/{id}.json"
             with open(transcript_file, "w") as f:
                 json.dump(data, f)
@@ -732,186 +569,16 @@ def transcription_handler(request, file_path, metadata, user=None):
                 detail=detail if detail else "Open WebUI: Server Connection Error",
             )
 
-    elif request.app.state.config.STT_ENGINE == "mistral":
-        # Check file exists
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=400, detail="Audio file not found")
-
-        # Check file size
-        file_size = os.path.getsize(file_path)
-        if file_size > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File size exceeds limit of {MAX_FILE_SIZE_MB}MB",
-            )
-
-        api_key = request.app.state.config.AUDIO_STT_MISTRAL_API_KEY
-        api_base_url = (
-            request.app.state.config.AUDIO_STT_MISTRAL_API_BASE_URL
-            or "https://api.mistral.ai/v1"
-        )
-        use_chat_completions = (
-            request.app.state.config.AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS
+    elif stt_engine == "web":
+        raise HTTPException(
+            status_code=400,
+            detail="Web STT is browser-only and does not support server-side transcription",
         )
 
-        if not api_key:
-            raise HTTPException(
-                status_code=400,
-                detail="Mistral API key is required for Mistral STT",
-            )
-
-        r = None
-        try:
-            # Use voxtral-mini-latest as the default model for transcription
-            model = request.app.state.config.STT_MODEL or "voxtral-mini-latest"
-
-            log.info(
-                f"Mistral STT - model: {model}, "
-                f"method: {'chat_completions' if use_chat_completions else 'transcriptions'}"
-            )
-
-            if use_chat_completions:
-                # Use chat completions API with audio input
-                # This method requires mp3 or wav format
-                audio_file_to_use = file_path
-
-                if is_audio_conversion_required(file_path):
-                    log.debug("Converting audio to mp3 for chat completions API")
-                    converted_path = convert_audio_to_mp3(file_path)
-                    if converted_path:
-                        audio_file_to_use = converted_path
-                    else:
-                        log.error("Audio conversion failed")
-                        raise HTTPException(
-                            status_code=500,
-                            detail="Audio conversion failed. Chat completions API requires mp3 or wav format.",
-                        )
-
-                # Read and encode audio file as base64
-                with open(audio_file_to_use, "rb") as audio_file:
-                    audio_base64 = base64.b64encode(audio_file.read()).decode("utf-8")
-
-                # Prepare chat completions request
-                url = f"{api_base_url}/chat/completions"
-
-                # Add language instruction if specified
-                language = metadata.get("language", None) if metadata else None
-                if language:
-                    text_instruction = f"Transcribe this audio exactly as spoken in {language}. Do not translate it."
-                else:
-                    text_instruction = "Transcribe this audio exactly as spoken in its original language. Do not translate it to another language."
-
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "input_audio",
-                                    "input_audio": audio_base64,
-                                },
-                                {"type": "text", "text": text_instruction},
-                            ],
-                        }
-                    ],
-                }
-
-                r = requests.post(
-                    url=url,
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                )
-
-                r.raise_for_status()
-                response = r.json()
-
-                # Extract transcript from chat completion response
-                transcript = (
-                    response.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                    .strip()
-                )
-                if not transcript:
-                    raise ValueError("Empty transcript in response")
-
-                data = {"text": transcript}
-
-            else:
-                # Use dedicated transcriptions API
-                url = f"{api_base_url}/audio/transcriptions"
-
-                # Determine the MIME type
-                mime_type, _ = mimetypes.guess_type(file_path)
-                if not mime_type:
-                    mime_type = "audio/webm"
-
-                # Use context manager to ensure file is properly closed
-                with open(file_path, "rb") as audio_file:
-                    files = {"file": (filename, audio_file, mime_type)}
-                    data_form = {"model": model}
-
-                    # Add language if specified in metadata
-                    language = metadata.get("language", None) if metadata else None
-                    if language:
-                        data_form["language"] = language
-
-                    r = requests.post(
-                        url=url,
-                        files=files,
-                        data=data_form,
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                        },
-                    )
-
-                r.raise_for_status()
-                response = r.json()
-
-                # Extract transcript from response
-                transcript = response.get("text", "").strip()
-                if not transcript:
-                    raise ValueError("Empty transcript in response")
-
-                data = {"text": transcript}
-
-            # Save transcript to json file (consistent with other providers)
-            transcript_file = f"{file_dir}/{id}.json"
-            with open(transcript_file, "w") as f:
-                json.dump(data, f)
-
-            log.debug(data)
-            return data
-
-        except ValueError as e:
-            log.exception("Error parsing Mistral response")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to parse Mistral response: {str(e)}",
-            )
-        except requests.exceptions.RequestException as e:
-            log.exception(e)
-            detail = None
-
-            try:
-                if r is not None and r.status_code != 200:
-                    res = r.json()
-                    if "error" in res:
-                        detail = f"External: {res['error'].get('message', '')}"
-                    else:
-                        detail = f"External: {r.text}"
-            except Exception:
-                detail = f"External: {e}"
-
-            raise HTTPException(
-                status_code=getattr(r, "status_code", 500) if r else 500,
-                detail=detail if detail else "Open WebUI: Server Connection Error",
-            )
-
+    raise HTTPException(
+        status_code=400,
+        detail=f"Unsupported STT engine: {stt_engine}",
+    )
 
 def transcribe(
     request: Request, file_path: str, metadata: Optional[dict] = None, user=None
