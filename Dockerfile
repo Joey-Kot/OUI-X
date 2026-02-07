@@ -2,16 +2,10 @@
 # Initialize device type args
 # use build args in the docker build command with --build-arg="BUILDARG=true"
 ARG USE_CUDA=false
-ARG USE_OLLAMA=false
 ARG USE_SLIM=false
 ARG USE_PERMISSION_HARDENING=false
 # Tested with cu117 for CUDA 11 and cu121 for CUDA 12 (default)
 ARG USE_CUDA_VER=cu128
-# any sentence transformer model; models to use can be found at https://huggingface.co/models?library=sentence-transformers
-# Leaderboard: https://huggingface.co/spaces/mteb/leaderboard
-# for better performance and multilangauge support use "intfloat/multilingual-e5-large" (~2.5GB) or "intfloat/multilingual-e5-base" (~1.5GB)
-# IMPORTANT: If you change the embedding model (sentence-transformers/all-MiniLM-L6-v2) and vice versa, you aren't able to use RAG Chat with your previous documents loaded in the WebUI! You need to re-embed them.
-# ARG USE_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ARG USE_EMBEDDING_MODEL=""
 ARG USE_RERANKING_MODEL=""
 
@@ -48,7 +42,6 @@ FROM python:3.11-slim-bookworm AS base
 
 # Use args
 # ARG USE_CUDA
-# ARG USE_OLLAMA
 # ARG USE_CUDA_VER
 # ARG USE_SLIM
 ARG USE_PERMISSION_HARDENING
@@ -64,7 +57,6 @@ ENV PYTHONUNBUFFERED=1
 ENV ENV=prod \
     PORT=8080
     # pass build args to the build
-    # USE_OLLAMA_DOCKER=${USE_OLLAMA} \
     # USE_CUDA_DOCKER=${USE_CUDA} \
     # USE_SLIM_DOCKER=${USE_SLIM} \
     # USE_CUDA_DOCKER_VER=${USE_CUDA_VER} \
@@ -72,8 +64,7 @@ ENV ENV=prod \
     # USE_RERANKING_MODEL_DOCKER=${USE_RERANKING_MODEL}
 
 ## Basis URL Config ##
-# ENV OLLAMA_BASE_URL="/ollama" \
-#     OPENAI_API_BASE_URL=""
+# ENV OPENAI_API_BASE_URL=""
 
 ## API Key and Security Config ##
 ENV OPENAI_API_KEY="" \
@@ -240,14 +231,6 @@ RUN uv pip install --system \
     opentelemetry-instrumentation-httpx==0.60b1 \
     opentelemetry-instrumentation-aiohttp-client==0.60b1 \
     --no-cache-dir
-
-# Install Ollama if requested
-# RUN if [ "$USE_OLLAMA" = "true" ]; then \
-#     date +%s > /tmp/ollama_build_hash && \
-#     echo "Cache broken at timestamp: `cat /tmp/ollama_build_hash`" && \
-#     curl -fsSL https://ollama.com/install.sh | sh && \
-#     rm -rf /var/lib/apt/lists/*; \
-#     fi
 
 # copy embedding weight from build
 # RUN mkdir -p /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2

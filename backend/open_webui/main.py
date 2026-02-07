@@ -71,7 +71,6 @@ from open_webui.socket.main import (
 from open_webui.routers import (
     audio,
     images,
-    ollama,
     openai,
     retrieval,
     pipelines,
@@ -111,10 +110,6 @@ from open_webui.models.users import UserModel, Users
 from open_webui.models.chats import Chats
 
 from open_webui.config import (
-    # Ollama
-    ENABLE_OLLAMA_API,
-    OLLAMA_BASE_URLS,
-    OLLAMA_API_CONFIGS,
     # OpenAI
     ENABLE_OPENAI_API,
     OPENAI_API_BASE_URLS,
@@ -222,8 +217,6 @@ from open_webui.config import (
     RAG_FULL_CONTEXT,
     BYPASS_EMBEDDING_AND_RETRIEVAL,
     RAG_EMBEDDING_MODEL,
-    RAG_EMBEDDING_MODEL_AUTO_UPDATE,
-    RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE,
     RAG_RERANKING_ENGINE,
     RAG_RERANKING_MODEL,
     RAG_EXTERNAL_RERANKER_URL,
@@ -248,8 +241,6 @@ from open_webui.config import (
     RAG_AZURE_OPENAI_BASE_URL,
     RAG_AZURE_OPENAI_API_KEY,
     RAG_AZURE_OPENAI_API_VERSION,
-    RAG_OLLAMA_BASE_URL,
-    RAG_OLLAMA_API_KEY,
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     CONTENT_EXTRACTION_ENGINE,
@@ -295,7 +286,6 @@ from open_webui.config import (
     WEB_SEARCH_CONCURRENT_REQUESTS,
     WEB_SEARCH_TRUST_ENV,
     WEB_SEARCH_DOMAIN_FILTER_LIST,
-    OLLAMA_CLOUD_WEB_SEARCH_API_KEY,
     JINA_API_KEY,
     SEARCHAPI_API_KEY,
     SEARCHAPI_ENGINE,
@@ -686,19 +676,6 @@ if ENABLE_OTEL:
 
 ########################################
 #
-# OLLAMA
-#
-########################################
-
-
-app.state.config.ENABLE_OLLAMA_API = ENABLE_OLLAMA_API
-app.state.config.OLLAMA_BASE_URLS = OLLAMA_BASE_URLS
-app.state.config.OLLAMA_API_CONFIGS = OLLAMA_API_CONFIGS
-
-app.state.OLLAMA_MODELS = {}
-
-########################################
-#
 # OPENAI
 #
 ########################################
@@ -925,9 +902,6 @@ app.state.config.RAG_AZURE_OPENAI_BASE_URL = RAG_AZURE_OPENAI_BASE_URL
 app.state.config.RAG_AZURE_OPENAI_API_KEY = RAG_AZURE_OPENAI_API_KEY
 app.state.config.RAG_AZURE_OPENAI_API_VERSION = RAG_AZURE_OPENAI_API_VERSION
 
-app.state.config.RAG_OLLAMA_BASE_URL = RAG_OLLAMA_BASE_URL
-app.state.config.RAG_OLLAMA_API_KEY = RAG_OLLAMA_API_KEY
-
 app.state.config.PDF_EXTRACT_IMAGES = PDF_EXTRACT_IMAGES
 
 app.state.config.YOUTUBE_LOADER_LANGUAGE = YOUTUBE_LOADER_LANGUAGE
@@ -953,7 +927,6 @@ app.state.config.BYPASS_WEB_SEARCH_WEB_LOADER = BYPASS_WEB_SEARCH_WEB_LOADER
 app.state.config.ENABLE_GOOGLE_DRIVE_INTEGRATION = ENABLE_GOOGLE_DRIVE_INTEGRATION
 app.state.config.ENABLE_ONEDRIVE_INTEGRATION = ENABLE_ONEDRIVE_INTEGRATION
 
-app.state.config.OLLAMA_CLOUD_WEB_SEARCH_API_KEY = OLLAMA_CLOUD_WEB_SEARCH_API_KEY
 app.state.config.SEARXNG_QUERY_URL = SEARXNG_QUERY_URL
 app.state.config.SEARXNG_LANGUAGE = SEARXNG_LANGUAGE
 app.state.config.YACY_QUERY_URL = YACY_QUERY_URL
@@ -1033,20 +1006,12 @@ app.state.EMBEDDING_FUNCTION = get_embedding_function(
     url=(
         app.state.config.RAG_OPENAI_API_BASE_URL
         if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-        else (
-            app.state.config.RAG_OLLAMA_BASE_URL
-            if app.state.config.RAG_EMBEDDING_ENGINE == "ollama"
-            else app.state.config.RAG_AZURE_OPENAI_BASE_URL
-        )
+        else app.state.config.RAG_AZURE_OPENAI_BASE_URL
     ),
     key=(
         app.state.config.RAG_OPENAI_API_KEY
         if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-        else (
-            app.state.config.RAG_OLLAMA_API_KEY
-            if app.state.config.RAG_EMBEDDING_ENGINE == "ollama"
-            else app.state.config.RAG_AZURE_OPENAI_API_KEY
-        )
+        else app.state.config.RAG_AZURE_OPENAI_API_KEY
     ),
     embedding_batch_size=app.state.config.RAG_EMBEDDING_BATCH_SIZE,
     azure_api_version=(
@@ -1389,7 +1354,6 @@ app.add_middleware(
 app.mount("/ws", socket_app)
 
 
-app.include_router(ollama.router, prefix="/ollama", tags=["ollama"])
 app.include_router(openai.router, prefix="/openai", tags=["openai"])
 
 
@@ -1524,7 +1488,7 @@ async def embeddings(
 
     This handler:
       - Performs user/model checks and dispatches to the correct backend.
-      - Supports OpenAI, Ollama, arena models, pipelines, and any compatible provider.
+      - Supports OpenAI, arena models, pipelines, and any compatible provider.
 
     Args:
         request (Request): Request context.

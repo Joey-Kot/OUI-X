@@ -2,14 +2,11 @@
 	import { marked } from 'marked';
 
 	import { getContext, tick } from 'svelte';
-	import dayjs from '$lib/dayjs';
-
 	import { mobile, settings, user } from '$lib/stores';
-	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
+	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import { copyToClipboard, sanitizeResponseContent } from '$lib/utils';
-	import ArrowUpTray from '$lib/components/icons/ArrowUpTray.svelte';
 	import Check from '$lib/components/icons/Check.svelte';
 	import ModelItemMenu from './ModelItemMenu.svelte';
 	import EllipsisHorizontal from '$lib/components/icons/EllipsisHorizontal.svelte';
@@ -24,7 +21,6 @@
 	export let index: number = -1;
 	export let value: string = '';
 
-	export let unloadModelHandler: (modelValue: string) => void = () => {};
 	export let pinModelHandler: (modelId: string) => void = () => {};
 
 	export let onClick: () => void = () => {};
@@ -93,48 +89,6 @@
 			</div>
 
 			<div class=" shrink-0 flex items-center gap-2">
-				{#if item.model.owned_by === 'ollama'}
-					{#if (item.model.ollama?.details?.parameter_size ?? '') !== ''}
-						<div class="flex items-center translate-y-[0.5px]">
-							<Tooltip
-								content={`${
-									item.model.ollama?.details?.quantization_level
-										? item.model.ollama?.details?.quantization_level + ' '
-										: ''
-								}${
-									item.model.ollama?.size
-										? `(${(item.model.ollama?.size / 1024 ** 3).toFixed(1)}GB)`
-										: ''
-								}`}
-								className="self-end"
-							>
-								<span class=" text-xs font-medium text-gray-600 dark:text-gray-400 line-clamp-1"
-									>{item.model.ollama?.details?.parameter_size ?? ''}</span
-								>
-							</Tooltip>
-						</div>
-					{/if}
-					{#if item.model.ollama?.expires_at && new Date(item.model.ollama?.expires_at * 1000) > new Date()}
-						<div class="flex items-center translate-y-[0.5px] px-0.5">
-							<Tooltip
-								content={`${$i18n.t('Unloads {{FROM_NOW}}', {
-									FROM_NOW: dayjs(item.model.ollama?.expires_at * 1000).fromNow()
-								})}`}
-								className="self-end"
-							>
-								<div class=" flex items-center">
-									<span class="relative flex size-2">
-										<span
-											class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"
-										/>
-										<span class="relative inline-flex rounded-full size-2 bg-green-500" />
-									</span>
-								</div>
-							</Tooltip>
-						</div>
-					{/if}
-				{/if}
-
 				<!-- {JSON.stringify(item.info)} -->
 
 				{#if (item?.model?.tags ?? []).length > 0}
@@ -227,24 +181,6 @@
 	</div>
 
 	<div class="ml-auto pl-2 pr-1 flex items-center gap-1.5 shrink-0">
-		{#if $user?.role === 'admin' && item.model.owned_by === 'ollama' && item.model.ollama?.expires_at && new Date(item.model.ollama?.expires_at * 1000) > new Date()}
-			<Tooltip
-				content={`${$i18n.t('Eject')}`}
-				className="flex-shrink-0 group-hover/item:opacity-100 opacity-0 "
-			>
-				<button
-					class="flex"
-					on:click={(e) => {
-						e.preventDefault();
-						e.stopPropagation();
-						unloadModelHandler(item.value);
-					}}
-				>
-					<ArrowUpTray className="size-3" />
-				</button>
-			</Tooltip>
-		{/if}
-
 		<ModelItemMenu
 			bind:show={showMenu}
 			model={item.model}

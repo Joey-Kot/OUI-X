@@ -970,64 +970,6 @@ ENABLE_DIRECT_CONNECTIONS = PersistentConfig(
 )
 
 ####################################
-# OLLAMA_BASE_URL
-####################################
-
-ENABLE_OLLAMA_API = PersistentConfig(
-    "ENABLE_OLLAMA_API",
-    "ollama.enable",
-    os.environ.get("ENABLE_OLLAMA_API", "True").lower() == "true",
-)
-
-OLLAMA_API_BASE_URL = os.environ.get(
-    "OLLAMA_API_BASE_URL", "http://localhost:11434/api"
-)
-
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "")
-if OLLAMA_BASE_URL:
-    # Remove trailing slash
-    OLLAMA_BASE_URL = (
-        OLLAMA_BASE_URL[:-1] if OLLAMA_BASE_URL.endswith("/") else OLLAMA_BASE_URL
-    )
-
-
-K8S_FLAG = os.environ.get("K8S_FLAG", "")
-USE_OLLAMA_DOCKER = os.environ.get("USE_OLLAMA_DOCKER", "false")
-
-if OLLAMA_BASE_URL == "" and OLLAMA_API_BASE_URL != "":
-    OLLAMA_BASE_URL = (
-        OLLAMA_API_BASE_URL[:-4]
-        if OLLAMA_API_BASE_URL.endswith("/api")
-        else OLLAMA_API_BASE_URL
-    )
-
-if ENV == "prod":
-    if OLLAMA_BASE_URL == "/ollama" and not K8S_FLAG:
-        if USE_OLLAMA_DOCKER.lower() == "true":
-            # if you use all-in-one docker container (Open WebUI + Ollama)
-            # with the docker build arg USE_OLLAMA=true (--build-arg="USE_OLLAMA=true") this only works with http://localhost:11434
-            OLLAMA_BASE_URL = "http://localhost:11434"
-        else:
-            OLLAMA_BASE_URL = "http://host.docker.internal:11434"
-    elif K8S_FLAG:
-        OLLAMA_BASE_URL = "http://ollama-service.open-webui.svc.cluster.local:11434"
-
-
-OLLAMA_BASE_URLS = os.environ.get("OLLAMA_BASE_URLS", "")
-OLLAMA_BASE_URLS = OLLAMA_BASE_URLS if OLLAMA_BASE_URLS != "" else OLLAMA_BASE_URL
-
-OLLAMA_BASE_URLS = [url.strip() for url in OLLAMA_BASE_URLS.split(";")]
-OLLAMA_BASE_URLS = PersistentConfig(
-    "OLLAMA_BASE_URLS", "ollama.base_urls", OLLAMA_BASE_URLS
-)
-
-OLLAMA_API_CONFIGS = PersistentConfig(
-    "OLLAMA_API_CONFIGS",
-    "ollama.api_configs",
-    {},
-)
-
-####################################
 # OPENAI_API
 ####################################
 
@@ -2724,7 +2666,7 @@ RAG_ALLOWED_FILE_EXTENSIONS = PersistentConfig(
 RAG_EMBEDDING_ENGINE = PersistentConfig(
     "RAG_EMBEDDING_ENGINE",
     "rag.embedding_engine",
-    os.environ.get("RAG_EMBEDDING_ENGINE", ""),
+    os.environ.get("RAG_EMBEDDING_ENGINE", "openai"),
 )
 
 PDF_EXTRACT_IMAGES = PersistentConfig(
@@ -2736,18 +2678,9 @@ PDF_EXTRACT_IMAGES = PersistentConfig(
 RAG_EMBEDDING_MODEL = PersistentConfig(
     "RAG_EMBEDDING_MODEL",
     "rag.embedding_model",
-    os.environ.get("RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
+    os.environ.get("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
 )
 log.info(f"Embedding model set: {RAG_EMBEDDING_MODEL.value}")
-
-RAG_EMBEDDING_MODEL_AUTO_UPDATE = (
-    not OFFLINE_MODE
-    and os.environ.get("RAG_EMBEDDING_MODEL_AUTO_UPDATE", "True").lower() == "true"
-)
-
-RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE = (
-    os.environ.get("RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE", "True").lower() == "true"
-)
 
 RAG_EMBEDDING_BATCH_SIZE = PersistentConfig(
     "RAG_EMBEDDING_BATCH_SIZE",
@@ -2905,19 +2838,6 @@ RAG_AZURE_OPENAI_API_VERSION = PersistentConfig(
     os.getenv("RAG_AZURE_OPENAI_API_VERSION", ""),
 )
 
-RAG_OLLAMA_BASE_URL = PersistentConfig(
-    "RAG_OLLAMA_BASE_URL",
-    "rag.ollama.url",
-    os.getenv("RAG_OLLAMA_BASE_URL", OLLAMA_BASE_URL),
-)
-
-RAG_OLLAMA_API_KEY = PersistentConfig(
-    "RAG_OLLAMA_API_KEY",
-    "rag.ollama.key",
-    os.getenv("RAG_OLLAMA_API_KEY", ""),
-)
-
-
 ENABLE_RAG_LOCAL_WEB_FETCH = (
     os.getenv("ENABLE_RAG_LOCAL_WEB_FETCH", "False").lower() == "true"
 )
@@ -3043,12 +2963,6 @@ WEB_SEARCH_TRUST_ENV = PersistentConfig(
     os.getenv("WEB_SEARCH_TRUST_ENV", "False").lower() == "true",
 )
 
-
-OLLAMA_CLOUD_WEB_SEARCH_API_KEY = PersistentConfig(
-    "OLLAMA_CLOUD_WEB_SEARCH_API_KEY",
-    "rag.web.search.ollama_cloud_api_key",
-    os.getenv("OLLAMA_CLOUD_API_KEY", ""),
-)
 
 SEARXNG_QUERY_URL = PersistentConfig(
     "SEARXNG_QUERY_URL",
