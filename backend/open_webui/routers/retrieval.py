@@ -77,10 +77,13 @@ from open_webui.retrieval.utils import (
     get_embedding_function,
     get_reranking_function,
     get_model_path,
+    clear_bm25_index_cache,
+    invalidate_bm25_collections,
+    mark_bm25_collections_dirty,
     query_collection,
-    query_collection_with_hybrid_search,
+    query_collection_with_rag_pipeline,
     query_doc,
-    query_doc_with_hybrid_search,
+    query_doc_with_rag_pipeline,
 )
 from open_webui.retrieval.vector.utils import filter_metadata
 from open_webui.utils.misc import (
@@ -419,12 +422,13 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         "TOP_K": request.app.state.config.TOP_K,
         "BYPASS_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL,
         "RAG_FULL_CONTEXT": request.app.state.config.RAG_FULL_CONTEXT,
-        # Hybrid search settings
-        "ENABLE_RAG_HYBRID_SEARCH": request.app.state.config.ENABLE_RAG_HYBRID_SEARCH,
-        "ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS": request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS,
+        # Retrieval settings
+        "ENABLE_RAG_BM25_SEARCH": request.app.state.config.ENABLE_RAG_BM25_SEARCH,
+        "ENABLE_RAG_BM25_ENRICHED_TEXTS": request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS,
+        "ENABLE_RAG_RERANKING": request.app.state.config.ENABLE_RAG_RERANKING,
         "TOP_K_RERANKER": request.app.state.config.TOP_K_RERANKER,
         "RELEVANCE_THRESHOLD": request.app.state.config.RELEVANCE_THRESHOLD,
-        "HYBRID_BM25_WEIGHT": request.app.state.config.HYBRID_BM25_WEIGHT,
+        "BM25_WEIGHT": request.app.state.config.BM25_WEIGHT,
         # Content extraction settings
         "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
         "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
@@ -600,12 +604,13 @@ class ConfigForm(BaseModel):
     BYPASS_EMBEDDING_AND_RETRIEVAL: Optional[bool] = None
     RAG_FULL_CONTEXT: Optional[bool] = None
 
-    # Hybrid search settings
-    ENABLE_RAG_HYBRID_SEARCH: Optional[bool] = None
-    ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS: Optional[bool] = None
+    # Retrieval settings
+    ENABLE_RAG_BM25_SEARCH: Optional[bool] = None
+    ENABLE_RAG_BM25_ENRICHED_TEXTS: Optional[bool] = None
+    ENABLE_RAG_RERANKING: Optional[bool] = None
     TOP_K_RERANKER: Optional[int] = None
     RELEVANCE_THRESHOLD: Optional[float] = None
-    HYBRID_BM25_WEIGHT: Optional[float] = None
+    BM25_WEIGHT: Optional[float] = None
 
     # Content extraction settings
     CONTENT_EXTRACTION_ENGINE: Optional[str] = None
@@ -697,16 +702,21 @@ async def update_rag_config(
         else request.app.state.config.RAG_FULL_CONTEXT
     )
 
-    # Hybrid search settings
-    request.app.state.config.ENABLE_RAG_HYBRID_SEARCH = (
-        form_data.ENABLE_RAG_HYBRID_SEARCH
-        if form_data.ENABLE_RAG_HYBRID_SEARCH is not None
-        else request.app.state.config.ENABLE_RAG_HYBRID_SEARCH
+    # Retrieval settings
+    request.app.state.config.ENABLE_RAG_BM25_SEARCH = (
+        form_data.ENABLE_RAG_BM25_SEARCH
+        if form_data.ENABLE_RAG_BM25_SEARCH is not None
+        else request.app.state.config.ENABLE_RAG_BM25_SEARCH
     )
-    request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS = (
-        form_data.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS
-        if form_data.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS is not None
-        else request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS
+    request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS = (
+        form_data.ENABLE_RAG_BM25_ENRICHED_TEXTS
+        if form_data.ENABLE_RAG_BM25_ENRICHED_TEXTS is not None
+        else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
+    )
+    request.app.state.config.ENABLE_RAG_RERANKING = (
+        form_data.ENABLE_RAG_RERANKING
+        if form_data.ENABLE_RAG_RERANKING is not None
+        else request.app.state.config.ENABLE_RAG_RERANKING
     )
 
     request.app.state.config.TOP_K_RERANKER = (
@@ -719,10 +729,10 @@ async def update_rag_config(
         if form_data.RELEVANCE_THRESHOLD is not None
         else request.app.state.config.RELEVANCE_THRESHOLD
     )
-    request.app.state.config.HYBRID_BM25_WEIGHT = (
-        form_data.HYBRID_BM25_WEIGHT
-        if form_data.HYBRID_BM25_WEIGHT is not None
-        else request.app.state.config.HYBRID_BM25_WEIGHT
+    request.app.state.config.BM25_WEIGHT = (
+        form_data.BM25_WEIGHT
+        if form_data.BM25_WEIGHT is not None
+        else request.app.state.config.BM25_WEIGHT
     )
 
     # Content extraction settings
@@ -876,7 +886,10 @@ async def update_rag_config(
     )
 
     # Reranking settings
-    if request.app.state.config.RAG_RERANKING_ENGINE == "":
+    if (
+        not request.app.state.config.ENABLE_RAG_RERANKING
+        or request.app.state.config.RAG_RERANKING_ENGINE == ""
+    ):
         # Unloading the internal reranker and clear VRAM memory
         request.app.state.rf = None
         request.app.state.RERANKING_FUNCTION = None
@@ -924,7 +937,7 @@ async def update_rag_config(
 
         try:
             if (
-                request.app.state.config.ENABLE_RAG_HYBRID_SEARCH
+                request.app.state.config.ENABLE_RAG_RERANKING
                 and not request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL
             ):
                 request.app.state.rf = get_rf(
@@ -942,7 +955,7 @@ async def update_rag_config(
                 )
         except Exception as e:
             log.error(f"Error loading reranking model: {e}")
-            request.app.state.config.ENABLE_RAG_HYBRID_SEARCH = False
+            request.app.state.config.ENABLE_RAG_RERANKING = False
     except Exception as e:
         log.exception(f"Problem updating reranking model: {e}")
         raise HTTPException(
@@ -1134,11 +1147,13 @@ async def update_rag_config(
         "TOP_K": request.app.state.config.TOP_K,
         "BYPASS_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL,
         "RAG_FULL_CONTEXT": request.app.state.config.RAG_FULL_CONTEXT,
-        # Hybrid search settings
-        "ENABLE_RAG_HYBRID_SEARCH": request.app.state.config.ENABLE_RAG_HYBRID_SEARCH,
+        # Retrieval settings
+        "ENABLE_RAG_BM25_SEARCH": request.app.state.config.ENABLE_RAG_BM25_SEARCH,
+        "ENABLE_RAG_BM25_ENRICHED_TEXTS": request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS,
+        "ENABLE_RAG_RERANKING": request.app.state.config.ENABLE_RAG_RERANKING,
         "TOP_K_RERANKER": request.app.state.config.TOP_K_RERANKER,
         "RELEVANCE_THRESHOLD": request.app.state.config.RELEVANCE_THRESHOLD,
-        "HYBRID_BM25_WEIGHT": request.app.state.config.HYBRID_BM25_WEIGHT,
+        "BM25_WEIGHT": request.app.state.config.BM25_WEIGHT,
         # Content extraction settings
         "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
         "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
@@ -1453,6 +1468,7 @@ def save_docs_to_vector_db(
 
             if overwrite:
                 VECTOR_DB_CLIENT.delete_collection(collection_name=collection_name)
+                invalidate_bm25_collections([collection_name])
                 log.info(f"deleting existing collection {collection_name}")
             elif add is False:
                 log.info(
@@ -1509,6 +1525,7 @@ def save_docs_to_vector_db(
             collection_name=collection_name,
             items=items,
         )
+        mark_bm25_collections_dirty([collection_name])
 
         log.info(f"added {len(items)} items to collection {collection_name}")
         return True
@@ -1554,6 +1571,7 @@ def process_file(
                     VECTOR_DB_CLIENT.delete_collection(
                         collection_name=f"file-{file.id}"
                     )
+                    invalidate_bm25_collections([f"file-{file.id}"])
                 except:
                     # Audio file upload pipeline
                     pass
@@ -2301,7 +2319,10 @@ class QueryDocForm(BaseModel):
     k: Optional[int] = None
     k_reranker: Optional[int] = None
     r: Optional[float] = None
-    hybrid: Optional[bool] = None
+    enable_bm25_search: Optional[bool] = None
+    enable_reranking: Optional[bool] = None
+    bm25_weight: Optional[float] = None
+    enable_bm25_enriched_texts: Optional[bool] = None
 
 
 @router.post("/query/doc")
@@ -2311,54 +2332,57 @@ async def query_doc_handler(
     user=Depends(get_verified_user),
 ):
     try:
-        if request.app.state.config.ENABLE_RAG_HYBRID_SEARCH and (
-            form_data.hybrid is None or form_data.hybrid
-        ):
-            collection_results = {}
-            collection_results[form_data.collection_name] = VECTOR_DB_CLIENT.get(
-                collection_name=form_data.collection_name
-            )
-            return await query_doc_with_hybrid_search(
-                collection_name=form_data.collection_name,
-                collection_result=collection_results[form_data.collection_name],
-                query=form_data.query,
-                embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                    query, prefix=prefix, user=user
-                ),
-                k=form_data.k if form_data.k else request.app.state.config.TOP_K,
-                reranking_function=(
-                    (
-                        lambda query, documents: request.app.state.RERANKING_FUNCTION(
-                            query, documents, user=user
-                        )
+        enable_bm25_search = (
+            form_data.enable_bm25_search
+            if form_data.enable_bm25_search is not None
+            else request.app.state.config.ENABLE_RAG_BM25_SEARCH
+        )
+        enable_reranking = (
+            form_data.enable_reranking
+            if form_data.enable_reranking is not None
+            else request.app.state.config.ENABLE_RAG_RERANKING
+        )
+
+        collection_result = None
+        if enable_bm25_search:
+            collection_result = VECTOR_DB_CLIENT.get(collection_name=form_data.collection_name)
+
+        return await query_doc_with_rag_pipeline(
+            collection_name=form_data.collection_name,
+            collection_result=collection_result,
+            query=form_data.query,
+            embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+                query, prefix=prefix, user=user
+            ),
+            k=form_data.k if form_data.k else request.app.state.config.TOP_K,
+            reranking_function=(
+                (
+                    lambda query, documents: request.app.state.RERANKING_FUNCTION(
+                        query, documents, user=user
                     )
-                    if request.app.state.RERANKING_FUNCTION
-                    else None
-                ),
-                k_reranker=form_data.k_reranker
-                or request.app.state.config.TOP_K_RERANKER,
-                r=(
-                    form_data.r
-                    if form_data.r
-                    else request.app.state.config.RELEVANCE_THRESHOLD
-                ),
-                hybrid_bm25_weight=(
-                    form_data.hybrid_bm25_weight
-                    if form_data.hybrid_bm25_weight
-                    else request.app.state.config.HYBRID_BM25_WEIGHT
-                ),
-                user=user,
-            )
-        else:
-            query_embedding = await request.app.state.EMBEDDING_FUNCTION(
-                form_data.query, prefix=RAG_EMBEDDING_QUERY_PREFIX, user=user
-            )
-            return query_doc(
-                collection_name=form_data.collection_name,
-                query_embedding=query_embedding,
-                k=form_data.k if form_data.k else request.app.state.config.TOP_K,
-                user=user,
-            )
+                )
+                if request.app.state.RERANKING_FUNCTION
+                else None
+            ),
+            k_reranker=form_data.k_reranker or request.app.state.config.TOP_K_RERANKER,
+            r=(
+                form_data.r
+                if form_data.r
+                else request.app.state.config.RELEVANCE_THRESHOLD
+            ),
+            bm25_weight=(
+                form_data.bm25_weight
+                if form_data.bm25_weight is not None
+                else request.app.state.config.BM25_WEIGHT
+            ),
+            enable_bm25_search=enable_bm25_search,
+            enable_reranking=enable_reranking,
+            enable_bm25_enriched_texts=(
+                form_data.enable_bm25_enriched_texts
+                if form_data.enable_bm25_enriched_texts is not None
+                else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
+            ),
+        )
     except Exception as e:
         log.exception(e)
         raise HTTPException(
@@ -2373,9 +2397,10 @@ class QueryCollectionsForm(BaseModel):
     k: Optional[int] = None
     k_reranker: Optional[int] = None
     r: Optional[float] = None
-    hybrid: Optional[bool] = None
-    hybrid_bm25_weight: Optional[float] = None
-    enable_enriched_texts: Optional[bool] = None
+    enable_bm25_search: Optional[bool] = None
+    enable_reranking: Optional[bool] = None
+    bm25_weight: Optional[float] = None
+    enable_bm25_enriched_texts: Optional[bool] = None
 
 
 @router.post("/query/collection")
@@ -2385,52 +2410,52 @@ async def query_collection_handler(
     user=Depends(get_verified_user),
 ):
     try:
-        if request.app.state.config.ENABLE_RAG_HYBRID_SEARCH and (
-            form_data.hybrid is None or form_data.hybrid
-        ):
-            return await query_collection_with_hybrid_search(
-                collection_names=form_data.collection_names,
-                queries=[form_data.query],
-                embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                    query, prefix=prefix, user=user
-                ),
-                k=form_data.k if form_data.k else request.app.state.config.TOP_K,
-                reranking_function=(
-                    (
-                        lambda query, documents: request.app.state.RERANKING_FUNCTION(
-                            query, documents, user=user
-                        )
+        enable_bm25_search = (
+            form_data.enable_bm25_search
+            if form_data.enable_bm25_search is not None
+            else request.app.state.config.ENABLE_RAG_BM25_SEARCH
+        )
+        enable_reranking = (
+            form_data.enable_reranking
+            if form_data.enable_reranking is not None
+            else request.app.state.config.ENABLE_RAG_RERANKING
+        )
+
+        return await query_collection_with_rag_pipeline(
+            collection_names=form_data.collection_names,
+            queries=[form_data.query],
+            embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+                query, prefix=prefix, user=user
+            ),
+            k=form_data.k if form_data.k else request.app.state.config.TOP_K,
+            reranking_function=(
+                (
+                    lambda query, documents: request.app.state.RERANKING_FUNCTION(
+                        query, documents, user=user
                     )
-                    if request.app.state.RERANKING_FUNCTION
-                    else None
-                ),
-                k_reranker=form_data.k_reranker
-                or request.app.state.config.TOP_K_RERANKER,
-                r=(
-                    form_data.r
-                    if form_data.r
-                    else request.app.state.config.RELEVANCE_THRESHOLD
-                ),
-                hybrid_bm25_weight=(
-                    form_data.hybrid_bm25_weight
-                    if form_data.hybrid_bm25_weight
-                    else request.app.state.config.HYBRID_BM25_WEIGHT
-                ),
-                enable_enriched_texts=(
-                    form_data.enable_enriched_texts
-                    if form_data.enable_enriched_texts is not None
-                    else request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS
-                ),
-            )
-        else:
-            return await query_collection(
-                collection_names=form_data.collection_names,
-                queries=[form_data.query],
-                embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                    query, prefix=prefix, user=user
-                ),
-                k=form_data.k if form_data.k else request.app.state.config.TOP_K,
-            )
+                )
+                if request.app.state.RERANKING_FUNCTION
+                else None
+            ),
+            k_reranker=form_data.k_reranker or request.app.state.config.TOP_K_RERANKER,
+            r=(
+                form_data.r
+                if form_data.r
+                else request.app.state.config.RELEVANCE_THRESHOLD
+            ),
+            bm25_weight=(
+                form_data.bm25_weight
+                if form_data.bm25_weight is not None
+                else request.app.state.config.BM25_WEIGHT
+            ),
+            enable_bm25_search=enable_bm25_search,
+            enable_reranking=enable_reranking,
+            enable_bm25_enriched_texts=(
+                form_data.enable_bm25_enriched_texts
+                if form_data.enable_bm25_enriched_texts is not None
+                else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
+            ),
+        )
 
     except Exception as e:
         log.exception(e)
@@ -2438,6 +2463,7 @@ async def query_collection_handler(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.DEFAULT(e),
         )
+
 
 
 ####################################
@@ -2463,6 +2489,7 @@ def delete_entries_from_collection(form_data: DeleteForm, user=Depends(get_admin
                 collection_name=form_data.collection_name,
                 metadata={"hash": hash},
             )
+            mark_bm25_collections_dirty([form_data.collection_name])
             return {"status": True}
         else:
             return {"status": False}
@@ -2474,6 +2501,7 @@ def delete_entries_from_collection(form_data: DeleteForm, user=Depends(get_admin
 @router.post("/reset/db")
 def reset_vector_db(user=Depends(get_admin_user)):
     VECTOR_DB_CLIENT.reset()
+    clear_bm25_index_cache()
     Knowledges.delete_all_knowledge()
 
 

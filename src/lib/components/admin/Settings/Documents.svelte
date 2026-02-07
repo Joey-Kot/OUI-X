@@ -919,16 +919,16 @@
 
 						{#if !RAGConfig.RAG_FULL_CONTEXT}
 							<div class="  mb-2.5 flex w-full justify-between">
-								<div class=" self-center text-xs font-medium">{$i18n.t('Hybrid Search')}</div>
+								<div class=" self-center text-xs font-medium">{$i18n.t('BM25 Search')}</div>
 								<div class="flex items-center relative">
-									<Switch bind:state={RAGConfig.ENABLE_RAG_HYBRID_SEARCH} />
+									<Switch bind:state={RAGConfig.ENABLE_RAG_BM25_SEARCH} />
 								</div>
 							</div>
 
-							{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
+							{#if RAGConfig.ENABLE_RAG_BM25_SEARCH === true}
 								<div class="mb-2.5 flex w-full justify-between">
 									<div class="self-center text-xs font-medium">
-										{$i18n.t('Enrich Hybrid Search Text')}
+										{$i18n.t('Enrich BM25 Text')}
 									</div>
 									<div class="flex items-center relative">
 										<Tooltip
@@ -936,11 +936,87 @@
 												'Adds filenames, titles, sections, and snippets into the BM25 text to improve lexical recall.'
 											)}
 										>
-											<Switch bind:state={RAGConfig.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS} />
+											<Switch bind:state={RAGConfig.ENABLE_RAG_BM25_ENRICHED_TEXTS} />
 										</Tooltip>
 									</div>
 								</div>
 
+								<div class=" mb-2.5 py-0.5 w-full justify-between">
+									<Tooltip
+										content={$i18n.t(
+											'The Weight of BM25 Hybrid Search. 0 more semantic, 1 more lexical. Default 0.5'
+										)}
+										placement="top-start"
+										className="inline-tooltip"
+									>
+										<div class="flex w-full justify-between">
+											<div class=" self-center text-xs font-medium">
+												{$i18n.t('BM25 Weight')}
+											</div>
+											<button
+												class="p-1 px-3 text-xs flex rounded-sm transition shrink-0 outline-hidden"
+												type="button"
+												on:click={() => {
+													RAGConfig.BM25_WEIGHT =
+														(RAGConfig?.BM25_WEIGHT ?? null) === null ? 0.5 : null;
+												}}
+											>
+												{#if (RAGConfig?.BM25_WEIGHT ?? null) === null}
+													<span class="ml-2 self-center"> {$i18n.t('Default')} </span>
+												{:else}
+													<span class="ml-2 self-center"> {$i18n.t('Custom')} </span>
+												{/if}
+											</button>
+										</div>
+									</Tooltip>
+
+									{#if (RAGConfig?.BM25_WEIGHT ?? null) !== null}
+										<div class="flex mt-0.5 space-x-2">
+											<div class=" flex-1">
+												<input
+													id="steps-range"
+													type="range"
+													min="0"
+													max="1"
+													step="0.05"
+													bind:value={RAGConfig.BM25_WEIGHT}
+													class="w-full h-2 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"
+												/>
+
+												<div class="py-0.5">
+													<div class="flex w-full justify-between">
+														<div class=" text-left text-xs font-small">
+															{$i18n.t('semantic')}
+														</div>
+														<div class=" text-right text-xs font-small">
+															{$i18n.t('lexical')}
+														</div>
+													</div>
+												</div>
+											</div>
+											<div>
+												<input
+													bind:value={RAGConfig.BM25_WEIGHT}
+													type="number"
+													class=" bg-transparent text-center w-14"
+													min="0"
+													max="1"
+													step="any"
+												/>
+											</div>
+										</div>
+									{/if}
+								</div>
+							{/if}
+
+							<div class="  mb-2.5 flex w-full justify-between">
+								<div class=" self-center text-xs font-medium">{$i18n.t('Reranking')}</div>
+								<div class="flex items-center relative">
+									<Switch bind:state={RAGConfig.ENABLE_RAG_RERANKING} />
+								</div>
+							</div>
+
+							{#if RAGConfig.ENABLE_RAG_RERANKING === true}
 								<div class="  mb-2.5 flex flex-col w-full justify-between">
 									<div class="flex w-full justify-between">
 										<div class=" self-center text-xs font-medium">
@@ -1016,7 +1092,7 @@
 								</div>
 							</div>
 
-							{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
+							{#if RAGConfig.ENABLE_RAG_RERANKING === true}
 								<div class="mb-2.5 flex w-full justify-between">
 									<div class="self-center text-xs font-medium">{$i18n.t('Top K Reranker')}</div>
 									<div class="flex items-center relative">
@@ -1030,9 +1106,7 @@
 										/>
 									</div>
 								</div>
-							{/if}
 
-							{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
 								<div class="  mb-2.5 flex flex-col w-full justify-between">
 									<div class=" flex w-full justify-between">
 										<div class=" self-center text-xs font-medium">
@@ -1060,76 +1134,8 @@
 									</div>
 								</div>
 							{/if}
-
-							{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
-								<div class=" mb-2.5 py-0.5 w-full justify-between">
-									<Tooltip
-										content={$i18n.t(
-											'The Weight of BM25 Hybrid Search. 0 more semantic, 1 more lexical. Default 0.5'
-										)}
-										placement="top-start"
-										className="inline-tooltip"
-									>
-										<div class="flex w-full justify-between">
-											<div class=" self-center text-xs font-medium">
-												{$i18n.t('BM25 Weight')}
-											</div>
-											<button
-												class="p-1 px-3 text-xs flex rounded-sm transition shrink-0 outline-hidden"
-												type="button"
-												on:click={() => {
-													RAGConfig.HYBRID_BM25_WEIGHT =
-														(RAGConfig?.HYBRID_BM25_WEIGHT ?? null) === null ? 0.5 : null;
-												}}
-											>
-												{#if (RAGConfig?.HYBRID_BM25_WEIGHT ?? null) === null}
-													<span class="ml-2 self-center"> {$i18n.t('Default')} </span>
-												{:else}
-													<span class="ml-2 self-center"> {$i18n.t('Custom')} </span>
-												{/if}
-											</button>
-										</div>
-									</Tooltip>
-
-									{#if (RAGConfig?.HYBRID_BM25_WEIGHT ?? null) !== null}
-										<div class="flex mt-0.5 space-x-2">
-											<div class=" flex-1">
-												<input
-													id="steps-range"
-													type="range"
-													min="0"
-													max="1"
-													step="0.05"
-													bind:value={RAGConfig.HYBRID_BM25_WEIGHT}
-													class="w-full h-2 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"
-												/>
-
-												<div class="py-0.5">
-													<div class="flex w-full justify-between">
-														<div class=" text-left text-xs font-small">
-															{$i18n.t('semantic')}
-														</div>
-														<div class=" text-right text-xs font-small">
-															{$i18n.t('lexical')}
-														</div>
-													</div>
-												</div>
-											</div>
-											<div>
-												<input
-													bind:value={RAGConfig.HYBRID_BM25_WEIGHT}
-													type="number"
-													class=" bg-transparent text-center w-14"
-													min="0"
-													max="1"
-													step="any"
-												/>
-											</div>
-										</div>
-									{/if}
-								</div>
-							{/if}
 						{/if}
+
 
 						<div class="  mb-2.5 flex flex-col w-full justify-between">
 							<div class=" mb-1 text-xs font-medium">{$i18n.t('RAG Template')}</div>

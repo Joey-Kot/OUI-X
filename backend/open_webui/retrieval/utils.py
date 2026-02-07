@@ -9,6 +9,8 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import time
 import re
+import threading
+from dataclasses import dataclass, field
 
 from urllib.parse import quote
 from huggingface_hub import snapshot_download
@@ -207,6 +209,347 @@ def get_enriched_texts(collection_result: GetResult) -> list[str]:
     return enriched_texts
 
 
+def has_collection_documents(collection_result: Optional[GetResult]) -> bool:
+    return bool(
+        collection_result
+        and hasattr(collection_result, "documents")
+        and hasattr(collection_result, "metadatas")
+        and collection_result.documents
+        and len(collection_result.documents) > 0
+        and collection_result.documents[0]
+    )
+
+
+@dataclass
+class BM25CacheEntry:
+    retriever: BM25Retriever
+    signature: str
+    enable_enriched_texts: bool
+    dirty: bool = False
+    last_build_ts: float = field(default_factory=time.time)
+    last_access_ts: float = field(default_factory=time.time)
+
+
+class BM25IndexManager:
+    def __init__(self, refresh_interval_seconds: int = 600, stale_ttl_seconds: int = 3600):
+        self.refresh_interval_seconds = refresh_interval_seconds
+        self.stale_ttl_seconds = stale_ttl_seconds
+        self._entries: dict[str, BM25CacheEntry] = {}
+        self._state_lock = threading.Lock()
+        self._refresh_task: Optional[asyncio.Task] = None
+        self._refreshing: set[str] = set()
+
+    @staticmethod
+    def _build_signature(collection_result: GetResult, enable_enriched_texts: bool) -> str:
+        ids = collection_result.ids[0] if getattr(collection_result, "ids", None) else []
+        docs_len = len(collection_result.documents[0])
+        payload = f"{enable_enriched_texts}:{docs_len}:" + "|".join(map(str, ids))
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    @staticmethod
+    def _build_retriever(
+        collection_result: GetResult,
+        enable_enriched_texts: bool,
+        k: int,
+    ) -> BM25Retriever:
+        texts = (
+            get_enriched_texts(collection_result)
+            if enable_enriched_texts
+            else collection_result.documents[0]
+        )
+        retriever = BM25Retriever.from_texts(
+            texts=texts,
+            metadatas=collection_result.metadatas[0],
+        )
+        retriever.k = k
+        return retriever
+
+    async def get_retriever(
+        self,
+        collection_name: str,
+        collection_result: GetResult,
+        *,
+        k: int,
+        enable_enriched_texts: bool,
+    ) -> Optional[BM25Retriever]:
+        if not has_collection_documents(collection_result):
+            return None
+
+        self._ensure_periodic_refresh_task()
+        signature = self._build_signature(collection_result, enable_enriched_texts)
+        now = time.time()
+
+        with self._state_lock:
+            entry = self._entries.get(collection_name)
+
+        if (
+            entry is None
+            or entry.signature != signature
+            or entry.enable_enriched_texts != enable_enriched_texts
+        ):
+            retriever = await asyncio.to_thread(
+                self._build_retriever,
+                collection_result,
+                enable_enriched_texts,
+                k,
+            )
+            with self._state_lock:
+                self._entries[collection_name] = BM25CacheEntry(
+                    retriever=retriever,
+                    signature=signature,
+                    enable_enriched_texts=enable_enriched_texts,
+                    dirty=False,
+                    last_build_ts=now,
+                    last_access_ts=now,
+                )
+            self._evict_stale_entries(now)
+            return retriever
+
+        entry.last_access_ts = now
+        entry.retriever.k = k
+
+        if entry.dirty:
+            self._schedule_refresh(collection_name)
+
+        self._evict_stale_entries(now)
+        return entry.retriever
+
+    def mark_dirty(self, collection_name: str):
+        with self._state_lock:
+            entry = self._entries.get(collection_name)
+            if entry is not None:
+                entry.dirty = True
+
+    def invalidate(self, collection_name: str):
+        with self._state_lock:
+            self._entries.pop(collection_name, None)
+            self._refreshing.discard(collection_name)
+
+    def clear(self):
+        with self._state_lock:
+            self._entries.clear()
+            self._refreshing.clear()
+
+    def _evict_stale_entries(self, now: float):
+        if self.stale_ttl_seconds <= 0:
+            return
+
+        stale_collections = []
+        with self._state_lock:
+            for collection_name, entry in self._entries.items():
+                if (now - entry.last_access_ts) > self.stale_ttl_seconds:
+                    stale_collections.append(collection_name)
+
+            for collection_name in stale_collections:
+                self._entries.pop(collection_name, None)
+                self._refreshing.discard(collection_name)
+
+    async def _refresh_collection(self, collection_name: str):
+        try:
+            collection_result = await asyncio.to_thread(
+                VECTOR_DB_CLIENT.get,
+                collection_name=collection_name,
+            )
+            if not has_collection_documents(collection_result):
+                self.invalidate(collection_name)
+                return
+
+            with self._state_lock:
+                entry = self._entries.get(collection_name)
+            if entry is None:
+                return
+
+            signature = self._build_signature(
+                collection_result,
+                entry.enable_enriched_texts,
+            )
+
+            retriever = await asyncio.to_thread(
+                self._build_retriever,
+                collection_result,
+                entry.enable_enriched_texts,
+                entry.retriever.k,
+            )
+
+            with self._state_lock:
+                existing = self._entries.get(collection_name)
+                if existing is None:
+                    return
+                existing.retriever = retriever
+                existing.signature = signature
+                existing.dirty = False
+                existing.last_build_ts = time.time()
+                existing.last_access_ts = time.time()
+        except Exception:
+            log.exception(
+                f"Failed to refresh BM25 index cache for collection: {collection_name}"
+            )
+        finally:
+            with self._state_lock:
+                self._refreshing.discard(collection_name)
+
+    def _schedule_refresh(self, collection_name: str):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        with self._state_lock:
+            if collection_name in self._refreshing:
+                return
+            self._refreshing.add(collection_name)
+
+        asyncio.create_task(self._refresh_collection(collection_name))
+
+    async def _periodic_refresh(self):
+        while True:
+            await asyncio.sleep(self.refresh_interval_seconds)
+
+            with self._state_lock:
+                dirty_collections = [
+                    name for name, entry in self._entries.items() if entry.dirty
+                ]
+
+            for collection_name in dirty_collections:
+                self._schedule_refresh(collection_name)
+
+            self._evict_stale_entries(time.time())
+
+    def _ensure_periodic_refresh_task(self):
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        self._refresh_task = asyncio.create_task(self._periodic_refresh())
+
+
+BM25_INDEX_MANAGER = BM25IndexManager()
+
+
+def mark_bm25_collections_dirty(collection_names: list[str]):
+    for collection_name in collection_names:
+        if collection_name:
+            BM25_INDEX_MANAGER.mark_dirty(collection_name)
+
+
+def invalidate_bm25_collections(collection_names: list[str]):
+    for collection_name in collection_names:
+        if collection_name:
+            BM25_INDEX_MANAGER.invalidate(collection_name)
+
+
+def clear_bm25_index_cache():
+    BM25_INDEX_MANAGER.clear()
+
+
+async def query_doc_with_rag_pipeline(
+    collection_name: str,
+    query: str,
+    embedding_function,
+    k: int,
+    reranking_function,
+    k_reranker: int,
+    r: float,
+    bm25_weight: float,
+    enable_bm25_search: bool,
+    enable_reranking: bool,
+    collection_result: Optional[GetResult] = None,
+    enable_bm25_enriched_texts: bool = False,
+) -> dict:
+    try:
+        vector_search_retriever = VectorSearchRetriever(
+            collection_name=collection_name,
+            embedding_function=embedding_function,
+            top_k=k,
+        )
+
+        base_retriever = vector_search_retriever
+        if enable_bm25_search and has_collection_documents(collection_result):
+            bm25_retriever = await BM25_INDEX_MANAGER.get_retriever(
+                collection_name,
+                collection_result,
+                k=k,
+                enable_enriched_texts=enable_bm25_enriched_texts,
+            )
+
+            if bm25_retriever is not None:
+                if bm25_weight <= 0:
+                    base_retriever = EnsembleRetriever(
+                        retrievers=[vector_search_retriever],
+                        weights=[1.0],
+                    )
+                elif bm25_weight >= 1:
+                    base_retriever = EnsembleRetriever(
+                        retrievers=[bm25_retriever],
+                        weights=[1.0],
+                    )
+                else:
+                    base_retriever = EnsembleRetriever(
+                        retrievers=[bm25_retriever, vector_search_retriever],
+                        weights=[bm25_weight, 1.0 - bm25_weight],
+                    )
+
+        if enable_reranking:
+            compressor = RerankCompressor(
+                embedding_function=embedding_function,
+                top_n=k_reranker,
+                reranking_function=reranking_function,
+                r_score=r,
+            )
+
+            compression_retriever = ContextualCompressionRetriever(
+                base_compressor=compressor,
+                base_retriever=base_retriever,
+            )
+            result_docs = await compression_retriever.ainvoke(query)
+
+            if k < k_reranker:
+                result_docs = sorted(
+                    result_docs,
+                    key=lambda x: x.metadata.get("score", 0.0),
+                    reverse=True,
+                )[:k]
+        else:
+            result_docs = await base_retriever.ainvoke(query)
+            result_docs = result_docs[:k]
+
+        ranked = [
+            (
+                (
+                    float(doc.metadata.get("score"))
+                    if isinstance(doc.metadata.get("score"), (int, float))
+                    else float(len(result_docs) - idx)
+                ),
+                doc.page_content,
+                doc.metadata,
+            )
+            for idx, doc in enumerate(result_docs)
+        ]
+
+        distances = [item[0] for item in ranked]
+        documents = [item[1] for item in ranked]
+        metadatas = [item[2] for item in ranked]
+
+        result = {
+            "distances": [distances],
+            "documents": [documents],
+            "metadatas": [metadatas],
+        }
+
+        log.info(
+            "query_doc_with_rag_pipeline:result "
+            + f'{result["metadatas"]} {result["distances"]}'
+        )
+        return result
+    except Exception as e:
+        log.exception(f"Error querying doc {collection_name} with rag pipeline: {e}")
+        raise e
+
+
 async def query_doc_with_hybrid_search(
     collection_name: str,
     collection_result: GetResult,
@@ -219,159 +562,20 @@ async def query_doc_with_hybrid_search(
     hybrid_bm25_weight: float,
     enable_enriched_texts: bool = False,
 ) -> dict:
-    try:
-        # --- Defensive checks (keep behavior consistent) ---
-        if (
-            not collection_result
-            or not hasattr(collection_result, "documents")
-            or not hasattr(collection_result, "metadatas")
-        ):
-            log.warning(f"query_doc_with_hybrid_search:no_docs {collection_name}")
-            return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
-
-        if (
-            not collection_result.documents
-            or len(collection_result.documents) == 0
-            or not collection_result.documents[0]
-        ):
-            log.warning(f"query_doc_with_hybrid_search:no_docs {collection_name}")
-            return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
-
-        # ---------------------------------------------------------------------
-        # MAGIC MODE: hybrid_bm25_weight == 0  =>  Vector-only retrieve + rerank
-        # Completely bypass BM25 construction.
-        # ---------------------------------------------------------------------
-        if hybrid_bm25_weight == 0:
-            log.info(
-                f"query_doc_with_hybrid_search:vector_only_rerank {collection_name} "
-                f"(k={k}, k_reranker={k_reranker}, r={r})"
-            )
-
-            vector_search_retriever = VectorSearchRetriever(
-                collection_name=collection_name,
-                embedding_function=embedding_function,
-                top_k=k,
-            )
-
-            compressor = RerankCompressor(
-                embedding_function=embedding_function,
-                top_n=k_reranker,
-                reranking_function=reranking_function,
-                r_score=r,
-            )
-
-            compression_retriever = ContextualCompressionRetriever(
-                base_compressor=compressor,
-                base_retriever=vector_search_retriever,
-            )
-
-            result_docs = await compression_retriever.ainvoke(query)
-
-            distances = [d.metadata.get("score") for d in result_docs]
-            documents = [d.page_content for d in result_docs]
-            metadatas = [d.metadata for d in result_docs]
-
-            # Keep original behavior: if k < k_reranker, re-sort and cut to k by score
-            if k < k_reranker:
-                sorted_items = sorted(
-                    zip(distances, metadatas, documents),
-                    key=lambda x: x[0],
-                    reverse=True,
-                )[:k]
-
-                if sorted_items:
-                    distances, metadatas, documents = map(list, zip(*sorted_items))
-                else:
-                    distances, documents, metadatas = [], [], []
-
-            result = {
-                "distances": [distances],
-                "documents": [documents],
-                "metadatas": [metadatas],
-            }
-
-            log.info(
-                "query_doc_with_hybrid_search:result "
-                + f'{result["metadatas"]} {result["distances"]}'
-            )
-            return result
-
-        # --- Original path (Hybrid: BM25 + Vector ensemble) ---
-        log.debug(f"query_doc_with_hybrid_search:doc {collection_name}")
-
-        bm25_texts = (
-            get_enriched_texts(collection_result)
-            if enable_enriched_texts
-            else collection_result.documents[0]
-        )
-
-        bm25_retriever = BM25Retriever.from_texts(
-            texts=bm25_texts,
-            metadatas=collection_result.metadatas[0],
-        )
-        bm25_retriever.k = k
-
-        vector_search_retriever = VectorSearchRetriever(
-            collection_name=collection_name,
-            embedding_function=embedding_function,
-            top_k=k,
-        )
-
-        if hybrid_bm25_weight <= 0:
-            ensemble_retriever = EnsembleRetriever(
-                retrievers=[vector_search_retriever], weights=[1.0]
-            )
-        elif hybrid_bm25_weight >= 1:
-            ensemble_retriever = EnsembleRetriever(retrievers=[bm25_retriever], weights=[1.0])
-        else:
-            ensemble_retriever = EnsembleRetriever(
-                retrievers=[bm25_retriever, vector_search_retriever],
-                weights=[hybrid_bm25_weight, 1.0 - hybrid_bm25_weight],
-            )
-
-        compressor = RerankCompressor(
-            embedding_function=embedding_function,
-            top_n=k_reranker,
-            reranking_function=reranking_function,
-            r_score=r,
-        )
-
-        compression_retriever = ContextualCompressionRetriever(
-            base_compressor=compressor, base_retriever=ensemble_retriever
-        )
-
-        result_docs = await compression_retriever.ainvoke(query)
-
-        distances = [d.metadata.get("score") for d in result_docs]
-        documents = [d.page_content for d in result_docs]
-        metadatas = [d.metadata for d in result_docs]
-
-        if k < k_reranker:
-            sorted_items = sorted(
-                zip(distances, metadatas, documents), key=lambda x: x[0], reverse=True
-            )
-            sorted_items = sorted_items[:k]
-
-            if sorted_items:
-                distances, documents, metadatas = map(list, zip(*sorted_items))
-            else:
-                distances, documents, metadatas = [], [], []
-
-        result = {
-            "distances": [distances],
-            "documents": [documents],
-            "metadatas": [metadatas],
-        }
-
-        log.info(
-            "query_doc_with_hybrid_search:result "
-            + f'{result["metadatas"]} {result["distances"]}'
-        )
-        return result
-
-    except Exception as e:
-        log.exception(f"Error querying doc {collection_name} with hybrid search: {e}")
-        raise e
+    return await query_doc_with_rag_pipeline(
+        collection_name=collection_name,
+        query=query,
+        embedding_function=embedding_function,
+        k=k,
+        reranking_function=reranking_function,
+        k_reranker=k_reranker,
+        r=r,
+        bm25_weight=hybrid_bm25_weight,
+        enable_bm25_search=True,
+        enable_reranking=True,
+        collection_result=collection_result,
+        enable_bm25_enriched_texts=enable_enriched_texts,
+    )
 
 
 def merge_get_results(get_results: list[dict]) -> dict:
@@ -513,7 +717,7 @@ async def query_collection(
     return merge_and_sort_query_results(results, k=k)
 
 
-async def query_collection_with_hybrid_search(
+async def query_collection_with_rag_pipeline(
     collection_names: list[str],
     queries: list[str],
     embedding_function,
@@ -521,59 +725,64 @@ async def query_collection_with_hybrid_search(
     reranking_function,
     k_reranker: int,
     r: float,
-    hybrid_bm25_weight: float,
-    enable_enriched_texts: bool = False,
+    bm25_weight: float,
+    enable_bm25_search: bool,
+    enable_reranking: bool,
+    enable_bm25_enriched_texts: bool = False,
 ) -> dict:
     results = []
     error = False
-    # Fetch collection data once per collection sequentially
-    # Avoid fetching the same data multiple times later
+
     collection_results = {}
-    for collection_name in collection_names:
-        try:
-            log.debug(
-                f"query_collection_with_hybrid_search:VECTOR_DB_CLIENT.get:collection {collection_name}"
-            )
-            collection_results[collection_name] = VECTOR_DB_CLIENT.get(
-                collection_name=collection_name
-            )
-        except Exception as e:
-            log.exception(f"Failed to fetch collection {collection_name}: {e}")
-            collection_results[collection_name] = None
+    if enable_bm25_search:
+        for collection_name in collection_names:
+            try:
+                log.debug(
+                    "query_collection_with_rag_pipeline:VECTOR_DB_CLIENT.get:collection "
+                    f"{collection_name}"
+                )
+                collection_results[collection_name] = VECTOR_DB_CLIENT.get(
+                    collection_name=collection_name
+                )
+            except Exception as e:
+                log.exception(f"Failed to fetch collection {collection_name}: {e}")
+                collection_results[collection_name] = None
 
     log.info(
-        f"Starting hybrid search for {len(queries)} queries in {len(collection_names)} collections..."
+        "Starting retrieval pipeline for "
+        f"{len(queries)} queries in {len(collection_names)} collections..."
     )
 
-    async def process_query(collection_name, query):
+    async def process_query(collection_name: str, query: str):
         try:
-            result = await query_doc_with_hybrid_search(
+            result = await query_doc_with_rag_pipeline(
                 collection_name=collection_name,
-                collection_result=collection_results[collection_name],
+                collection_result=collection_results.get(collection_name),
                 query=query,
                 embedding_function=embedding_function,
                 k=k,
                 reranking_function=reranking_function,
                 k_reranker=k_reranker,
                 r=r,
-                hybrid_bm25_weight=hybrid_bm25_weight,
-                enable_enriched_texts=enable_enriched_texts,
+                bm25_weight=bm25_weight,
+                enable_bm25_search=enable_bm25_search,
+                enable_reranking=enable_reranking,
+                enable_bm25_enriched_texts=enable_bm25_enriched_texts,
             )
             return result, None
         except Exception as e:
-            log.exception(f"Error when querying the collection with hybrid_search: {e}")
+            log.exception(
+                f"Error when querying the collection with retrieval pipeline: {e}"
+            )
             return None, e
 
-    # Prepare tasks for all collections and queries
-    # Avoid running any tasks for collections that failed to fetch data (have assigned None)
     tasks = [
         (collection_name, query)
         for collection_name in collection_names
-        if collection_results[collection_name] is not None
+        if (not enable_bm25_search) or collection_results.get(collection_name) is not None
         for query in queries
     ]
 
-    # Run all queries in parallel using asyncio.gather
     task_results = await asyncio.gather(
         *[process_query(collection_name, query) for collection_name, query in tasks]
     )
@@ -586,10 +795,36 @@ async def query_collection_with_hybrid_search(
 
     if error and not results:
         raise Exception(
-            "Hybrid search failed for all collections. Using Non-hybrid search as fallback."
+            "Retrieval pipeline failed for all collections. Using vector search as fallback."
         )
 
     return merge_and_sort_query_results(results, k=k)
+
+
+async def query_collection_with_hybrid_search(
+    collection_names: list[str],
+    queries: list[str],
+    embedding_function,
+    k: int,
+    reranking_function,
+    k_reranker: int,
+    r: float,
+    hybrid_bm25_weight: float,
+    enable_enriched_texts: bool = False,
+) -> dict:
+    return await query_collection_with_rag_pipeline(
+        collection_names=collection_names,
+        queries=queries,
+        embedding_function=embedding_function,
+        k=k,
+        reranking_function=reranking_function,
+        k_reranker=k_reranker,
+        r=r,
+        bm25_weight=hybrid_bm25_weight,
+        enable_bm25_search=True,
+        enable_reranking=True,
+        enable_bm25_enriched_texts=enable_enriched_texts,
+    )
 
 
 def generate_openai_batch_embeddings(
@@ -886,8 +1121,10 @@ async def get_sources_from_items(
     reranking_function,
     k_reranker,
     r,
-    hybrid_bm25_weight,
-    hybrid_search,
+    bm25_weight,
+    enable_bm25_search,
+    enable_reranking,
+    enable_bm25_enriched_texts,
     full_context=False,
     user: Optional[UserModel] = None,
 ):
@@ -1098,27 +1335,27 @@ async def get_sources_from_items(
                 if full_context:
                     query_result = get_all_items_from_collections(collection_names)
                 else:
-                    query_result = None  # Initialize to None
-                    if hybrid_search:
-                        try:
-                            query_result = await query_collection_with_hybrid_search(
-                                collection_names=collection_names,
-                                queries=queries,
-                                embedding_function=embedding_function,
-                                k=k,
-                                reranking_function=reranking_function,
-                                k_reranker=k_reranker,
-                                r=r,
-                                hybrid_bm25_weight=hybrid_bm25_weight,
-                                enable_enriched_texts=request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS,
-                            )
-                        except Exception as e:
-                            log.debug(
-                                "Error when using hybrid search, using non hybrid search as fallback."
-                            )
+                    query_result = None
+                    try:
+                        query_result = await query_collection_with_rag_pipeline(
+                            collection_names=collection_names,
+                            queries=queries,
+                            embedding_function=embedding_function,
+                            k=k,
+                            reranking_function=reranking_function,
+                            k_reranker=k_reranker,
+                            r=r,
+                            bm25_weight=bm25_weight,
+                            enable_bm25_search=enable_bm25_search,
+                            enable_reranking=enable_reranking,
+                            enable_bm25_enriched_texts=enable_bm25_enriched_texts,
+                        )
+                    except Exception:
+                        log.debug(
+                            "Error when using retrieval pipeline, using vector search as fallback."
+                        )
 
-                    # fallback to non-hybrid search
-                    if not hybrid_search and query_result is None:
+                    if query_result is None:
                         query_result = await query_collection(
                             collection_names=collection_names,
                             queries=queries,

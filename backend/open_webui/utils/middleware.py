@@ -1022,8 +1022,10 @@ async def chat_completion_files_handler(
                 ),
                 k_reranker=request.app.state.config.TOP_K_RERANKER,
                 r=request.app.state.config.RELEVANCE_THRESHOLD,
-                hybrid_bm25_weight=request.app.state.config.HYBRID_BM25_WEIGHT,
-                hybrid_search=request.app.state.config.ENABLE_RAG_HYBRID_SEARCH,
+                bm25_weight=request.app.state.config.BM25_WEIGHT,
+                enable_bm25_search=request.app.state.config.ENABLE_RAG_BM25_SEARCH,
+                enable_reranking=request.app.state.config.ENABLE_RAG_RERANKING,
+                enable_bm25_enriched_texts=request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS,
                 full_context=all_full_context
                 or request.app.state.config.RAG_FULL_CONTEXT,
                 user=user,
