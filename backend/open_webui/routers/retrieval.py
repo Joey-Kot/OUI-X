@@ -76,7 +76,6 @@ from open_webui.retrieval.utils import (
     get_content_from_url,
     get_embedding_function,
     get_reranking_function,
-    get_model_path,
     clear_bm25_index_cache,
     invalidate_bm25_collections,
     mark_bm25_collections_dirty,
@@ -94,8 +93,6 @@ from open_webui.utils.auth import get_admin_user, get_verified_user
 
 from open_webui.config import (
     ENV,
-    RAG_RERANKING_MODEL_AUTO_UPDATE,
-    RAG_RERANKING_MODEL_TRUST_REMOTE_CODE,
     VOYAGE_TOKENIZER_MODEL as DEFAULT_VOYAGE_TOKENIZER_MODEL,
     UPLOAD_DIR,
     DEFAULT_LOCALE,
@@ -104,9 +101,6 @@ from open_webui.config import (
 )
 from open_webui.env import (
     DEVICE_TYPE,
-    DOCKER,
-    SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND,
-    SENTENCE_TRANSFORMERS_CROSS_ENCODER_MODEL_KWARGS,
 )
 
 from open_webui.constants import ERROR_MESSAGES
@@ -156,7 +150,6 @@ def get_rf(
     external_reranker_url: str = "",
     external_reranker_api_key: str = "",
     external_reranker_timeout: str = "",
-    auto_update: bool = RAG_RERANKING_MODEL_AUTO_UPDATE,
 ):
     rf = None
     # Convert timeout string to int or None (system default)
@@ -164,66 +157,21 @@ def get_rf(
         int(external_reranker_timeout) if external_reranker_timeout else None
     )
     if reranking_model:
-        if any(model in reranking_model for model in ["jinaai/jina-colbert-v2"]):
-            try:
-                from open_webui.retrieval.models.colbert import ColBERT
+        if engine != "external":
+            raise ValueError("RAG_RERANKING_ENGINE must be external")
 
-                rf = ColBERT(
-                    get_model_path(reranking_model, auto_update),
-                    env="docker" if DOCKER else None,
-                )
+        try:
+            from open_webui.retrieval.models.external import ExternalReranker
 
-            except Exception as e:
-                log.error(f"ColBERT: {e}")
-                raise Exception(ERROR_MESSAGES.DEFAULT(e))
-        else:
-            if engine == "external":
-                try:
-                    from open_webui.retrieval.models.external import ExternalReranker
-
-                    rf = ExternalReranker(
-                        url=external_reranker_url,
-                        api_key=external_reranker_api_key,
-                        model=reranking_model,
-                        timeout=timeout_value,
-                    )
-                except Exception as e:
-                    log.error(f"ExternalReranking: {e}")
-                    raise Exception(ERROR_MESSAGES.DEFAULT(e))
-            else:
-                import sentence_transformers
-
-                try:
-                    rf = sentence_transformers.CrossEncoder(
-                        get_model_path(reranking_model, auto_update),
-                        device=DEVICE_TYPE,
-                        trust_remote_code=RAG_RERANKING_MODEL_TRUST_REMOTE_CODE,
-                        backend=SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND,
-                        model_kwargs=SENTENCE_TRANSFORMERS_CROSS_ENCODER_MODEL_KWARGS,
-                    )
-                except Exception as e:
-                    log.error(f"CrossEncoder: {e}")
-                    raise Exception(ERROR_MESSAGES.DEFAULT("CrossEncoder error"))
-
-                # Safely adjust pad_token_id if missing as some models do not have this in config
-                try:
-                    model_cfg = getattr(rf, "model", None)
-                    if model_cfg and hasattr(model_cfg, "config"):
-                        cfg = model_cfg.config
-                        if getattr(cfg, "pad_token_id", None) is None:
-                            # Fallback to eos_token_id when available
-                            eos = getattr(cfg, "eos_token_id", None)
-                            if eos is not None:
-                                cfg.pad_token_id = eos
-                                log.debug(
-                                    f"Missing pad_token_id detected; set to eos_token_id={eos}"
-                                )
-                            else:
-                                log.warning(
-                                    "Neither pad_token_id nor eos_token_id present in model config"
-                                )
-                except Exception as e2:
-                    log.warning(f"Failed to adjust pad_token_id on CrossEncoder: {e2}")
+            rf = ExternalReranker(
+                url=external_reranker_url,
+                api_key=external_reranker_api_key,
+                model=reranking_model,
+                timeout=timeout_value,
+            )
+        except Exception as e:
+            log.error(f"ExternalReranking: {e}")
+            raise Exception(ERROR_MESSAGES.DEFAULT(e))
 
     return rf
 
@@ -886,26 +834,18 @@ async def update_rag_config(
     )
 
     # Reranking settings
-    if (
-        not request.app.state.config.ENABLE_RAG_RERANKING
-        or request.app.state.config.RAG_RERANKING_ENGINE == ""
-    ):
-        # Unloading the internal reranker and clear VRAM memory
-        request.app.state.rf = None
-        request.app.state.RERANKING_FUNCTION = None
-        import gc
-
-        gc.collect()
-        if DEVICE_TYPE == "cuda":
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-    request.app.state.config.RAG_RERANKING_ENGINE = (
+    reranking_engine = (
         form_data.RAG_RERANKING_ENGINE
         if form_data.RAG_RERANKING_ENGINE is not None
         else request.app.state.config.RAG_RERANKING_ENGINE
     )
+    if reranking_engine != "external":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RAG_RERANKING_ENGINE must be external",
+        )
+
+    request.app.state.config.RAG_RERANKING_ENGINE = reranking_engine
 
     request.app.state.config.RAG_EXTERNAL_RERANKER_URL = (
         form_data.RAG_EXTERNAL_RERANKER_URL
@@ -924,6 +864,19 @@ async def update_rag_config(
         if form_data.RAG_EXTERNAL_RERANKER_TIMEOUT is not None
         else request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT
     )
+
+    if not request.app.state.config.ENABLE_RAG_RERANKING:
+        # Unload current reranker and clear VRAM cache.
+        request.app.state.rf = None
+        request.app.state.RERANKING_FUNCTION = None
+        import gc
+
+        gc.collect()
+        if DEVICE_TYPE == "cuda":
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     log.info(
         f"Updating reranking model: {request.app.state.config.RAG_RERANKING_MODEL} to {form_data.RAG_RERANKING_MODEL}"

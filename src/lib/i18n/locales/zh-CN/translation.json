@@ -398,7 +398,6 @@
 	"Deepgram": "Deepgram",
 	"Default": "默认",
 	"Default (Open AI)": "默认 (OpenAI)",
-	"Default (SentenceTransformers)": "默认 (SentenceTransformers)",
 	"Default action buttons will be used.": "已启用默认的快捷操作按钮。",
 	"Default description enabled": "默认描述已启用",
 	"Default Features": "默认功能",

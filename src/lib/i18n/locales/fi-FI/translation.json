@@ -398,7 +398,6 @@
 	"Deepgram": "Deepgram",
 	"Default": "Oletus",
 	"Default (Open AI)": "Oletus (Open AI)",
-	"Default (SentenceTransformers)": "Oletus (SentenceTransformers)",
 	"Default action buttons will be used.": "Painikkeen oletustoiminto",
 	"Default description enabled": "Oletuskuvaus käytössä",
 	"Default Features": "Oletus ominaisuudet",

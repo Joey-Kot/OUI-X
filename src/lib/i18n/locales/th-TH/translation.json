@@ -398,7 +398,6 @@
 	"Deepgram": "Deepgram",
 	"Default": "ค่าเริ่มต้น",
 	"Default (Open AI)": "ค่าเริ่มต้น (OpenAI)",
-	"Default (SentenceTransformers)": "ค่าเริ่มต้น (SentenceTransformers)",
 	"Default action buttons will be used.": "จะใช้ปุ่มการทำงานเริ่มต้น",
 	"Default description enabled": "เปิดใช้งานคำอธิบายเริ่มต้น",
 	"Default Features": "ฟีเจอร์เริ่มต้น",

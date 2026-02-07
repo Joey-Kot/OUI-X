@@ -398,7 +398,6 @@
 	"Deepgram": "",
 	"Default": "Implicit",
 	"Default (Open AI)": "Implicit (Open AI)",
-	"Default (SentenceTransformers)": "Implicit (SentenceTransformers)",
 	"Default action buttons will be used.": "",
 	"Default description enabled": "",
 	"Default Features": "",

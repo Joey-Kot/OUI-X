@@ -1,5 +1,6 @@
 import logging
 import os
+import math
 from typing import Awaitable, Optional, Union
 
 import requests
@@ -1449,6 +1450,38 @@ class RerankCompressor(BaseDocumentCompressor):
         extra = "forbid"
         arbitrary_types_allowed = True
 
+    @staticmethod
+    def _as_vector_list(value: Any) -> list[float]:
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+        if isinstance(value, tuple):
+            value = list(value)
+        return [float(item) for item in value]
+
+    @staticmethod
+    def _cosine_similarity_scores(
+        query_embedding: Any, document_embeddings: Any
+    ) -> list[float]:
+        query_vector = RerankCompressor._as_vector_list(query_embedding)
+        query_norm = math.sqrt(sum(component * component for component in query_vector))
+
+        if query_norm == 0.0:
+            return [0.0 for _ in document_embeddings]
+
+        scores: list[float] = []
+        for document_embedding in document_embeddings:
+            doc_vector = RerankCompressor._as_vector_list(document_embedding)
+            doc_norm = math.sqrt(sum(component * component for component in doc_vector))
+
+            if doc_norm == 0.0:
+                scores.append(0.0)
+                continue
+
+            dot = sum(a * b for a, b in zip(query_vector, doc_vector))
+            scores.append(dot / (query_norm * doc_norm))
+
+        return scores
+
     def compress_documents(
         self,
         documents: Sequence[Document],
@@ -1480,15 +1513,13 @@ class RerankCompressor(BaseDocumentCompressor):
         if reranking:
             scores = await asyncio.to_thread(self.reranking_function, query, documents)
         else:
-            from sentence_transformers import util
-
             query_embedding = await self.embedding_function(
                 query, RAG_EMBEDDING_QUERY_PREFIX
             )
             document_embedding = await self.embedding_function(
                 [doc.page_content for doc in documents], RAG_EMBEDDING_CONTENT_PREFIX
             )
-            scores = util.cos_sim(query_embedding, document_embedding)[0]
+            scores = self._cosine_similarity_scores(query_embedding, document_embedding)
 
         if scores is not None:
             docs_with_scores = list(
