@@ -1103,7 +1103,7 @@ async def generate_embeddings(
 def get_reranking_function(reranking_engine, reranking_model, reranking_function):
     if reranking_function is None:
         return None
-    if reranking_engine == "external":
+    if reranking_engine in {"external", "voyage"}:
         return lambda query, documents, user=None: reranking_function.predict(
             [(query, doc.page_content) for doc in documents], user=user
         )

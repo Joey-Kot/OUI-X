@@ -107,6 +107,9 @@ from open_webui.constants import ERROR_MESSAGES
 
 log = logging.getLogger(__name__)
 
+
+SUPPORTED_RERANKING_ENGINES = {"external", "voyage"}
+
 ##########################################
 #
 # Utility functions
@@ -150,27 +153,49 @@ def get_rf(
     external_reranker_url: str = "",
     external_reranker_api_key: str = "",
     external_reranker_timeout: str = "",
+    voyage_reranker_url: str = "",
+    voyage_reranker_api_key: str = "",
+    voyage_reranker_timeout: str = "",
 ):
     rf = None
-    # Convert timeout string to int or None (system default)
-    timeout_value = (
-        int(external_reranker_timeout) if external_reranker_timeout else None
-    )
+
     if reranking_model:
-        if engine != "external":
-            raise ValueError("RAG_RERANKING_ENGINE must be external")
+        if engine not in SUPPORTED_RERANKING_ENGINES:
+            raise ValueError(
+                "RAG_RERANKING_ENGINE must be one of: external, voyage"
+            )
 
         try:
-            from open_webui.retrieval.models.external import ExternalReranker
+            if engine == "external":
+                # Convert timeout string to int or None (system default)
+                timeout_value = (
+                    int(external_reranker_timeout)
+                    if external_reranker_timeout
+                    else None
+                )
+                from open_webui.retrieval.models.external import ExternalReranker
 
-            rf = ExternalReranker(
-                url=external_reranker_url,
-                api_key=external_reranker_api_key,
-                model=reranking_model,
-                timeout=timeout_value,
-            )
+                rf = ExternalReranker(
+                    url=external_reranker_url,
+                    api_key=external_reranker_api_key,
+                    model=reranking_model,
+                    timeout=timeout_value,
+                )
+            elif engine == "voyage":
+                # Convert timeout string to int or None (system default)
+                timeout_value = (
+                    int(voyage_reranker_timeout) if voyage_reranker_timeout else None
+                )
+                from open_webui.retrieval.models.voyage import VoyageReranker
+
+                rf = VoyageReranker(
+                    url=voyage_reranker_url,
+                    api_key=voyage_reranker_api_key,
+                    model=reranking_model,
+                    timeout=timeout_value,
+                )
         except Exception as e:
-            log.error(f"ExternalReranking: {e}")
+            log.error(f"Reranking ({engine}): {e}")
             raise Exception(ERROR_MESSAGES.DEFAULT(e))
 
     return rf
@@ -414,6 +439,9 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         "RAG_EXTERNAL_RERANKER_URL": request.app.state.config.RAG_EXTERNAL_RERANKER_URL,
         "RAG_EXTERNAL_RERANKER_API_KEY": request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
         "RAG_EXTERNAL_RERANKER_TIMEOUT": request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
+        "RAG_VOYAGE_RERANKER_URL": request.app.state.config.RAG_VOYAGE_RERANKER_URL,
+        "RAG_VOYAGE_RERANKER_API_KEY": request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY,
+        "RAG_VOYAGE_RERANKER_TIMEOUT": request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT,
         # Chunking settings
         "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
         "VOYAGE_TOKENIZER_MODEL": request.app.state.config.VOYAGE_TOKENIZER_MODEL,
@@ -602,6 +630,9 @@ class ConfigForm(BaseModel):
     RAG_EXTERNAL_RERANKER_URL: Optional[str] = None
     RAG_EXTERNAL_RERANKER_API_KEY: Optional[str] = None
     RAG_EXTERNAL_RERANKER_TIMEOUT: Optional[str] = None
+    RAG_VOYAGE_RERANKER_URL: Optional[str] = None
+    RAG_VOYAGE_RERANKER_API_KEY: Optional[str] = None
+    RAG_VOYAGE_RERANKER_TIMEOUT: Optional[str] = None
 
     # Chunking settings
     TEXT_SPLITTER: Optional[str] = None
@@ -839,10 +870,10 @@ async def update_rag_config(
         if form_data.RAG_RERANKING_ENGINE is not None
         else request.app.state.config.RAG_RERANKING_ENGINE
     )
-    if reranking_engine != "external":
+    if reranking_engine not in SUPPORTED_RERANKING_ENGINES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="RAG_RERANKING_ENGINE must be external",
+            detail="RAG_RERANKING_ENGINE must be one of: external, voyage",
         )
 
     request.app.state.config.RAG_RERANKING_ENGINE = reranking_engine
@@ -863,6 +894,24 @@ async def update_rag_config(
         form_data.RAG_EXTERNAL_RERANKER_TIMEOUT
         if form_data.RAG_EXTERNAL_RERANKER_TIMEOUT is not None
         else request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT
+    )
+
+    request.app.state.config.RAG_VOYAGE_RERANKER_URL = (
+        form_data.RAG_VOYAGE_RERANKER_URL
+        if form_data.RAG_VOYAGE_RERANKER_URL is not None
+        else request.app.state.config.RAG_VOYAGE_RERANKER_URL
+    )
+
+    request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY = (
+        form_data.RAG_VOYAGE_RERANKER_API_KEY
+        if form_data.RAG_VOYAGE_RERANKER_API_KEY is not None
+        else request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY
+    )
+
+    request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT = (
+        form_data.RAG_VOYAGE_RERANKER_TIMEOUT
+        if form_data.RAG_VOYAGE_RERANKER_TIMEOUT is not None
+        else request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT
     )
 
     if not request.app.state.config.ENABLE_RAG_RERANKING:
@@ -899,6 +948,9 @@ async def update_rag_config(
                     request.app.state.config.RAG_EXTERNAL_RERANKER_URL,
                     request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
                     request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
+                    request.app.state.config.RAG_VOYAGE_RERANKER_URL,
+                    request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY,
+                    request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT,
                 )
 
                 request.app.state.RERANKING_FUNCTION = get_reranking_function(
@@ -1143,6 +1195,9 @@ async def update_rag_config(
         "RAG_EXTERNAL_RERANKER_URL": request.app.state.config.RAG_EXTERNAL_RERANKER_URL,
         "RAG_EXTERNAL_RERANKER_API_KEY": request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
         "RAG_EXTERNAL_RERANKER_TIMEOUT": request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
+        "RAG_VOYAGE_RERANKER_URL": request.app.state.config.RAG_VOYAGE_RERANKER_URL,
+        "RAG_VOYAGE_RERANKER_API_KEY": request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY,
+        "RAG_VOYAGE_RERANKER_TIMEOUT": request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT,
         # Chunking settings
         "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
         "VOYAGE_TOKENIZER_MODEL": request.app.state.config.VOYAGE_TOKENIZER_MODEL,

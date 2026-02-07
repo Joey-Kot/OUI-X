@@ -1028,12 +1028,13 @@
 												bind:value={RAGConfig.RAG_RERANKING_ENGINE}
 												placeholder={$i18n.t('Select a reranking model engine')}
 												on:change={(e) => {
-													if (e.target.value === 'external') {
+													if (['external', 'voyage'].includes(e.target.value)) {
 														RAGConfig.RAG_RERANKING_MODEL = '';
 													}
 												}}
 											>
 												<option value="external">{$i18n.t('External')}</option>
+												<option value="voyage">Voyage</option>
 											</select>
 										</div>
 									</div>
@@ -1050,6 +1051,21 @@
 											<SensitiveInput
 												placeholder={$i18n.t('API Key')}
 												bind:value={RAGConfig.RAG_EXTERNAL_RERANKER_API_KEY}
+												required={false}
+											/>
+										</div>
+									{:else if RAGConfig.RAG_RERANKING_ENGINE === "voyage"}
+										<div class="my-0.5 flex gap-2 pr-2">
+											<input
+												class="flex-1 w-full text-sm bg-transparent outline-hidden"
+												placeholder={$i18n.t("API Base URL")}
+												bind:value={RAGConfig.RAG_VOYAGE_RERANKER_URL}
+												required
+											/>
+
+											<SensitiveInput
+												placeholder={$i18n.t("API Key")}
+												bind:value={RAGConfig.RAG_VOYAGE_RERANKER_API_KEY}
 												required={false}
 											/>
 										</div>

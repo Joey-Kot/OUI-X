@@ -2742,6 +2742,24 @@ RAG_EXTERNAL_RERANKER_TIMEOUT = PersistentConfig(
     os.environ.get("RAG_EXTERNAL_RERANKER_TIMEOUT", ""),
 )
 
+RAG_VOYAGE_RERANKER_URL = PersistentConfig(
+    "RAG_VOYAGE_RERANKER_URL",
+    "rag.voyage_reranker_url",
+    os.environ.get("RAG_VOYAGE_RERANKER_URL", ""),
+)
+
+RAG_VOYAGE_RERANKER_API_KEY = PersistentConfig(
+    "RAG_VOYAGE_RERANKER_API_KEY",
+    "rag.voyage_reranker_api_key",
+    os.environ.get("RAG_VOYAGE_RERANKER_API_KEY", ""),
+)
+
+RAG_VOYAGE_RERANKER_TIMEOUT = PersistentConfig(
+    "RAG_VOYAGE_RERANKER_TIMEOUT",
+    "rag.voyage_reranker_timeout",
+    os.environ.get("RAG_VOYAGE_RERANKER_TIMEOUT", ""),
+)
+
 
 RAG_TEXT_SPLITTER = PersistentConfig(
     "RAG_TEXT_SPLITTER",
