@@ -1022,8 +1022,10 @@ async def chat_completion_files_handler(
                 ),
                 k_reranker=request.app.state.config.TOP_K_RERANKER,
                 r=request.app.state.config.RELEVANCE_THRESHOLD,
-                hybrid_bm25_weight=request.app.state.config.HYBRID_BM25_WEIGHT,
-                hybrid_search=request.app.state.config.ENABLE_RAG_HYBRID_SEARCH,
+                bm25_weight=request.app.state.config.BM25_WEIGHT,
+                enable_bm25_search=request.app.state.config.ENABLE_RAG_BM25_SEARCH,
+                enable_reranking=request.app.state.config.ENABLE_RAG_RERANKING,
+                enable_bm25_enriched_texts=request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS,
                 full_context=all_full_context
                 or request.app.state.config.RAG_FULL_CONTEXT,
                 user=user,
@@ -1096,23 +1098,19 @@ def apply_params_to_form_data(form_data, model):
         # If custom_params are provided, merge them into params
         params = deep_update(params, custom_params)
 
-    if model.get("owned_by") == "ollama":
-        # Ollama specific parameters
-        form_data["options"] = params
-    else:
-        if isinstance(params, dict):
-            for key, value in params.items():
-                if value is not None:
-                    form_data[key] = value
+    if isinstance(params, dict):
+        for key, value in params.items():
+            if value is not None:
+                form_data[key] = value
 
-        if "logit_bias" in params and params["logit_bias"] is not None:
-            try:
-                logit_bias = convert_logit_bias_input_to_json(params["logit_bias"])
+    if "logit_bias" in params and params["logit_bias"] is not None:
+        try:
+            logit_bias = convert_logit_bias_input_to_json(params["logit_bias"])
 
-                if logit_bias:
-                    form_data["logit_bias"] = json.loads(logit_bias)
-            except Exception as e:
-                log.exception(f"Error parsing logit_bias: {e}")
+            if logit_bias:
+                form_data["logit_bias"] = json.loads(logit_bias)
+        except Exception as e:
+            log.exception(f"Error parsing logit_bias: {e}")
 
     return form_data
 
@@ -1235,11 +1233,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         *form_data.get("files", []),
                     ]
 
+    features = form_data.get("features", {}) or {}
+    rag_disabled = bool(features.get("disable_rag", False))
+
     # Model "Knowledge" handling
     user_message = get_last_user_message(form_data["messages"])
     model_knowledge = model.get("info", {}).get("meta", {}).get("knowledge", False)
 
-    if model_knowledge:
+    if model_knowledge and not rag_disabled:
         await event_emitter(
             {
                 "type": "status",
@@ -1324,7 +1325,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 request, form_data, extra_params, user
             )
 
-        if "web_search" in features and features["web_search"]:
+        if (
+            "web_search" in features
+            and features["web_search"]
+            and not rag_disabled
+        ):
             form_data = await chat_web_search_handler(
                 request, form_data, extra_params, user
             )
@@ -1561,13 +1566,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             except Exception as e:
                 log.exception(e)
 
-    try:
-        form_data, flags = await chat_completion_files_handler(
-            request, form_data, extra_params, user
-        )
-        sources.extend(flags.get("sources", []))
-    except Exception as e:
-        log.exception(e)
+    if not rag_disabled:
+        try:
+            form_data, flags = await chat_completion_files_handler(
+                request, form_data, extra_params, user
+            )
+            sources.extend(flags.get("sources", []))
+        except Exception as e:
+            log.exception(e)
 
     # If context is not empty, insert it into the messages
     if len(sources) > 0:

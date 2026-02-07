@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Any, Dict, List
 import logging
 import re
@@ -132,6 +132,8 @@ def _build_refer_context_by_turns(
     """
     if not messages:
         return ""
+    if turns <= 0:
+        return ""
 
     # Keep only user/assistant messages with non-empty text
     filtered: List[Dict[str, Any]] = []
@@ -225,6 +227,7 @@ async def get_task_config(request: Request, user=Depends(get_verified_user)):
         "ENABLE_TITLE_GENERATION": request.app.state.config.ENABLE_TITLE_GENERATION,
         "ENABLE_SEARCH_QUERY_GENERATION": request.app.state.config.ENABLE_SEARCH_QUERY_GENERATION,
         "ENABLE_RETRIEVAL_QUERY_GENERATION": request.app.state.config.ENABLE_RETRIEVAL_QUERY_GENERATION,
+        "RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS": request.app.state.config.RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS,
         "QUERY_GENERATION_PROMPT_TEMPLATE": request.app.state.config.QUERY_GENERATION_PROMPT_TEMPLATE,
         "TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE": request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
         "VOICE_MODE_PROMPT_TEMPLATE": request.app.state.config.VOICE_MODE_PROMPT_TEMPLATE,
@@ -245,6 +248,7 @@ class TaskConfigForm(BaseModel):
     ENABLE_TAGS_GENERATION: bool
     ENABLE_SEARCH_QUERY_GENERATION: bool
     ENABLE_RETRIEVAL_QUERY_GENERATION: bool
+    RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS: int = Field(3, ge=0, le=20)
     QUERY_GENERATION_PROMPT_TEMPLATE: str
     TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE: str
     VOICE_MODE_PROMPT_TEMPLATE: str
@@ -290,6 +294,9 @@ async def update_task_config(
     request.app.state.config.ENABLE_RETRIEVAL_QUERY_GENERATION = (
         form_data.ENABLE_RETRIEVAL_QUERY_GENERATION
     )
+    request.app.state.config.RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS = (
+        form_data.RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS
+    )
 
     request.app.state.config.QUERY_GENERATION_PROMPT_TEMPLATE = (
         form_data.QUERY_GENERATION_PROMPT_TEMPLATE
@@ -316,6 +323,7 @@ async def update_task_config(
         "FOLLOW_UP_GENERATION_PROMPT_TEMPLATE": request.app.state.config.FOLLOW_UP_GENERATION_PROMPT_TEMPLATE,
         "ENABLE_SEARCH_QUERY_GENERATION": request.app.state.config.ENABLE_SEARCH_QUERY_GENERATION,
         "ENABLE_RETRIEVAL_QUERY_GENERATION": request.app.state.config.ENABLE_RETRIEVAL_QUERY_GENERATION,
+        "RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS": request.app.state.config.RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS,
         "QUERY_GENERATION_PROMPT_TEMPLATE": request.app.state.config.QUERY_GENERATION_PROMPT_TEMPLATE,
         "TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE": request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
         "VOICE_MODE_PROMPT_TEMPLATE": request.app.state.config.VOICE_MODE_PROMPT_TEMPLATE,
@@ -373,13 +381,7 @@ async def generate_title(
         "model": task_model_id,
         "messages": [{"role": "user", "content": content}],
         "stream": False,
-        **(
-            {"max_tokens": max_tokens}
-            if models[task_model_id].get("owned_by") == "ollama"
-            else {
-                "max_completion_tokens": max_tokens,
-            }
-        ),
+        "max_completion_tokens": max_tokens,
         "metadata": {
             **(request.state.metadata if hasattr(request.state, "metadata") else {}),
             "task": str(TASKS.TITLE_GENERATION),
@@ -665,8 +667,15 @@ async def generate_queries(
     messages_in = form_data.get("messages", []) or []
     last_user_query = _extract_last_user_query(messages_in)
 
-    # NEW: turn-aligned refer context (last 3 turns), excluding latest user query
-    refer_context = _build_refer_context_by_turns(messages_in, turns=3)
+    # NEW: turn-aligned refer context (last N turns), excluding latest user query
+    turns = 3
+    if type in ("retrieval", "web_search"):
+        turns = getattr(
+            request.app.state.config,
+            "RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS",
+            3,
+        )
+    refer_context = _build_refer_context_by_turns(messages_in, turns=turns)
 
     # If we can't find a user query, fallback to last non-system message
     if not last_user_query:
@@ -700,13 +709,7 @@ async def generate_queries(
         "stream": False,
         # Keep original behavior (unchanged)
         "stop": ["\n"],
-        **(
-            {"max_tokens": max_tokens}
-            if models[task_model_id].get("owned_by") == "ollama"
-            else {
-                "max_completion_tokens": max_tokens,
-            }
-        ),
+        "max_completion_tokens": max_tokens,
         "metadata": {
             **(request.state.metadata if hasattr(request.state, "metadata") else {}),
             "task": str(TASKS.QUERY_GENERATION),
@@ -849,13 +852,7 @@ async def generate_emoji(
         "model": task_model_id,
         "messages": [{"role": "user", "content": content}],
         "stream": False,
-        **(
-            {"max_tokens": 4}
-            if models[task_model_id].get("owned_by") == "ollama"
-            else {
-                "max_completion_tokens": 4,
-            }
-        ),
+        "max_completion_tokens": 4,
         "metadata": {
             **(request.state.metadata if hasattr(request.state, "metadata") else {}),
             "task": str(TASKS.EMOJI_GENERATION),
@@ -930,4 +927,3 @@ async def generate_moa_response(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"detail": str(e)},
         )
-

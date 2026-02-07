@@ -16,7 +16,7 @@ describe('Settings', () => {
 		cy.visit('/');
 	});
 
-	context('Ollama', () => {
+	context('Chat', () => {
 		it('user can select a model', () => {
 			// Click on the model selector
 			cy.get('button[aria-label="Select a model"]').click();

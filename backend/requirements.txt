@@ -56,7 +56,6 @@ weaviate-client==4.19.0
 opensearch-py==3.1.0
 
 transformers==4.57.3
-sentence-transformers==5.2.0
 accelerate
 pyarrow==20.0.0 # fix: pin pyarrow version to 20 for rpi compatibility #15897
 einops==0.8.1 
@@ -88,7 +87,6 @@ rapidocr-onnxruntime==1.4.4
 rank-bm25==0.2.2
 
 onnxruntime==1.23.2
-faster-whisper==1.2.1
 
 black==25.12.0
 youtube-transcript-api==1.2.3

@@ -970,64 +970,6 @@ ENABLE_DIRECT_CONNECTIONS = PersistentConfig(
 )
 
 ####################################
-# OLLAMA_BASE_URL
-####################################
-
-ENABLE_OLLAMA_API = PersistentConfig(
-    "ENABLE_OLLAMA_API",
-    "ollama.enable",
-    os.environ.get("ENABLE_OLLAMA_API", "True").lower() == "true",
-)
-
-OLLAMA_API_BASE_URL = os.environ.get(
-    "OLLAMA_API_BASE_URL", "http://localhost:11434/api"
-)
-
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "")
-if OLLAMA_BASE_URL:
-    # Remove trailing slash
-    OLLAMA_BASE_URL = (
-        OLLAMA_BASE_URL[:-1] if OLLAMA_BASE_URL.endswith("/") else OLLAMA_BASE_URL
-    )
-
-
-K8S_FLAG = os.environ.get("K8S_FLAG", "")
-USE_OLLAMA_DOCKER = os.environ.get("USE_OLLAMA_DOCKER", "false")
-
-if OLLAMA_BASE_URL == "" and OLLAMA_API_BASE_URL != "":
-    OLLAMA_BASE_URL = (
-        OLLAMA_API_BASE_URL[:-4]
-        if OLLAMA_API_BASE_URL.endswith("/api")
-        else OLLAMA_API_BASE_URL
-    )
-
-if ENV == "prod":
-    if OLLAMA_BASE_URL == "/ollama" and not K8S_FLAG:
-        if USE_OLLAMA_DOCKER.lower() == "true":
-            # if you use all-in-one docker container (Open WebUI + Ollama)
-            # with the docker build arg USE_OLLAMA=true (--build-arg="USE_OLLAMA=true") this only works with http://localhost:11434
-            OLLAMA_BASE_URL = "http://localhost:11434"
-        else:
-            OLLAMA_BASE_URL = "http://host.docker.internal:11434"
-    elif K8S_FLAG:
-        OLLAMA_BASE_URL = "http://ollama-service.open-webui.svc.cluster.local:11434"
-
-
-OLLAMA_BASE_URLS = os.environ.get("OLLAMA_BASE_URLS", "")
-OLLAMA_BASE_URLS = OLLAMA_BASE_URLS if OLLAMA_BASE_URLS != "" else OLLAMA_BASE_URL
-
-OLLAMA_BASE_URLS = [url.strip() for url in OLLAMA_BASE_URLS.split(";")]
-OLLAMA_BASE_URLS = PersistentConfig(
-    "OLLAMA_BASE_URLS", "ollama.base_urls", OLLAMA_BASE_URLS
-)
-
-OLLAMA_API_CONFIGS = PersistentConfig(
-    "OLLAMA_API_CONFIGS",
-    "ollama.api_configs",
-    {},
-)
-
-####################################
 # OPENAI_API
 ####################################
 
@@ -1848,6 +1790,12 @@ ENABLE_RETRIEVAL_QUERY_GENERATION = PersistentConfig(
     os.environ.get("ENABLE_RETRIEVAL_QUERY_GENERATION", "True").lower() == "true",
 )
 
+RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS = PersistentConfig(
+    "RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS",
+    "task.query.retrieval.refer_context.turns",
+    int(os.environ.get("RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS", "3")),
+)
+
 
 QUERY_GENERATION_PROMPT_TEMPLATE = PersistentConfig(
     "QUERY_GENERATION_PROMPT_TEMPLATE",
@@ -2639,23 +2587,28 @@ RAG_RELEVANCE_THRESHOLD = PersistentConfig(
     "rag.relevance_threshold",
     float(os.environ.get("RAG_RELEVANCE_THRESHOLD", "0.0")),
 )
-RAG_HYBRID_BM25_WEIGHT = PersistentConfig(
-    "RAG_HYBRID_BM25_WEIGHT",
-    "rag.hybrid_bm25_weight",
-    float(os.environ.get("RAG_HYBRID_BM25_WEIGHT", "0.5")),
+RAG_BM25_WEIGHT = PersistentConfig(
+    "RAG_BM25_WEIGHT",
+    "rag.bm25_weight",
+    float(os.environ.get("RAG_BM25_WEIGHT", "0.5")),
 )
 
-ENABLE_RAG_HYBRID_SEARCH = PersistentConfig(
-    "ENABLE_RAG_HYBRID_SEARCH",
-    "rag.enable_hybrid_search",
-    os.environ.get("ENABLE_RAG_HYBRID_SEARCH", "").lower() == "true",
+ENABLE_RAG_BM25_SEARCH = PersistentConfig(
+    "ENABLE_RAG_BM25_SEARCH",
+    "rag.enable_bm25_search",
+    os.environ.get("ENABLE_RAG_BM25_SEARCH", "").lower() == "true",
 )
 
-ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS = PersistentConfig(
-    "ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS",
-    "rag.enable_hybrid_search_enriched_texts",
-    os.environ.get("ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS", "False").lower()
-    == "true",
+ENABLE_RAG_BM25_ENRICHED_TEXTS = PersistentConfig(
+    "ENABLE_RAG_BM25_ENRICHED_TEXTS",
+    "rag.enable_bm25_enriched_texts",
+    os.environ.get("ENABLE_RAG_BM25_ENRICHED_TEXTS", "False").lower() == "true",
+)
+
+ENABLE_RAG_RERANKING = PersistentConfig(
+    "ENABLE_RAG_RERANKING",
+    "rag.enable_reranking",
+    os.environ.get("ENABLE_RAG_RERANKING", "").lower() == "true",
 )
 
 RAG_FULL_CONTEXT = PersistentConfig(
@@ -2718,7 +2671,7 @@ RAG_ALLOWED_FILE_EXTENSIONS = PersistentConfig(
 RAG_EMBEDDING_ENGINE = PersistentConfig(
     "RAG_EMBEDDING_ENGINE",
     "rag.embedding_engine",
-    os.environ.get("RAG_EMBEDDING_ENGINE", ""),
+    os.environ.get("RAG_EMBEDDING_ENGINE", "openai"),
 )
 
 PDF_EXTRACT_IMAGES = PersistentConfig(
@@ -2730,18 +2683,9 @@ PDF_EXTRACT_IMAGES = PersistentConfig(
 RAG_EMBEDDING_MODEL = PersistentConfig(
     "RAG_EMBEDDING_MODEL",
     "rag.embedding_model",
-    os.environ.get("RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
+    os.environ.get("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
 )
 log.info(f"Embedding model set: {RAG_EMBEDDING_MODEL.value}")
-
-RAG_EMBEDDING_MODEL_AUTO_UPDATE = (
-    not OFFLINE_MODE
-    and os.environ.get("RAG_EMBEDDING_MODEL_AUTO_UPDATE", "True").lower() == "true"
-)
-
-RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE = (
-    os.environ.get("RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE", "True").lower() == "true"
-)
 
 RAG_EMBEDDING_BATCH_SIZE = PersistentConfig(
     "RAG_EMBEDDING_BATCH_SIZE",
@@ -2769,7 +2713,7 @@ RAG_EMBEDDING_PREFIX_FIELD_NAME = os.environ.get(
 RAG_RERANKING_ENGINE = PersistentConfig(
     "RAG_RERANKING_ENGINE",
     "rag.reranking_engine",
-    os.environ.get("RAG_RERANKING_ENGINE", ""),
+    os.environ.get("RAG_RERANKING_ENGINE", "external"),
 )
 
 RAG_RERANKING_MODEL = PersistentConfig(
@@ -2779,16 +2723,6 @@ RAG_RERANKING_MODEL = PersistentConfig(
 )
 if RAG_RERANKING_MODEL.value != "":
     log.info(f"Reranking model set: {RAG_RERANKING_MODEL.value}")
-
-
-RAG_RERANKING_MODEL_AUTO_UPDATE = (
-    not OFFLINE_MODE
-    and os.environ.get("RAG_RERANKING_MODEL_AUTO_UPDATE", "True").lower() == "true"
-)
-
-RAG_RERANKING_MODEL_TRUST_REMOTE_CODE = (
-    os.environ.get("RAG_RERANKING_MODEL_TRUST_REMOTE_CODE", "True").lower() == "true"
-)
 
 RAG_EXTERNAL_RERANKER_URL = PersistentConfig(
     "RAG_EXTERNAL_RERANKER_URL",
@@ -2808,11 +2742,36 @@ RAG_EXTERNAL_RERANKER_TIMEOUT = PersistentConfig(
     os.environ.get("RAG_EXTERNAL_RERANKER_TIMEOUT", ""),
 )
 
+RAG_VOYAGE_RERANKER_URL = PersistentConfig(
+    "RAG_VOYAGE_RERANKER_URL",
+    "rag.voyage_reranker_url",
+    os.environ.get("RAG_VOYAGE_RERANKER_URL", ""),
+)
+
+RAG_VOYAGE_RERANKER_API_KEY = PersistentConfig(
+    "RAG_VOYAGE_RERANKER_API_KEY",
+    "rag.voyage_reranker_api_key",
+    os.environ.get("RAG_VOYAGE_RERANKER_API_KEY", ""),
+)
+
+RAG_VOYAGE_RERANKER_TIMEOUT = PersistentConfig(
+    "RAG_VOYAGE_RERANKER_TIMEOUT",
+    "rag.voyage_reranker_timeout",
+    os.environ.get("RAG_VOYAGE_RERANKER_TIMEOUT", ""),
+)
+
 
 RAG_TEXT_SPLITTER = PersistentConfig(
     "RAG_TEXT_SPLITTER",
     "rag.text_splitter",
     os.environ.get("RAG_TEXT_SPLITTER", ""),
+)
+
+
+VOYAGE_TOKENIZER_MODEL = PersistentConfig(
+    "VOYAGE_TOKENIZER_MODEL",
+    "rag.voyage_tokenizer_model",
+    os.environ.get("VOYAGE_TOKENIZER_MODEL", "voyageai/voyage-3-lite"),
 )
 
 
@@ -2891,19 +2850,6 @@ RAG_AZURE_OPENAI_API_VERSION = PersistentConfig(
     "rag.azure_openai.api_version",
     os.getenv("RAG_AZURE_OPENAI_API_VERSION", ""),
 )
-
-RAG_OLLAMA_BASE_URL = PersistentConfig(
-    "RAG_OLLAMA_BASE_URL",
-    "rag.ollama.url",
-    os.getenv("RAG_OLLAMA_BASE_URL", OLLAMA_BASE_URL),
-)
-
-RAG_OLLAMA_API_KEY = PersistentConfig(
-    "RAG_OLLAMA_API_KEY",
-    "rag.ollama.key",
-    os.getenv("RAG_OLLAMA_API_KEY", ""),
-)
-
 
 ENABLE_RAG_LOCAL_WEB_FETCH = (
     os.getenv("ENABLE_RAG_LOCAL_WEB_FETCH", "False").lower() == "true"
@@ -3030,12 +2976,6 @@ WEB_SEARCH_TRUST_ENV = PersistentConfig(
     os.getenv("WEB_SEARCH_TRUST_ENV", "False").lower() == "true",
 )
 
-
-OLLAMA_CLOUD_WEB_SEARCH_API_KEY = PersistentConfig(
-    "OLLAMA_CLOUD_WEB_SEARCH_API_KEY",
-    "rag.web.search.ollama_cloud_api_key",
-    os.getenv("OLLAMA_CLOUD_API_KEY", ""),
-)
 
 SEARXNG_QUERY_URL = PersistentConfig(
     "SEARXNG_QUERY_URL",
@@ -3621,39 +3561,6 @@ IMAGES_EDIT_COMFYUI_WORKFLOW_NODES = PersistentConfig(
 # Audio
 ####################################
 
-# Transcription
-WHISPER_MODEL = PersistentConfig(
-    "WHISPER_MODEL",
-    "audio.stt.whisper_model",
-    os.getenv("WHISPER_MODEL", "base"),
-)
-
-WHISPER_MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", f"{CACHE_DIR}/whisper/models")
-WHISPER_MODEL_AUTO_UPDATE = (
-    not OFFLINE_MODE
-    and os.environ.get("WHISPER_MODEL_AUTO_UPDATE", "").lower() == "true"
-)
-
-WHISPER_VAD_FILTER = PersistentConfig(
-    "WHISPER_VAD_FILTER",
-    "audio.stt.whisper_vad_filter",
-    os.getenv("WHISPER_VAD_FILTER", "False").lower() == "true",
-)
-
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "").lower() or None
-
-# Add Deepgram configuration
-DEEPGRAM_API_KEY = PersistentConfig(
-    "DEEPGRAM_API_KEY",
-    "audio.stt.deepgram.api_key",
-    os.getenv("DEEPGRAM_API_KEY", ""),
-)
-
-# ElevenLabs configuration
-ELEVENLABS_API_BASE_URL = os.getenv(
-    "ELEVENLABS_API_BASE_URL", "https://api.elevenlabs.io"
-)
-
 AUDIO_STT_OPENAI_API_BASE_URL = PersistentConfig(
     "AUDIO_STT_OPENAI_API_BASE_URL",
     "audio.stt.openai.api_base_url",
@@ -3669,7 +3576,7 @@ AUDIO_STT_OPENAI_API_KEY = PersistentConfig(
 AUDIO_STT_ENGINE = PersistentConfig(
     "AUDIO_STT_ENGINE",
     "audio.stt.engine",
-    os.getenv("AUDIO_STT_ENGINE", ""),
+    os.getenv("AUDIO_STT_ENGINE", "openai"),
 )
 
 AUDIO_STT_MODEL = PersistentConfig(
@@ -3718,24 +3625,6 @@ AUDIO_STT_AZURE_MAX_SPEAKERS = PersistentConfig(
     "AUDIO_STT_AZURE_MAX_SPEAKERS",
     "audio.stt.azure.max_speakers",
     os.getenv("AUDIO_STT_AZURE_MAX_SPEAKERS", ""),
-)
-
-AUDIO_STT_MISTRAL_API_KEY = PersistentConfig(
-    "AUDIO_STT_MISTRAL_API_KEY",
-    "audio.stt.mistral.api_key",
-    os.getenv("AUDIO_STT_MISTRAL_API_KEY", ""),
-)
-
-AUDIO_STT_MISTRAL_API_BASE_URL = PersistentConfig(
-    "AUDIO_STT_MISTRAL_API_BASE_URL",
-    "audio.stt.mistral.api_base_url",
-    os.getenv("AUDIO_STT_MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1"),
-)
-
-AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS = PersistentConfig(
-    "AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS",
-    "audio.stt.mistral.use_chat_completions",
-    os.getenv("AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS", "false").lower() == "true",
 )
 
 AUDIO_TTS_OPENAI_API_BASE_URL = PersistentConfig(

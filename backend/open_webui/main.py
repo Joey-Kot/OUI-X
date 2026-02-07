@@ -37,6 +37,7 @@ from fastapi import (
     applications,
     BackgroundTasks,
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.openapi.docs import get_swagger_ui_html
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -70,7 +71,6 @@ from open_webui.socket.main import (
 from open_webui.routers import (
     audio,
     images,
-    ollama,
     openai,
     retrieval,
     pipelines,
@@ -110,10 +110,6 @@ from open_webui.models.users import UserModel, Users
 from open_webui.models.chats import Chats
 
 from open_webui.config import (
-    # Ollama
-    ENABLE_OLLAMA_API,
-    OLLAMA_BASE_URLS,
-    OLLAMA_API_CONFIGS,
     # OpenAI
     ENABLE_OPENAI_API,
     OPENAI_API_BASE_URLS,
@@ -188,9 +184,6 @@ from open_webui.config import (
     AUDIO_STT_AZURE_LOCALES,
     AUDIO_STT_AZURE_BASE_URL,
     AUDIO_STT_AZURE_MAX_SPEAKERS,
-    AUDIO_STT_MISTRAL_API_KEY,
-    AUDIO_STT_MISTRAL_API_BASE_URL,
-    AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS,
     AUDIO_TTS_ENGINE,
     AUDIO_TTS_MODEL,
     AUDIO_TTS_VOICE,
@@ -209,34 +202,27 @@ from open_webui.config import (
     WEB_LOADER_ENGINE,
     WEB_LOADER_CONCURRENT_REQUESTS,
     WEB_LOADER_TIMEOUT,
-    WHISPER_MODEL,
-    WHISPER_VAD_FILTER,
-    WHISPER_LANGUAGE,
-    DEEPGRAM_API_KEY,
-    WHISPER_MODEL_AUTO_UPDATE,
-    WHISPER_MODEL_DIR,
     # Retrieval
     RAG_TEMPLATE,
     DEFAULT_RAG_TEMPLATE,
     RAG_FULL_CONTEXT,
     BYPASS_EMBEDDING_AND_RETRIEVAL,
     RAG_EMBEDDING_MODEL,
-    RAG_EMBEDDING_MODEL_AUTO_UPDATE,
-    RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE,
     RAG_RERANKING_ENGINE,
     RAG_RERANKING_MODEL,
     RAG_EXTERNAL_RERANKER_URL,
     RAG_EXTERNAL_RERANKER_API_KEY,
     RAG_EXTERNAL_RERANKER_TIMEOUT,
-    RAG_RERANKING_MODEL_AUTO_UPDATE,
-    RAG_RERANKING_MODEL_TRUST_REMOTE_CODE,
+    RAG_VOYAGE_RERANKER_URL,
+    RAG_VOYAGE_RERANKER_API_KEY,
+    RAG_VOYAGE_RERANKER_TIMEOUT,
     RAG_EMBEDDING_ENGINE,
     RAG_EMBEDDING_BATCH_SIZE,
     ENABLE_ASYNC_EMBEDDING,
     RAG_TOP_K,
     RAG_TOP_K_RERANKER,
     RAG_RELEVANCE_THRESHOLD,
-    RAG_HYBRID_BM25_WEIGHT,
+    RAG_BM25_WEIGHT,
     RAG_ALLOWED_FILE_EXTENSIONS,
     RAG_FILE_MAX_COUNT,
     RAG_FILE_MAX_SIZE,
@@ -247,8 +233,6 @@ from open_webui.config import (
     RAG_AZURE_OPENAI_BASE_URL,
     RAG_AZURE_OPENAI_API_KEY,
     RAG_AZURE_OPENAI_API_VERSION,
-    RAG_OLLAMA_BASE_URL,
-    RAG_OLLAMA_API_KEY,
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     CONTENT_EXTRACTION_ENGINE,
@@ -280,6 +264,7 @@ from open_webui.config import (
     MISTRAL_OCR_API_BASE_URL,
     MISTRAL_OCR_API_KEY,
     RAG_TEXT_SPLITTER,
+    VOYAGE_TOKENIZER_MODEL,
     TIKTOKEN_ENCODING_NAME,
     PDF_EXTRACT_IMAGES,
     YOUTUBE_LOADER_LANGUAGE,
@@ -293,7 +278,6 @@ from open_webui.config import (
     WEB_SEARCH_CONCURRENT_REQUESTS,
     WEB_SEARCH_TRUST_ENV,
     WEB_SEARCH_DOMAIN_FILTER_LIST,
-    OLLAMA_CLOUD_WEB_SEARCH_API_KEY,
     JINA_API_KEY,
     SEARCHAPI_API_KEY,
     SEARCHAPI_ENGINE,
@@ -334,8 +318,9 @@ from open_webui.config import (
     ONEDRIVE_SHAREPOINT_TENANT_ID,
     ENABLE_ONEDRIVE_PERSONAL,
     ENABLE_ONEDRIVE_BUSINESS,
-    ENABLE_RAG_HYBRID_SEARCH,
-    ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS,
+    ENABLE_RAG_BM25_SEARCH,
+    ENABLE_RAG_BM25_ENRICHED_TEXTS,
+    ENABLE_RAG_RERANKING,
     ENABLE_RAG_LOCAL_WEB_FETCH,
     ENABLE_WEB_LOADER_SSL_VERIFICATION,
     ENABLE_GOOGLE_DRIVE_INTEGRATION,
@@ -425,6 +410,7 @@ from open_webui.config import (
     ENABLE_FOLLOW_UP_GENERATION,
     ENABLE_SEARCH_QUERY_GENERATION,
     ENABLE_RETRIEVAL_QUERY_GENERATION,
+    RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS,
     ENABLE_AUTOCOMPLETE_GENERATION,
     TITLE_GENERATION_PROMPT_TEMPLATE,
     FOLLOW_UP_GENERATION_PROMPT_TEMPLATE,
@@ -624,6 +610,16 @@ async def lifespan(app: FastAPI):
             None,
         )
 
+    if app.state.config.TEXT_SPLITTER == "token_voyage":
+        from open_webui.routers.retrieval import warm_voyage_tokenizer
+
+        asyncio.create_task(
+            run_in_threadpool(
+                warm_voyage_tokenizer,
+                app.state.config.VOYAGE_TOKENIZER_MODEL,
+            )
+        )
+
     yield
 
     if hasattr(app.state, "redis_task_command_listener"):
@@ -670,19 +666,6 @@ if ENABLE_OTEL:
 
     setup_opentelemetry(app=app, db_engine=engine)
 
-
-########################################
-#
-# OLLAMA
-#
-########################################
-
-
-app.state.config.ENABLE_OLLAMA_API = ENABLE_OLLAMA_API
-app.state.config.OLLAMA_BASE_URLS = OLLAMA_BASE_URLS
-app.state.config.OLLAMA_API_CONFIGS = OLLAMA_API_CONFIGS
-
-app.state.OLLAMA_MODELS = {}
 
 ########################################
 #
@@ -836,7 +819,7 @@ app.state.FUNCTION_CONTENTS = {}
 app.state.config.TOP_K = RAG_TOP_K
 app.state.config.TOP_K_RERANKER = RAG_TOP_K_RERANKER
 app.state.config.RELEVANCE_THRESHOLD = RAG_RELEVANCE_THRESHOLD
-app.state.config.HYBRID_BM25_WEIGHT = RAG_HYBRID_BM25_WEIGHT
+app.state.config.BM25_WEIGHT = RAG_BM25_WEIGHT
 
 
 app.state.config.ALLOWED_FILE_EXTENSIONS = RAG_ALLOWED_FILE_EXTENSIONS
@@ -848,10 +831,9 @@ app.state.config.FILE_IMAGE_COMPRESSION_HEIGHT = FILE_IMAGE_COMPRESSION_HEIGHT
 
 app.state.config.RAG_FULL_CONTEXT = RAG_FULL_CONTEXT
 app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL = BYPASS_EMBEDDING_AND_RETRIEVAL
-app.state.config.ENABLE_RAG_HYBRID_SEARCH = ENABLE_RAG_HYBRID_SEARCH
-app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS = (
-    ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS
-)
+app.state.config.ENABLE_RAG_BM25_SEARCH = ENABLE_RAG_BM25_SEARCH
+app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS = ENABLE_RAG_BM25_ENRICHED_TEXTS
+app.state.config.ENABLE_RAG_RERANKING = ENABLE_RAG_RERANKING
 app.state.config.ENABLE_WEB_LOADER_SSL_VERIFICATION = ENABLE_WEB_LOADER_SSL_VERIFICATION
 
 app.state.config.CONTENT_EXTRACTION_ENGINE = CONTENT_EXTRACTION_ENGINE
@@ -886,6 +868,7 @@ app.state.config.MINERU_API_TIMEOUT = MINERU_API_TIMEOUT
 app.state.config.MINERU_PARAMS = MINERU_PARAMS
 
 app.state.config.TEXT_SPLITTER = RAG_TEXT_SPLITTER
+app.state.config.VOYAGE_TOKENIZER_MODEL = VOYAGE_TOKENIZER_MODEL
 app.state.config.TIKTOKEN_ENCODING_NAME = TIKTOKEN_ENCODING_NAME
 
 app.state.config.CHUNK_SIZE = CHUNK_SIZE
@@ -896,11 +879,15 @@ app.state.config.RAG_EMBEDDING_MODEL = RAG_EMBEDDING_MODEL
 app.state.config.RAG_EMBEDDING_BATCH_SIZE = RAG_EMBEDDING_BATCH_SIZE
 app.state.config.ENABLE_ASYNC_EMBEDDING = ENABLE_ASYNC_EMBEDDING
 
-app.state.config.RAG_RERANKING_ENGINE = RAG_RERANKING_ENGINE
+# Normalize legacy empty reranking engine values to external.
+app.state.config.RAG_RERANKING_ENGINE = RAG_RERANKING_ENGINE or "external"
 app.state.config.RAG_RERANKING_MODEL = RAG_RERANKING_MODEL
 app.state.config.RAG_EXTERNAL_RERANKER_URL = RAG_EXTERNAL_RERANKER_URL
 app.state.config.RAG_EXTERNAL_RERANKER_API_KEY = RAG_EXTERNAL_RERANKER_API_KEY
 app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT = RAG_EXTERNAL_RERANKER_TIMEOUT
+app.state.config.RAG_VOYAGE_RERANKER_URL = RAG_VOYAGE_RERANKER_URL
+app.state.config.RAG_VOYAGE_RERANKER_API_KEY = RAG_VOYAGE_RERANKER_API_KEY
+app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT = RAG_VOYAGE_RERANKER_TIMEOUT
 
 app.state.config.RAG_TEMPLATE = RAG_TEMPLATE
 
@@ -910,9 +897,6 @@ app.state.config.RAG_OPENAI_API_KEY = RAG_OPENAI_API_KEY
 app.state.config.RAG_AZURE_OPENAI_BASE_URL = RAG_AZURE_OPENAI_BASE_URL
 app.state.config.RAG_AZURE_OPENAI_API_KEY = RAG_AZURE_OPENAI_API_KEY
 app.state.config.RAG_AZURE_OPENAI_API_VERSION = RAG_AZURE_OPENAI_API_VERSION
-
-app.state.config.RAG_OLLAMA_BASE_URL = RAG_OLLAMA_BASE_URL
-app.state.config.RAG_OLLAMA_API_KEY = RAG_OLLAMA_API_KEY
 
 app.state.config.PDF_EXTRACT_IMAGES = PDF_EXTRACT_IMAGES
 
@@ -939,7 +923,6 @@ app.state.config.BYPASS_WEB_SEARCH_WEB_LOADER = BYPASS_WEB_SEARCH_WEB_LOADER
 app.state.config.ENABLE_GOOGLE_DRIVE_INTEGRATION = ENABLE_GOOGLE_DRIVE_INTEGRATION
 app.state.config.ENABLE_ONEDRIVE_INTEGRATION = ENABLE_ONEDRIVE_INTEGRATION
 
-app.state.config.OLLAMA_CLOUD_WEB_SEARCH_API_KEY = OLLAMA_CLOUD_WEB_SEARCH_API_KEY
 app.state.config.SEARXNG_QUERY_URL = SEARXNG_QUERY_URL
 app.state.config.SEARXNG_LANGUAGE = SEARXNG_LANGUAGE
 app.state.config.YACY_QUERY_URL = YACY_QUERY_URL
@@ -995,7 +978,7 @@ try:
         app.state.config.RAG_EMBEDDING_ENGINE, app.state.config.RAG_EMBEDDING_MODEL
     )
     if (
-        app.state.config.ENABLE_RAG_HYBRID_SEARCH
+        app.state.config.ENABLE_RAG_RERANKING
         and not app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL
     ):
         app.state.rf = get_rf(
@@ -1004,6 +987,9 @@ try:
             app.state.config.RAG_EXTERNAL_RERANKER_URL,
             app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
             app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
+            app.state.config.RAG_VOYAGE_RERANKER_URL,
+            app.state.config.RAG_VOYAGE_RERANKER_API_KEY,
+            app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT,
         )
     else:
         app.state.rf = None
@@ -1019,20 +1005,12 @@ app.state.EMBEDDING_FUNCTION = get_embedding_function(
     url=(
         app.state.config.RAG_OPENAI_API_BASE_URL
         if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-        else (
-            app.state.config.RAG_OLLAMA_BASE_URL
-            if app.state.config.RAG_EMBEDDING_ENGINE == "ollama"
-            else app.state.config.RAG_AZURE_OPENAI_BASE_URL
-        )
+        else app.state.config.RAG_AZURE_OPENAI_BASE_URL
     ),
     key=(
         app.state.config.RAG_OPENAI_API_KEY
         if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-        else (
-            app.state.config.RAG_OLLAMA_API_KEY
-            if app.state.config.RAG_EMBEDDING_ENGINE == "ollama"
-            else app.state.config.RAG_AZURE_OPENAI_API_KEY
-        )
+        else app.state.config.RAG_AZURE_OPENAI_API_KEY
     ),
     embedding_batch_size=app.state.config.RAG_EMBEDDING_BATCH_SIZE,
     azure_api_version=(
@@ -1134,27 +1112,19 @@ app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES = IMAGES_EDIT_COMFYUI_WORKFL
 ########################################
 
 app.state.config.STT_ENGINE = AUDIO_STT_ENGINE
+if app.state.config.STT_ENGINE not in {"openai", "azure", "web"}:
+    app.state.config.STT_ENGINE = "openai"
 app.state.config.STT_MODEL = AUDIO_STT_MODEL
 app.state.config.STT_SUPPORTED_CONTENT_TYPES = AUDIO_STT_SUPPORTED_CONTENT_TYPES
 
 app.state.config.STT_OPENAI_API_BASE_URL = AUDIO_STT_OPENAI_API_BASE_URL
 app.state.config.STT_OPENAI_API_KEY = AUDIO_STT_OPENAI_API_KEY
 
-app.state.config.WHISPER_MODEL = WHISPER_MODEL
-app.state.config.WHISPER_VAD_FILTER = WHISPER_VAD_FILTER
-app.state.config.DEEPGRAM_API_KEY = DEEPGRAM_API_KEY
-
 app.state.config.AUDIO_STT_AZURE_API_KEY = AUDIO_STT_AZURE_API_KEY
 app.state.config.AUDIO_STT_AZURE_REGION = AUDIO_STT_AZURE_REGION
 app.state.config.AUDIO_STT_AZURE_LOCALES = AUDIO_STT_AZURE_LOCALES
 app.state.config.AUDIO_STT_AZURE_BASE_URL = AUDIO_STT_AZURE_BASE_URL
 app.state.config.AUDIO_STT_AZURE_MAX_SPEAKERS = AUDIO_STT_AZURE_MAX_SPEAKERS
-
-app.state.config.AUDIO_STT_MISTRAL_API_KEY = AUDIO_STT_MISTRAL_API_KEY
-app.state.config.AUDIO_STT_MISTRAL_API_BASE_URL = AUDIO_STT_MISTRAL_API_BASE_URL
-app.state.config.AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS = (
-    AUDIO_STT_MISTRAL_USE_CHAT_COMPLETIONS
-)
 
 app.state.config.TTS_ENGINE = AUDIO_TTS_ENGINE
 
@@ -1174,11 +1144,6 @@ app.state.config.TTS_AZURE_SPEECH_BASE_URL = AUDIO_TTS_AZURE_SPEECH_BASE_URL
 app.state.config.TTS_AZURE_SPEECH_OUTPUT_FORMAT = AUDIO_TTS_AZURE_SPEECH_OUTPUT_FORMAT
 
 
-app.state.faster_whisper_model = None
-app.state.speech_synthesiser = None
-app.state.speech_speaker_embeddings_dataset = None
-
-
 ########################################
 #
 # TASKS
@@ -1192,6 +1157,9 @@ app.state.config.TASK_MODEL_EXTERNAL = TASK_MODEL_EXTERNAL
 
 app.state.config.ENABLE_SEARCH_QUERY_GENERATION = ENABLE_SEARCH_QUERY_GENERATION
 app.state.config.ENABLE_RETRIEVAL_QUERY_GENERATION = ENABLE_RETRIEVAL_QUERY_GENERATION
+app.state.config.RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS = (
+    RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS
+)
 app.state.config.ENABLE_AUTOCOMPLETE_GENERATION = ENABLE_AUTOCOMPLETE_GENERATION
 app.state.config.ENABLE_TAGS_GENERATION = ENABLE_TAGS_GENERATION
 app.state.config.ENABLE_TITLE_GENERATION = ENABLE_TITLE_GENERATION
@@ -1372,7 +1340,6 @@ app.add_middleware(
 app.mount("/ws", socket_app)
 
 
-app.include_router(ollama.router, prefix="/ollama", tags=["ollama"])
 app.include_router(openai.router, prefix="/openai", tags=["openai"])
 
 
@@ -1507,7 +1474,7 @@ async def embeddings(
 
     This handler:
       - Performs user/model checks and dispatches to the correct backend.
-      - Supports OpenAI, Ollama, arena models, pipelines, and any compatible provider.
+      - Supports OpenAI, arena models, pipelines, and any compatible provider.
 
     Args:
         request (Request): Request context.

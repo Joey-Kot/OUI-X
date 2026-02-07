@@ -21,8 +21,6 @@ export const appInfo = writable(null);
 export const appData = writable(null);
 
 // Frontend
-export const MODEL_DOWNLOAD_POOL = writable({});
-
 export const mobile = writable(false);
 
 export const socket: Writable<null | Socket> = writable(null);
@@ -102,13 +100,13 @@ export const currentChatPage = writable(1);
 export const isLastActiveTab = writable(true);
 export const playingNotificationSound = writable(false);
 
-export type Model = OpenAIModel | OllamaModel;
+export type Model = OpenAIModel | ArenaModel;
 
 type BaseModel = {
 	id: string;
 	name: string;
 	info?: ModelConfig;
-	owned_by: 'ollama' | 'openai' | 'arena';
+	owned_by: 'openai' | 'arena';
 };
 
 export interface OpenAIModel extends BaseModel {
@@ -117,40 +115,9 @@ export interface OpenAIModel extends BaseModel {
 	source?: string;
 }
 
-export interface OllamaModel extends BaseModel {
-	owned_by: 'ollama';
-	details: OllamaModelDetails;
-	size: number;
-	description: string;
-	model: string;
-	modified_at: string;
-	digest: string;
-	ollama?: {
-		name?: string;
-		model?: string;
-		modified_at: string;
-		size?: number;
-		digest?: string;
-		details?: {
-			parent_model?: string;
-			format?: string;
-			family?: string;
-			families?: string[];
-			parameter_size?: string;
-			quantization_level?: string;
-		};
-		urls?: number[];
-	};
+export interface ArenaModel extends BaseModel {
+	owned_by: 'arena';
 }
-
-type OllamaModelDetails = {
-	parent_model: string;
-	format: string;
-	family: string;
-	families: string[] | null;
-	parameter_size: string;
-	quantization_level: string;
-};
 
 type Settings = {
 	pinnedModels?: never[];

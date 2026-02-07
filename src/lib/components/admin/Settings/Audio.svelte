@@ -12,7 +12,6 @@
 	} from '$lib/apis/audio';
 	import { config, settings } from '$lib/stores';
 
-	import Spinner from '$lib/components/common/Spinner.svelte';
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
 
 	import { TTS_RESPONSE_SPLIT } from '$lib/types';
@@ -40,21 +39,14 @@
 
 	let STT_OPENAI_API_BASE_URL = '';
 	let STT_OPENAI_API_KEY = '';
-	let STT_ENGINE = '';
+	let STT_ENGINE = 'openai';
 	let STT_MODEL = '';
 	let STT_SUPPORTED_CONTENT_TYPES = '';
-	let STT_WHISPER_MODEL = '';
 	let STT_AZURE_API_KEY = '';
 	let STT_AZURE_REGION = '';
 	let STT_AZURE_LOCALES = '';
 	let STT_AZURE_BASE_URL = '';
 	let STT_AZURE_MAX_SPEAKERS = '';
-	let STT_DEEPGRAM_API_KEY = '';
-	let STT_MISTRAL_API_KEY = '';
-	let STT_MISTRAL_API_BASE_URL = '';
-	let STT_MISTRAL_USE_CHAT_COMPLETIONS = false;
-
-	let STT_WHISPER_MODEL_LOADING = false;
 
 	// eslint-disable-next-line no-undef
 	let voices: SpeechSynthesisVoice[] = [];
@@ -129,19 +121,14 @@
 			stt: {
 				OPENAI_API_BASE_URL: STT_OPENAI_API_BASE_URL,
 				OPENAI_API_KEY: STT_OPENAI_API_KEY,
-				ENGINE: STT_ENGINE,
+				ENGINE: ['openai', 'web', 'azure'].includes(STT_ENGINE) ? STT_ENGINE : 'openai',
 				MODEL: STT_MODEL,
 				SUPPORTED_CONTENT_TYPES: STT_SUPPORTED_CONTENT_TYPES.split(','),
-				WHISPER_MODEL: STT_WHISPER_MODEL,
-				DEEPGRAM_API_KEY: STT_DEEPGRAM_API_KEY,
 				AZURE_API_KEY: STT_AZURE_API_KEY,
 				AZURE_REGION: STT_AZURE_REGION,
 				AZURE_LOCALES: STT_AZURE_LOCALES,
 				AZURE_BASE_URL: STT_AZURE_BASE_URL,
-				AZURE_MAX_SPEAKERS: STT_AZURE_MAX_SPEAKERS,
-				MISTRAL_API_KEY: STT_MISTRAL_API_KEY,
-				MISTRAL_API_BASE_URL: STT_MISTRAL_API_BASE_URL,
-				MISTRAL_USE_CHAT_COMPLETIONS: STT_MISTRAL_USE_CHAT_COMPLETIONS
+				AZURE_MAX_SPEAKERS: STT_AZURE_MAX_SPEAKERS
 			}
 		});
 
@@ -149,12 +136,6 @@
 			saveHandler();
 			config.set(await getBackendConfig());
 		}
-	};
-
-	const sttModelUpdateHandler = async () => {
-		STT_WHISPER_MODEL_LOADING = true;
-		await updateConfigHandler();
-		STT_WHISPER_MODEL_LOADING = false;
 	};
 
 	onMount(async () => {
@@ -180,19 +161,14 @@
 			STT_OPENAI_API_BASE_URL = res.stt.OPENAI_API_BASE_URL;
 			STT_OPENAI_API_KEY = res.stt.OPENAI_API_KEY;
 
-			STT_ENGINE = res.stt.ENGINE;
+			STT_ENGINE = ['openai', 'web', 'azure'].includes(res.stt.ENGINE) ? res.stt.ENGINE : 'openai';
 			STT_MODEL = res.stt.MODEL;
 			STT_SUPPORTED_CONTENT_TYPES = (res?.stt?.SUPPORTED_CONTENT_TYPES ?? []).join(',');
-			STT_WHISPER_MODEL = res.stt.WHISPER_MODEL;
 			STT_AZURE_API_KEY = res.stt.AZURE_API_KEY;
 			STT_AZURE_REGION = res.stt.AZURE_REGION;
 			STT_AZURE_LOCALES = res.stt.AZURE_LOCALES;
 			STT_AZURE_BASE_URL = res.stt.AZURE_BASE_URL;
 			STT_AZURE_MAX_SPEAKERS = res.stt.AZURE_MAX_SPEAKERS;
-			STT_DEEPGRAM_API_KEY = res.stt.DEEPGRAM_API_KEY;
-			STT_MISTRAL_API_KEY = res.stt.MISTRAL_API_KEY;
-			STT_MISTRAL_API_BASE_URL = res.stt.MISTRAL_API_BASE_URL;
-			STT_MISTRAL_USE_CHAT_COMPLETIONS = res.stt.MISTRAL_USE_CHAT_COMPLETIONS;
 		}
 
 		await getVoices();
@@ -239,12 +215,9 @@
 							bind:value={STT_ENGINE}
 							placeholder={$i18n.t('Select an engine')}
 						>
-							<option value="">{$i18n.t('Whisper (Local)')}</option>
 							<option value="openai">{$i18n.t('OpenAI')}</option>
 							<option value="web">{$i18n.t('Web API')}</option>
-							<option value="deepgram">{$i18n.t('Deepgram')}</option>
 							<option value="azure">{$i18n.t('Azure AI Speech')}</option>
-							<option value="mistral">{$i18n.t('MistralAI')}</option>
 						</select>
 					</div>
 				</div>
@@ -280,37 +253,6 @@
 									<option value="whisper-1" />
 								</datalist>
 							</div>
-						</div>
-					</div>
-				{:else if STT_ENGINE === 'deepgram'}
-					<div>
-						<div class="mt-1 flex gap-2 mb-1">
-							<SensitiveInput placeholder={$i18n.t('API Key')} bind:value={STT_DEEPGRAM_API_KEY} />
-						</div>
-					</div>
-
-					<hr class="border-gray-100/30 dark:border-gray-850/30 my-2" />
-
-					<div>
-						<div class=" mb-1.5 text-xs font-medium">{$i18n.t('STT Model')}</div>
-						<div class="flex w-full">
-							<div class="flex-1">
-								<input
-									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-									bind:value={STT_MODEL}
-									placeholder={$i18n.t('Select a model (optional)')}
-								/>
-							</div>
-						</div>
-						<div class="mt-2 mb-1 text-xs text-gray-400 dark:text-gray-500">
-							{$i18n.t('Leave model field empty to use the default model.')}
-							<a
-								class=" hover:underline dark:text-gray-200 text-gray-800"
-								href="https://developers.deepgram.com/docs/models"
-								target="_blank"
-							>
-								{$i18n.t('Click here to see available models.')}
-							</a>
 						</div>
 					</div>
 				{:else if STT_ENGINE === 'azure'}
@@ -377,123 +319,6 @@
 							</div>
 						</div>
 					</div>
-				{:else if STT_ENGINE === 'mistral'}
-					<div>
-						<div class="mt-1 flex gap-2 mb-1">
-							<input
-								class="flex-1 w-full bg-transparent outline-hidden"
-								placeholder={$i18n.t('API Base URL')}
-								bind:value={STT_MISTRAL_API_BASE_URL}
-								required
-							/>
-
-							<SensitiveInput placeholder={$i18n.t('API Key')} bind:value={STT_MISTRAL_API_KEY} />
-						</div>
-					</div>
-
-					<hr class="border-gray-100/30 dark:border-gray-850/30 my-2" />
-
-					<div>
-						<div class=" mb-1.5 text-xs font-medium">{$i18n.t('STT Model')}</div>
-						<div class="flex w-full">
-							<div class="flex-1">
-								<input
-									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-									bind:value={STT_MODEL}
-									placeholder="voxtral-mini-latest"
-								/>
-							</div>
-						</div>
-						<div class="mt-2 mb-1 text-xs text-gray-400 dark:text-gray-500">
-							{$i18n.t('Leave empty to use the default model (voxtral-mini-latest).')}
-							<a
-								class=" hover:underline dark:text-gray-200 text-gray-800"
-								href="https://docs.mistral.ai/capabilities/audio_transcription"
-								target="_blank"
-							>
-								{$i18n.t('Learn more about Voxtral transcription.')}
-							</a>
-						</div>
-					</div>
-
-					<hr class="border-gray-100/30 dark:border-gray-850/30 my-2" />
-
-					<div>
-						<div class="flex items-center justify-between mb-2">
-							<div class="text-xs font-medium">{$i18n.t('Use Chat Completions API')}</div>
-							<label class="relative inline-flex items-center cursor-pointer">
-								<input
-									type="checkbox"
-									bind:checked={STT_MISTRAL_USE_CHAT_COMPLETIONS}
-									class="sr-only peer"
-								/>
-								<div
-									class="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"
-								></div>
-							</label>
-						</div>
-						<div class="text-xs text-gray-400 dark:text-gray-500">
-							{$i18n.t(
-								'Use /v1/chat/completions endpoint instead of /v1/audio/transcriptions for potentially better accuracy.'
-							)}
-						</div>
-					</div>
-				{:else if STT_ENGINE === ''}
-					<div>
-						<div class=" mb-1.5 text-xs font-medium">{$i18n.t('STT Model')}</div>
-
-						<div class="flex w-full">
-							<div class="flex-1 mr-2">
-								<input
-									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-									placeholder={$i18n.t('Set whisper model')}
-									bind:value={STT_WHISPER_MODEL}
-								/>
-							</div>
-
-							<button
-								class="px-2.5 bg-gray-50 hover:bg-gray-200 text-gray-800 dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-gray-100 rounded-lg transition"
-								on:click={() => {
-									sttModelUpdateHandler();
-								}}
-								disabled={STT_WHISPER_MODEL_LOADING}
-							>
-								{#if STT_WHISPER_MODEL_LOADING}
-									<div class="self-center">
-										<Spinner />
-									</div>
-								{:else}
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										viewBox="0 0 16 16"
-										fill="currentColor"
-										class="w-4 h-4"
-									>
-										<path
-											d="M8.75 2.75a.75.75 0 0 0-1.5 0v5.69L5.03 6.22a.75.75 0 0 0-1.06 1.06l3.5 3.5a.75.75 0 0 0 1.06 0l3.5-3.5a.75.75 0 0 0-1.06-1.06L8.75 8.44V2.75Z"
-										/>
-										<path
-											d="M3.5 9.75a.75.75 0 0 0-1.5 0v1.5A2.75 2.75 0 0 0 4.75 14h6.5A2.75 2.75 0 0 0 14 11.25v-1.5a.75.75 0 0 0-1.5 0v1.5c0 .69-.56 1.25-1.25 1.25h-6.5c-.69 0-1.25-.56-1.25-1.25v-1.5Z"
-										/>
-									</svg>
-								{/if}
-							</button>
-						</div>
-
-						<div class="mt-2 mb-1 text-xs text-gray-400 dark:text-gray-500">
-							{$i18n.t(`Open WebUI uses faster-whisper internally.`)}
-
-							<a
-								class=" hover:underline dark:text-gray-200 text-gray-800"
-								href="https://github.com/SYSTRAN/faster-whisper"
-								target="_blank"
-							>
-								{$i18n.t(
-									`Click here to learn more about faster-whisper and see the available models.`
-								)}
-							</a>
-						</div>
-					</div>
 				{/if}
 			</div>
 
@@ -524,9 +349,7 @@
 							}}
 						>
 							<option value="">{$i18n.t('Web API')}</option>
-							<option value="transformers">{$i18n.t('Transformers')} ({$i18n.t('Local')})</option>
 							<option value="openai">{$i18n.t('OpenAI')}</option>
-							<option value="elevenlabs">{$i18n.t('ElevenLabs')}</option>
 							<option value="azure">{$i18n.t('Azure AI Speech')}</option>
 						</select>
 					</div>
@@ -543,12 +366,6 @@
 							/>
 
 							<SensitiveInput placeholder={$i18n.t('API Key')} bind:value={TTS_OPENAI_API_KEY} />
-						</div>
-					</div>
-				{:else if TTS_ENGINE === 'elevenlabs'}
-					<div>
-						<div class="mt-1 flex gap-2 mb-1">
-							<SensitiveInput placeholder={$i18n.t('API Key')} bind:value={TTS_API_KEY} required />
 						</div>
 					</div>
 				{:else if TTS_ENGINE === 'azure'}
@@ -609,47 +426,6 @@
 								</div>
 							</div>
 						</div>
-					{:else if TTS_ENGINE === 'transformers'}
-						<div>
-							<div class=" mb-1.5 text-xs font-medium">{$i18n.t('TTS Model')}</div>
-							<div class="flex w-full">
-								<div class="flex-1">
-									<input
-										list="model-list"
-										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-										bind:value={TTS_MODEL}
-										placeholder={$i18n.t('CMU ARCTIC speaker embedding name')}
-									/>
-
-									<datalist id="model-list">
-										<option value="tts-1" />
-									</datalist>
-								</div>
-							</div>
-							<div class="mt-2 mb-1 text-xs text-gray-400 dark:text-gray-500">
-								{$i18n.t(`Open WebUI uses SpeechT5 and CMU Arctic speaker embeddings.`)}
-
-								To learn more about SpeechT5,
-
-								<a
-									class=" hover:underline dark:text-gray-200 text-gray-800"
-									href="https://github.com/microsoft/SpeechT5"
-									target="_blank"
-								>
-									{$i18n.t(`click here`, {
-										name: 'SpeechT5'
-									})}.
-								</a>
-								To see the available CMU Arctic speaker embeddings,
-								<a
-									class=" hover:underline dark:text-gray-200 text-gray-800"
-									href="https://huggingface.co/datasets/Matthijs/cmu-arctic-xvectors"
-									target="_blank"
-								>
-									{$i18n.t(`click here`)}.
-								</a>
-							</div>
-						</div>
 					{:else if TTS_ENGINE === 'openai'}
 						<div class=" flex gap-2">
 							<div class="w-full">
@@ -703,47 +479,6 @@
 											placeholder={$i18n.t('Enter additional parameters in JSON format')}
 											minSize={100}
 										/>
-									</div>
-								</div>
-							</div>
-						</div>
-					{:else if TTS_ENGINE === 'elevenlabs'}
-						<div class=" flex gap-2">
-							<div class="w-full">
-								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('TTS Voice')}</div>
-								<div class="flex w-full">
-									<div class="flex-1">
-										<input
-											list="voice-list"
-											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-											bind:value={TTS_VOICE}
-											placeholder={$i18n.t('Select a voice')}
-										/>
-
-										<datalist id="voice-list">
-											{#each voices as voice}
-												<option value={voice.id}>{voice.name}</option>
-											{/each}
-										</datalist>
-									</div>
-								</div>
-							</div>
-							<div class="w-full">
-								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('TTS Model')}</div>
-								<div class="flex w-full">
-									<div class="flex-1">
-										<input
-											list="tts-model-list"
-											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-											bind:value={TTS_MODEL}
-											placeholder={$i18n.t('Select a model')}
-										/>
-
-										<datalist id="tts-model-list">
-											{#each models as model}
-												<option value={model.id} class="bg-gray-50 dark:bg-gray-700" />
-											{/each}
-										</datalist>
 									</div>
 								</div>
 							</div>

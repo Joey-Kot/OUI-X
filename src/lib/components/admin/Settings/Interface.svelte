@@ -41,6 +41,7 @@
 		ENABLE_TAGS_GENERATION: true,
 		ENABLE_SEARCH_QUERY_GENERATION: true,
 		ENABLE_RETRIEVAL_QUERY_GENERATION: true,
+		RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS: 3,
 		QUERY_GENERATION_PROMPT_TEMPLATE: '',
 		TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE: '',
 		VOICE_MODE_PROMPT_TEMPLATE: ''
@@ -49,7 +50,25 @@
 	let promptSuggestions = [];
 	let banners: Banner[] = [];
 
+	const normalizeReferContextTurns = () => {
+		const parsed = Number.parseInt(
+			String(taskConfig.RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS),
+			10
+		);
+		if (Number.isNaN(parsed)) {
+			toast.error($i18n.t('Invalid refer context turns value. Falling back to 3.'));
+			taskConfig.RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS = 3;
+			return;
+		}
+
+		taskConfig.RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS = Math.max(
+			0,
+			Math.min(20, parsed)
+		);
+	};
+
 	const updateInterfaceHandler = async () => {
+		normalizeReferContextTurns();
 		taskConfig = await updateTaskConfig(localStorage.token, taskConfig);
 
 		promptSuggestions = promptSuggestions.filter((p) => p.content !== '');
@@ -333,6 +352,30 @@
 
 					<Switch bind:state={taskConfig.ENABLE_RETRIEVAL_QUERY_GENERATION} />
 				</div>
+
+				{#if taskConfig.ENABLE_RETRIEVAL_QUERY_GENERATION}
+					<div class="mb-2.5 flex w-full flex-col">
+						<div class="self-start text-xs font-medium mb-1">
+							<Tooltip
+								content={$i18n.t(
+									'How many previous turns to include in refer context (excluding latest user query).'
+								)}
+								placement="top-start"
+							>
+								{$i18n.t('Retrieval Query Refer Context Turns')}
+							</Tooltip>
+						</div>
+
+						<input
+							class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+							type="number"
+							min="0"
+							max="20"
+							bind:value={taskConfig.RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS}
+							on:blur={normalizeReferContextTurns}
+						/>
+					</div>
+				{/if}
 
 				<div class="mb-2.5 flex w-full items-center justify-between">
 					<div class=" self-center text-xs font-medium">

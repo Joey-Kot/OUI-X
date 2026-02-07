@@ -9,6 +9,7 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
+from functools import lru_cache
 from typing import Iterator, List, Optional, Sequence, Union
 
 from fastapi import (
@@ -26,14 +27,10 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
-import tiktoken
-from transformers import AutoTokenizer
 
 
 from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
-    TokenTextSplitter,
-    MarkdownHeaderTextSplitter,
 )
 from langchain_core.documents import Document
 
@@ -51,7 +48,6 @@ from open_webui.retrieval.loaders.youtube import YoutubeLoader
 # Web search engines
 from open_webui.retrieval.web.main import SearchResult
 from open_webui.retrieval.web.utils import get_web_loader
-from open_webui.retrieval.web.ollama import search_ollama_cloud
 from open_webui.retrieval.web.perplexity_search import search_perplexity_search
 from open_webui.retrieval.web.brave import search_brave
 from open_webui.retrieval.web.kagi import search_kagi
@@ -80,11 +76,13 @@ from open_webui.retrieval.utils import (
     get_content_from_url,
     get_embedding_function,
     get_reranking_function,
-    get_model_path,
+    clear_bm25_index_cache,
+    invalidate_bm25_collections,
+    mark_bm25_collections_dirty,
     query_collection,
-    query_collection_with_hybrid_search,
+    query_collection_with_rag_pipeline,
     query_doc,
-    query_doc_with_hybrid_search,
+    query_doc_with_rag_pipeline,
 )
 from open_webui.retrieval.vector.utils import filter_metadata
 from open_webui.utils.misc import (
@@ -95,10 +93,7 @@ from open_webui.utils.auth import get_admin_user, get_verified_user
 
 from open_webui.config import (
     ENV,
-    RAG_EMBEDDING_MODEL_AUTO_UPDATE,
-    RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE,
-    RAG_RERANKING_MODEL_AUTO_UPDATE,
-    RAG_RERANKING_MODEL_TRUST_REMOTE_CODE,
+    VOYAGE_TOKENIZER_MODEL as DEFAULT_VOYAGE_TOKENIZER_MODEL,
     UPLOAD_DIR,
     DEFAULT_LOCALE,
     RAG_EMBEDDING_CONTENT_PREFIX,
@@ -106,18 +101,14 @@ from open_webui.config import (
 )
 from open_webui.env import (
     DEVICE_TYPE,
-    DOCKER,
-    SENTENCE_TRANSFORMERS_BACKEND,
-    SENTENCE_TRANSFORMERS_MODEL_KWARGS,
-    SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND,
-    SENTENCE_TRANSFORMERS_CROSS_ENCODER_MODEL_KWARGS,
 )
 
 from open_webui.constants import ERROR_MESSAGES
 
 log = logging.getLogger(__name__)
 
-VOYAGE_TOKENIZER = AutoTokenizer.from_pretrained("voyageai/voyage-3-lite", use_fast=True)
+
+SUPPORTED_RERANKING_ENGINES = {"external", "voyage"}
 
 ##########################################
 #
@@ -126,27 +117,34 @@ VOYAGE_TOKENIZER = AutoTokenizer.from_pretrained("voyageai/voyage-3-lite", use_f
 ##########################################
 
 
+@lru_cache(maxsize=8)
+def get_tiktoken_encoder(encoding_name: str):
+    import tiktoken
+
+    return tiktoken.get_encoding(encoding_name)
+
+
+@lru_cache(maxsize=4)
+def get_voyage_tokenizer(model: str):
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(model, use_fast=True)
+
+
+def warm_voyage_tokenizer(model: str) -> None:
+    try:
+        tokenizer = get_voyage_tokenizer(model)
+        tokenizer("warmup", add_special_tokens=False)
+        log.info(f"Warmed voyage tokenizer: {model}")
+    except Exception as e:
+        log.warning(f"Failed to warm voyage tokenizer: {e}")
+
+
 def get_ef(
     engine: str,
     embedding_model: str,
-    auto_update: bool = RAG_EMBEDDING_MODEL_AUTO_UPDATE,
 ):
-    ef = None
-    if embedding_model and engine == "":
-        from sentence_transformers import SentenceTransformer
-
-        try:
-            ef = SentenceTransformer(
-                get_model_path(embedding_model, auto_update),
-                device=DEVICE_TYPE,
-                trust_remote_code=RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE,
-                backend=SENTENCE_TRANSFORMERS_BACKEND,
-                model_kwargs=SENTENCE_TRANSFORMERS_MODEL_KWARGS,
-            )
-        except Exception as e:
-            log.debug(f"Error loading SentenceTransformer: {e}")
-
-    return ef
+    return None
 
 
 def get_rf(
@@ -155,74 +153,50 @@ def get_rf(
     external_reranker_url: str = "",
     external_reranker_api_key: str = "",
     external_reranker_timeout: str = "",
-    auto_update: bool = RAG_RERANKING_MODEL_AUTO_UPDATE,
+    voyage_reranker_url: str = "",
+    voyage_reranker_api_key: str = "",
+    voyage_reranker_timeout: str = "",
 ):
     rf = None
-    # Convert timeout string to int or None (system default)
-    timeout_value = (
-        int(external_reranker_timeout) if external_reranker_timeout else None
-    )
+
     if reranking_model:
-        if any(model in reranking_model for model in ["jinaai/jina-colbert-v2"]):
-            try:
-                from open_webui.retrieval.models.colbert import ColBERT
+        if engine not in SUPPORTED_RERANKING_ENGINES:
+            raise ValueError(
+                "RAG_RERANKING_ENGINE must be one of: external, voyage"
+            )
 
-                rf = ColBERT(
-                    get_model_path(reranking_model, auto_update),
-                    env="docker" if DOCKER else None,
-                )
-
-            except Exception as e:
-                log.error(f"ColBERT: {e}")
-                raise Exception(ERROR_MESSAGES.DEFAULT(e))
-        else:
+        try:
             if engine == "external":
-                try:
-                    from open_webui.retrieval.models.external import ExternalReranker
+                # Convert timeout string to int or None (system default)
+                timeout_value = (
+                    int(external_reranker_timeout)
+                    if external_reranker_timeout
+                    else None
+                )
+                from open_webui.retrieval.models.external import ExternalReranker
 
-                    rf = ExternalReranker(
-                        url=external_reranker_url,
-                        api_key=external_reranker_api_key,
-                        model=reranking_model,
-                        timeout=timeout_value,
-                    )
-                except Exception as e:
-                    log.error(f"ExternalReranking: {e}")
-                    raise Exception(ERROR_MESSAGES.DEFAULT(e))
-            else:
-                import sentence_transformers
+                rf = ExternalReranker(
+                    url=external_reranker_url,
+                    api_key=external_reranker_api_key,
+                    model=reranking_model,
+                    timeout=timeout_value,
+                )
+            elif engine == "voyage":
+                # Convert timeout string to int or None (system default)
+                timeout_value = (
+                    int(voyage_reranker_timeout) if voyage_reranker_timeout else None
+                )
+                from open_webui.retrieval.models.voyage import VoyageReranker
 
-                try:
-                    rf = sentence_transformers.CrossEncoder(
-                        get_model_path(reranking_model, auto_update),
-                        device=DEVICE_TYPE,
-                        trust_remote_code=RAG_RERANKING_MODEL_TRUST_REMOTE_CODE,
-                        backend=SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND,
-                        model_kwargs=SENTENCE_TRANSFORMERS_CROSS_ENCODER_MODEL_KWARGS,
-                    )
-                except Exception as e:
-                    log.error(f"CrossEncoder: {e}")
-                    raise Exception(ERROR_MESSAGES.DEFAULT("CrossEncoder error"))
-
-                # Safely adjust pad_token_id if missing as some models do not have this in config
-                try:
-                    model_cfg = getattr(rf, "model", None)
-                    if model_cfg and hasattr(model_cfg, "config"):
-                        cfg = model_cfg.config
-                        if getattr(cfg, "pad_token_id", None) is None:
-                            # Fallback to eos_token_id when available
-                            eos = getattr(cfg, "eos_token_id", None)
-                            if eos is not None:
-                                cfg.pad_token_id = eos
-                                log.debug(
-                                    f"Missing pad_token_id detected; set to eos_token_id={eos}"
-                                )
-                            else:
-                                log.warning(
-                                    "Neither pad_token_id nor eos_token_id present in model config"
-                                )
-                except Exception as e2:
-                    log.warning(f"Failed to adjust pad_token_id on CrossEncoder: {e2}")
+                rf = VoyageReranker(
+                    url=voyage_reranker_url,
+                    api_key=voyage_reranker_api_key,
+                    model=reranking_model,
+                    timeout=timeout_value,
+                )
+        except Exception as e:
+            log.error(f"Reranking ({engine}): {e}")
+            raise Exception(ERROR_MESSAGES.DEFAULT(e))
 
     return rf
 
@@ -276,10 +250,6 @@ async def get_embedding_config(request: Request, user=Depends(get_admin_user)):
             "url": request.app.state.config.RAG_OPENAI_API_BASE_URL,
             "key": request.app.state.config.RAG_OPENAI_API_KEY,
         },
-        "ollama_config": {
-            "url": request.app.state.config.RAG_OLLAMA_BASE_URL,
-            "key": request.app.state.config.RAG_OLLAMA_API_KEY,
-        },
         "azure_openai_config": {
             "url": request.app.state.config.RAG_AZURE_OPENAI_BASE_URL,
             "key": request.app.state.config.RAG_AZURE_OPENAI_API_KEY,
@@ -293,11 +263,6 @@ class OpenAIConfigForm(BaseModel):
     key: str
 
 
-class OllamaConfigForm(BaseModel):
-    url: str
-    key: str
-
-
 class AzureOpenAIConfigForm(BaseModel):
     url: str
     key: str
@@ -306,7 +271,6 @@ class AzureOpenAIConfigForm(BaseModel):
 
 class EmbeddingModelUpdateForm(BaseModel):
     openai_config: Optional[OpenAIConfigForm] = None
-    ollama_config: Optional[OllamaConfigForm] = None
     azure_openai_config: Optional[AzureOpenAIConfigForm] = None
     RAG_EMBEDDING_ENGINE: str
     RAG_EMBEDDING_MODEL: str
@@ -348,7 +312,6 @@ async def update_embedding_config(
         )
 
         if request.app.state.config.RAG_EMBEDDING_ENGINE in [
-            "ollama",
             "openai",
             "azure_openai",
         ]:
@@ -358,14 +321,6 @@ async def update_embedding_config(
                 )
                 request.app.state.config.RAG_OPENAI_API_KEY = (
                     form_data.openai_config.key
-                )
-
-            if form_data.ollama_config is not None:
-                request.app.state.config.RAG_OLLAMA_BASE_URL = (
-                    form_data.ollama_config.url
-                )
-                request.app.state.config.RAG_OLLAMA_API_KEY = (
-                    form_data.ollama_config.key
                 )
 
             if form_data.azure_openai_config is not None:
@@ -391,20 +346,12 @@ async def update_embedding_config(
             (
                 request.app.state.config.RAG_OPENAI_API_BASE_URL
                 if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else (
-                    request.app.state.config.RAG_OLLAMA_BASE_URL
-                    if request.app.state.config.RAG_EMBEDDING_ENGINE == "ollama"
-                    else request.app.state.config.RAG_AZURE_OPENAI_BASE_URL
-                )
+                else request.app.state.config.RAG_AZURE_OPENAI_BASE_URL
             ),
             (
                 request.app.state.config.RAG_OPENAI_API_KEY
                 if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else (
-                    request.app.state.config.RAG_OLLAMA_API_KEY
-                    if request.app.state.config.RAG_EMBEDDING_ENGINE == "ollama"
-                    else request.app.state.config.RAG_AZURE_OPENAI_API_KEY
-                )
+                else request.app.state.config.RAG_AZURE_OPENAI_API_KEY
             ),
             request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
             azure_api_version=(
@@ -424,10 +371,6 @@ async def update_embedding_config(
             "openai_config": {
                 "url": request.app.state.config.RAG_OPENAI_API_BASE_URL,
                 "key": request.app.state.config.RAG_OPENAI_API_KEY,
-            },
-            "ollama_config": {
-                "url": request.app.state.config.RAG_OLLAMA_BASE_URL,
-                "key": request.app.state.config.RAG_OLLAMA_API_KEY,
             },
             "azure_openai_config": {
                 "url": request.app.state.config.RAG_AZURE_OPENAI_BASE_URL,
@@ -452,12 +395,13 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         "TOP_K": request.app.state.config.TOP_K,
         "BYPASS_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL,
         "RAG_FULL_CONTEXT": request.app.state.config.RAG_FULL_CONTEXT,
-        # Hybrid search settings
-        "ENABLE_RAG_HYBRID_SEARCH": request.app.state.config.ENABLE_RAG_HYBRID_SEARCH,
-        "ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS": request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS,
+        # Retrieval settings
+        "ENABLE_RAG_BM25_SEARCH": request.app.state.config.ENABLE_RAG_BM25_SEARCH,
+        "ENABLE_RAG_BM25_ENRICHED_TEXTS": request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS,
+        "ENABLE_RAG_RERANKING": request.app.state.config.ENABLE_RAG_RERANKING,
         "TOP_K_RERANKER": request.app.state.config.TOP_K_RERANKER,
         "RELEVANCE_THRESHOLD": request.app.state.config.RELEVANCE_THRESHOLD,
-        "HYBRID_BM25_WEIGHT": request.app.state.config.HYBRID_BM25_WEIGHT,
+        "BM25_WEIGHT": request.app.state.config.BM25_WEIGHT,
         # Content extraction settings
         "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
         "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
@@ -495,8 +439,12 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         "RAG_EXTERNAL_RERANKER_URL": request.app.state.config.RAG_EXTERNAL_RERANKER_URL,
         "RAG_EXTERNAL_RERANKER_API_KEY": request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
         "RAG_EXTERNAL_RERANKER_TIMEOUT": request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
+        "RAG_VOYAGE_RERANKER_URL": request.app.state.config.RAG_VOYAGE_RERANKER_URL,
+        "RAG_VOYAGE_RERANKER_API_KEY": request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY,
+        "RAG_VOYAGE_RERANKER_TIMEOUT": request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT,
         # Chunking settings
         "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
+        "VOYAGE_TOKENIZER_MODEL": request.app.state.config.VOYAGE_TOKENIZER_MODEL,
         "CHUNK_SIZE": request.app.state.config.CHUNK_SIZE,
         "CHUNK_OVERLAP": request.app.state.config.CHUNK_OVERLAP,
         # File upload settings
@@ -519,7 +467,6 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
             "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
             "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
             "BYPASS_WEB_SEARCH_WEB_LOADER": request.app.state.config.BYPASS_WEB_SEARCH_WEB_LOADER,
-            "OLLAMA_CLOUD_WEB_SEARCH_API_KEY": request.app.state.config.OLLAMA_CLOUD_WEB_SEARCH_API_KEY,
             "SEARXNG_QUERY_URL": request.app.state.config.SEARXNG_QUERY_URL,
             "SEARXNG_LANGUAGE": request.app.state.config.SEARXNG_LANGUAGE,
             "YACY_QUERY_URL": request.app.state.config.YACY_QUERY_URL,
@@ -579,7 +526,6 @@ class WebConfig(BaseModel):
     WEB_SEARCH_DOMAIN_FILTER_LIST: Optional[List[str]] = []
     BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL: Optional[bool] = None
     BYPASS_WEB_SEARCH_WEB_LOADER: Optional[bool] = None
-    OLLAMA_CLOUD_WEB_SEARCH_API_KEY: Optional[str] = None
     SEARXNG_QUERY_URL: Optional[str] = None
     SEARXNG_LANGUAGE: Optional[str] = None
     YACY_QUERY_URL: Optional[str] = None
@@ -634,12 +580,13 @@ class ConfigForm(BaseModel):
     BYPASS_EMBEDDING_AND_RETRIEVAL: Optional[bool] = None
     RAG_FULL_CONTEXT: Optional[bool] = None
 
-    # Hybrid search settings
-    ENABLE_RAG_HYBRID_SEARCH: Optional[bool] = None
-    ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS: Optional[bool] = None
+    # Retrieval settings
+    ENABLE_RAG_BM25_SEARCH: Optional[bool] = None
+    ENABLE_RAG_BM25_ENRICHED_TEXTS: Optional[bool] = None
+    ENABLE_RAG_RERANKING: Optional[bool] = None
     TOP_K_RERANKER: Optional[int] = None
     RELEVANCE_THRESHOLD: Optional[float] = None
-    HYBRID_BM25_WEIGHT: Optional[float] = None
+    BM25_WEIGHT: Optional[float] = None
 
     # Content extraction settings
     CONTENT_EXTRACTION_ENGINE: Optional[str] = None
@@ -683,9 +630,13 @@ class ConfigForm(BaseModel):
     RAG_EXTERNAL_RERANKER_URL: Optional[str] = None
     RAG_EXTERNAL_RERANKER_API_KEY: Optional[str] = None
     RAG_EXTERNAL_RERANKER_TIMEOUT: Optional[str] = None
+    RAG_VOYAGE_RERANKER_URL: Optional[str] = None
+    RAG_VOYAGE_RERANKER_API_KEY: Optional[str] = None
+    RAG_VOYAGE_RERANKER_TIMEOUT: Optional[str] = None
 
     # Chunking settings
     TEXT_SPLITTER: Optional[str] = None
+    VOYAGE_TOKENIZER_MODEL: Optional[str] = None
     CHUNK_SIZE: Optional[int] = None
     CHUNK_OVERLAP: Optional[int] = None
 
@@ -730,16 +681,21 @@ async def update_rag_config(
         else request.app.state.config.RAG_FULL_CONTEXT
     )
 
-    # Hybrid search settings
-    request.app.state.config.ENABLE_RAG_HYBRID_SEARCH = (
-        form_data.ENABLE_RAG_HYBRID_SEARCH
-        if form_data.ENABLE_RAG_HYBRID_SEARCH is not None
-        else request.app.state.config.ENABLE_RAG_HYBRID_SEARCH
+    # Retrieval settings
+    request.app.state.config.ENABLE_RAG_BM25_SEARCH = (
+        form_data.ENABLE_RAG_BM25_SEARCH
+        if form_data.ENABLE_RAG_BM25_SEARCH is not None
+        else request.app.state.config.ENABLE_RAG_BM25_SEARCH
     )
-    request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS = (
-        form_data.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS
-        if form_data.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS is not None
-        else request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS
+    request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS = (
+        form_data.ENABLE_RAG_BM25_ENRICHED_TEXTS
+        if form_data.ENABLE_RAG_BM25_ENRICHED_TEXTS is not None
+        else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
+    )
+    request.app.state.config.ENABLE_RAG_RERANKING = (
+        form_data.ENABLE_RAG_RERANKING
+        if form_data.ENABLE_RAG_RERANKING is not None
+        else request.app.state.config.ENABLE_RAG_RERANKING
     )
 
     request.app.state.config.TOP_K_RERANKER = (
@@ -752,10 +708,10 @@ async def update_rag_config(
         if form_data.RELEVANCE_THRESHOLD is not None
         else request.app.state.config.RELEVANCE_THRESHOLD
     )
-    request.app.state.config.HYBRID_BM25_WEIGHT = (
-        form_data.HYBRID_BM25_WEIGHT
-        if form_data.HYBRID_BM25_WEIGHT is not None
-        else request.app.state.config.HYBRID_BM25_WEIGHT
+    request.app.state.config.BM25_WEIGHT = (
+        form_data.BM25_WEIGHT
+        if form_data.BM25_WEIGHT is not None
+        else request.app.state.config.BM25_WEIGHT
     )
 
     # Content extraction settings
@@ -909,23 +865,18 @@ async def update_rag_config(
     )
 
     # Reranking settings
-    if request.app.state.config.RAG_RERANKING_ENGINE == "":
-        # Unloading the internal reranker and clear VRAM memory
-        request.app.state.rf = None
-        request.app.state.RERANKING_FUNCTION = None
-        import gc
-
-        gc.collect()
-        if DEVICE_TYPE == "cuda":
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-    request.app.state.config.RAG_RERANKING_ENGINE = (
+    reranking_engine = (
         form_data.RAG_RERANKING_ENGINE
         if form_data.RAG_RERANKING_ENGINE is not None
         else request.app.state.config.RAG_RERANKING_ENGINE
     )
+    if reranking_engine not in SUPPORTED_RERANKING_ENGINES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RAG_RERANKING_ENGINE must be one of: external, voyage",
+        )
+
+    request.app.state.config.RAG_RERANKING_ENGINE = reranking_engine
 
     request.app.state.config.RAG_EXTERNAL_RERANKER_URL = (
         form_data.RAG_EXTERNAL_RERANKER_URL
@@ -945,6 +896,37 @@ async def update_rag_config(
         else request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT
     )
 
+    request.app.state.config.RAG_VOYAGE_RERANKER_URL = (
+        form_data.RAG_VOYAGE_RERANKER_URL
+        if form_data.RAG_VOYAGE_RERANKER_URL is not None
+        else request.app.state.config.RAG_VOYAGE_RERANKER_URL
+    )
+
+    request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY = (
+        form_data.RAG_VOYAGE_RERANKER_API_KEY
+        if form_data.RAG_VOYAGE_RERANKER_API_KEY is not None
+        else request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY
+    )
+
+    request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT = (
+        form_data.RAG_VOYAGE_RERANKER_TIMEOUT
+        if form_data.RAG_VOYAGE_RERANKER_TIMEOUT is not None
+        else request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT
+    )
+
+    if not request.app.state.config.ENABLE_RAG_RERANKING:
+        # Unload current reranker and clear VRAM cache.
+        request.app.state.rf = None
+        request.app.state.RERANKING_FUNCTION = None
+        import gc
+
+        gc.collect()
+        if DEVICE_TYPE == "cuda":
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
     log.info(
         f"Updating reranking model: {request.app.state.config.RAG_RERANKING_MODEL} to {form_data.RAG_RERANKING_MODEL}"
     )
@@ -957,7 +939,7 @@ async def update_rag_config(
 
         try:
             if (
-                request.app.state.config.ENABLE_RAG_HYBRID_SEARCH
+                request.app.state.config.ENABLE_RAG_RERANKING
                 and not request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL
             ):
                 request.app.state.rf = get_rf(
@@ -966,6 +948,9 @@ async def update_rag_config(
                     request.app.state.config.RAG_EXTERNAL_RERANKER_URL,
                     request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
                     request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
+                    request.app.state.config.RAG_VOYAGE_RERANKER_URL,
+                    request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY,
+                    request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT,
                 )
 
                 request.app.state.RERANKING_FUNCTION = get_reranking_function(
@@ -975,7 +960,7 @@ async def update_rag_config(
                 )
         except Exception as e:
             log.error(f"Error loading reranking model: {e}")
-            request.app.state.config.ENABLE_RAG_HYBRID_SEARCH = False
+            request.app.state.config.ENABLE_RAG_RERANKING = False
     except Exception as e:
         log.exception(f"Problem updating reranking model: {e}")
         raise HTTPException(
@@ -984,11 +969,24 @@ async def update_rag_config(
         )
 
     # Chunking settings
+    previous_text_splitter = request.app.state.config.TEXT_SPLITTER
     request.app.state.config.TEXT_SPLITTER = (
         form_data.TEXT_SPLITTER
         if form_data.TEXT_SPLITTER is not None
         else request.app.state.config.TEXT_SPLITTER
     )
+    request.app.state.config.VOYAGE_TOKENIZER_MODEL = (
+        form_data.VOYAGE_TOKENIZER_MODEL
+        if form_data.VOYAGE_TOKENIZER_MODEL is not None
+        else request.app.state.config.VOYAGE_TOKENIZER_MODEL
+    )
+    if (
+        request.app.state.config.TEXT_SPLITTER == "token_voyage"
+        and not (request.app.state.config.VOYAGE_TOKENIZER_MODEL or "").strip()
+    ):
+        request.app.state.config.VOYAGE_TOKENIZER_MODEL = (
+            DEFAULT_VOYAGE_TOKENIZER_MODEL.value
+        )
     request.app.state.config.CHUNK_SIZE = (
         form_data.CHUNK_SIZE
         if form_data.CHUNK_SIZE is not None
@@ -999,6 +997,16 @@ async def update_rag_config(
         if form_data.CHUNK_OVERLAP is not None
         else request.app.state.config.CHUNK_OVERLAP
     )
+    if (
+        previous_text_splitter != "token_voyage"
+        and request.app.state.config.TEXT_SPLITTER == "token_voyage"
+    ):
+        asyncio.create_task(
+            run_in_threadpool(
+                warm_voyage_tokenizer,
+                request.app.state.config.VOYAGE_TOKENIZER_MODEL,
+            )
+        )
 
     # File upload settings
     request.app.state.config.FILE_MAX_SIZE = form_data.FILE_MAX_SIZE
@@ -1051,9 +1059,6 @@ async def update_rag_config(
         )
         request.app.state.config.BYPASS_WEB_SEARCH_WEB_LOADER = (
             form_data.web.BYPASS_WEB_SEARCH_WEB_LOADER
-        )
-        request.app.state.config.OLLAMA_CLOUD_WEB_SEARCH_API_KEY = (
-            form_data.web.OLLAMA_CLOUD_WEB_SEARCH_API_KEY
         )
         request.app.state.config.SEARXNG_QUERY_URL = form_data.web.SEARXNG_QUERY_URL
         request.app.state.config.SEARXNG_LANGUAGE = form_data.web.SEARXNG_LANGUAGE
@@ -1147,11 +1152,13 @@ async def update_rag_config(
         "TOP_K": request.app.state.config.TOP_K,
         "BYPASS_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL,
         "RAG_FULL_CONTEXT": request.app.state.config.RAG_FULL_CONTEXT,
-        # Hybrid search settings
-        "ENABLE_RAG_HYBRID_SEARCH": request.app.state.config.ENABLE_RAG_HYBRID_SEARCH,
+        # Retrieval settings
+        "ENABLE_RAG_BM25_SEARCH": request.app.state.config.ENABLE_RAG_BM25_SEARCH,
+        "ENABLE_RAG_BM25_ENRICHED_TEXTS": request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS,
+        "ENABLE_RAG_RERANKING": request.app.state.config.ENABLE_RAG_RERANKING,
         "TOP_K_RERANKER": request.app.state.config.TOP_K_RERANKER,
         "RELEVANCE_THRESHOLD": request.app.state.config.RELEVANCE_THRESHOLD,
-        "HYBRID_BM25_WEIGHT": request.app.state.config.HYBRID_BM25_WEIGHT,
+        "BM25_WEIGHT": request.app.state.config.BM25_WEIGHT,
         # Content extraction settings
         "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
         "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
@@ -1188,8 +1195,12 @@ async def update_rag_config(
         "RAG_EXTERNAL_RERANKER_URL": request.app.state.config.RAG_EXTERNAL_RERANKER_URL,
         "RAG_EXTERNAL_RERANKER_API_KEY": request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
         "RAG_EXTERNAL_RERANKER_TIMEOUT": request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
+        "RAG_VOYAGE_RERANKER_URL": request.app.state.config.RAG_VOYAGE_RERANKER_URL,
+        "RAG_VOYAGE_RERANKER_API_KEY": request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY,
+        "RAG_VOYAGE_RERANKER_TIMEOUT": request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT,
         # Chunking settings
         "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
+        "VOYAGE_TOKENIZER_MODEL": request.app.state.config.VOYAGE_TOKENIZER_MODEL,
         "CHUNK_SIZE": request.app.state.config.CHUNK_SIZE,
         "CHUNK_OVERLAP": request.app.state.config.CHUNK_OVERLAP,
         # File upload settings
@@ -1212,7 +1223,6 @@ async def update_rag_config(
             "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
             "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
             "BYPASS_WEB_SEARCH_WEB_LOADER": request.app.state.config.BYPASS_WEB_SEARCH_WEB_LOADER,
-            "OLLAMA_CLOUD_WEB_SEARCH_API_KEY": request.app.state.config.OLLAMA_CLOUD_WEB_SEARCH_API_KEY,
             "SEARXNG_QUERY_URL": request.app.state.config.SEARXNG_QUERY_URL,
             "SEARXNG_LANGUAGE": request.app.state.config.SEARXNG_LANGUAGE,
             "YACY_QUERY_URL": request.app.state.config.YACY_QUERY_URL,
@@ -1323,6 +1333,44 @@ class HFTokenTextSplitter:
         return out
 
 
+class TiktokenTextSplitter:
+    def __init__(
+        self,
+        encoding_name: str,
+        chunk_size: int,
+        chunk_overlap: int,
+        add_start_index: bool = True,
+    ):
+        if chunk_overlap >= chunk_size:
+            raise ValueError("chunk_overlap must be < chunk_size")
+        self.encoding_name = encoding_name
+        self.encoding = get_tiktoken_encoder(encoding_name)
+        self.chunk_size = int(chunk_size)
+        self.chunk_overlap = int(chunk_overlap)
+        self.add_start_index = bool(add_start_index)
+
+    def split_documents(self, docs):
+        out = []
+        for doc in docs:
+            text = doc.page_content
+            tokens = self.encoding.encode(text)
+            step = self.chunk_size - self.chunk_overlap
+            start_tok = 0
+            while start_tok < len(tokens):
+                end_tok = min(len(tokens), start_tok + self.chunk_size)
+                chunk_tokens = tokens[start_tok:end_tok]
+                chunk_text = self.encoding.decode(chunk_tokens)
+                meta = dict(doc.metadata or {})
+                if self.add_start_index:
+                    char_start = len(self.encoding.decode(tokens[:start_tok]))
+                    meta["start_index"] = char_start
+                out.append(Document(page_content=chunk_text, metadata=meta))
+                if end_tok == len(tokens):
+                    break
+                start_tok += step
+        return out
+
+
 def save_docs_to_vector_db(
     request: Request,
     docs,
@@ -1376,63 +1424,33 @@ def save_docs_to_vector_db(
             docs = text_splitter.split_documents(docs)
         elif request.app.state.config.TEXT_SPLITTER == "token":
             log.info(
-                "Using token text splitter: voyageai/voyage-3-lite (HF AutoTokenizer)"
+                f"Using token text splitter: tiktoken ({request.app.state.config.TIKTOKEN_ENCODING_NAME})"
             )
 
-            text_splitter = HFTokenTextSplitter(
-                tokenizer=VOYAGE_TOKENIZER,
+            text_splitter = TiktokenTextSplitter(
+                encoding_name=request.app.state.config.TIKTOKEN_ENCODING_NAME,
                 chunk_size=request.app.state.config.CHUNK_SIZE,
                 chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
                 add_start_index=True,
             )
 
             docs = text_splitter.split_documents(docs)
-        elif request.app.state.config.TEXT_SPLITTER == "markdown_header":
-            log.info("Using markdown header text splitter")
-
-            # Define headers to split on - covering most common markdown header levels
-            headers_to_split_on = [
-                ("#", "Header 1"),
-                ("##", "Header 2"),
-                ("###", "Header 3"),
-                ("####", "Header 4"),
-                ("#####", "Header 5"),
-                ("######", "Header 6"),
-            ]
-
-            markdown_splitter = MarkdownHeaderTextSplitter(
-                headers_to_split_on=headers_to_split_on,
-                strip_headers=False,  # Keep headers in content for context
+        elif request.app.state.config.TEXT_SPLITTER == "token_voyage":
+            log.info(
+                "Using token text splitter: "
+                f"{request.app.state.config.VOYAGE_TOKENIZER_MODEL} (HF AutoTokenizer)"
             )
 
-            md_split_docs = []
-            for doc in docs:
-                md_header_splits = markdown_splitter.split_text(doc.page_content)
-                text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=request.app.state.config.CHUNK_SIZE,
-                    chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
-                    add_start_index=True,
-                )
-                md_header_splits = text_splitter.split_documents(md_header_splits)
+            text_splitter = HFTokenTextSplitter(
+                tokenizer=get_voyage_tokenizer(
+                    request.app.state.config.VOYAGE_TOKENIZER_MODEL
+                ),
+                chunk_size=request.app.state.config.CHUNK_SIZE,
+                chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
+                add_start_index=True,
+            )
 
-                # Convert back to Document objects, preserving original metadata
-                for split_chunk in md_header_splits:
-                    headings_list = []
-                    # Extract header values in order based on headers_to_split_on
-                    for _, header_meta_key_name in headers_to_split_on:
-                        if header_meta_key_name in split_chunk.metadata:
-                            headings_list.append(
-                                split_chunk.metadata[header_meta_key_name]
-                            )
-
-                    md_split_docs.append(
-                        Document(
-                            page_content=split_chunk.page_content,
-                            metadata={**doc.metadata, "headings": headings_list},
-                        )
-                    )
-
-            docs = md_split_docs
+            docs = text_splitter.split_documents(docs)
         else:
             raise ValueError(ERROR_MESSAGES.DEFAULT("Invalid text splitter"))
 
@@ -1458,6 +1476,7 @@ def save_docs_to_vector_db(
 
             if overwrite:
                 VECTOR_DB_CLIENT.delete_collection(collection_name=collection_name)
+                invalidate_bm25_collections([collection_name])
                 log.info(f"deleting existing collection {collection_name}")
             elif add is False:
                 log.info(
@@ -1473,20 +1492,12 @@ def save_docs_to_vector_db(
             (
                 request.app.state.config.RAG_OPENAI_API_BASE_URL
                 if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else (
-                    request.app.state.config.RAG_OLLAMA_BASE_URL
-                    if request.app.state.config.RAG_EMBEDDING_ENGINE == "ollama"
-                    else request.app.state.config.RAG_AZURE_OPENAI_BASE_URL
-                )
+                else request.app.state.config.RAG_AZURE_OPENAI_BASE_URL
             ),
             (
                 request.app.state.config.RAG_OPENAI_API_KEY
                 if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else (
-                    request.app.state.config.RAG_OLLAMA_API_KEY
-                    if request.app.state.config.RAG_EMBEDDING_ENGINE == "ollama"
-                    else request.app.state.config.RAG_AZURE_OPENAI_API_KEY
-                )
+                else request.app.state.config.RAG_AZURE_OPENAI_API_KEY
             ),
             request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
             azure_api_version=(
@@ -1522,6 +1533,7 @@ def save_docs_to_vector_db(
             collection_name=collection_name,
             items=items,
         )
+        mark_bm25_collections_dirty([collection_name])
 
         log.info(f"added {len(items)} items to collection {collection_name}")
         return True
@@ -1567,6 +1579,7 @@ def process_file(
                     VECTOR_DB_CLIENT.delete_collection(
                         collection_name=f"file-{file.id}"
                     )
+                    invalidate_bm25_collections([f"file-{file.id}"])
                 except:
                     # Audio file upload pipeline
                     pass
@@ -1891,15 +1904,7 @@ def search_web(
     """
 
     # TODO: add playwright to search the web
-    if engine == "ollama_cloud":
-        return search_ollama_cloud(
-            "https://ollama.com",
-            request.app.state.config.OLLAMA_CLOUD_WEB_SEARCH_API_KEY,
-            query,
-            request.app.state.config.WEB_SEARCH_RESULT_COUNT,
-            request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
-        )
-    elif engine == "perplexity_search":
+    if engine == "perplexity_search":
         if request.app.state.config.PERPLEXITY_API_KEY:
             return search_perplexity_search(
                 request.app.state.config.PERPLEXITY_API_KEY,
@@ -2322,7 +2327,10 @@ class QueryDocForm(BaseModel):
     k: Optional[int] = None
     k_reranker: Optional[int] = None
     r: Optional[float] = None
-    hybrid: Optional[bool] = None
+    enable_bm25_search: Optional[bool] = None
+    enable_reranking: Optional[bool] = None
+    bm25_weight: Optional[float] = None
+    enable_bm25_enriched_texts: Optional[bool] = None
 
 
 @router.post("/query/doc")
@@ -2332,54 +2340,57 @@ async def query_doc_handler(
     user=Depends(get_verified_user),
 ):
     try:
-        if request.app.state.config.ENABLE_RAG_HYBRID_SEARCH and (
-            form_data.hybrid is None or form_data.hybrid
-        ):
-            collection_results = {}
-            collection_results[form_data.collection_name] = VECTOR_DB_CLIENT.get(
-                collection_name=form_data.collection_name
-            )
-            return await query_doc_with_hybrid_search(
-                collection_name=form_data.collection_name,
-                collection_result=collection_results[form_data.collection_name],
-                query=form_data.query,
-                embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                    query, prefix=prefix, user=user
-                ),
-                k=form_data.k if form_data.k else request.app.state.config.TOP_K,
-                reranking_function=(
-                    (
-                        lambda query, documents: request.app.state.RERANKING_FUNCTION(
-                            query, documents, user=user
-                        )
+        enable_bm25_search = (
+            form_data.enable_bm25_search
+            if form_data.enable_bm25_search is not None
+            else request.app.state.config.ENABLE_RAG_BM25_SEARCH
+        )
+        enable_reranking = (
+            form_data.enable_reranking
+            if form_data.enable_reranking is not None
+            else request.app.state.config.ENABLE_RAG_RERANKING
+        )
+
+        collection_result = None
+        if enable_bm25_search:
+            collection_result = VECTOR_DB_CLIENT.get(collection_name=form_data.collection_name)
+
+        return await query_doc_with_rag_pipeline(
+            collection_name=form_data.collection_name,
+            collection_result=collection_result,
+            query=form_data.query,
+            embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+                query, prefix=prefix, user=user
+            ),
+            k=form_data.k if form_data.k else request.app.state.config.TOP_K,
+            reranking_function=(
+                (
+                    lambda query, documents: request.app.state.RERANKING_FUNCTION(
+                        query, documents, user=user
                     )
-                    if request.app.state.RERANKING_FUNCTION
-                    else None
-                ),
-                k_reranker=form_data.k_reranker
-                or request.app.state.config.TOP_K_RERANKER,
-                r=(
-                    form_data.r
-                    if form_data.r
-                    else request.app.state.config.RELEVANCE_THRESHOLD
-                ),
-                hybrid_bm25_weight=(
-                    form_data.hybrid_bm25_weight
-                    if form_data.hybrid_bm25_weight
-                    else request.app.state.config.HYBRID_BM25_WEIGHT
-                ),
-                user=user,
-            )
-        else:
-            query_embedding = await request.app.state.EMBEDDING_FUNCTION(
-                form_data.query, prefix=RAG_EMBEDDING_QUERY_PREFIX, user=user
-            )
-            return query_doc(
-                collection_name=form_data.collection_name,
-                query_embedding=query_embedding,
-                k=form_data.k if form_data.k else request.app.state.config.TOP_K,
-                user=user,
-            )
+                )
+                if request.app.state.RERANKING_FUNCTION
+                else None
+            ),
+            k_reranker=form_data.k_reranker or request.app.state.config.TOP_K_RERANKER,
+            r=(
+                form_data.r
+                if form_data.r
+                else request.app.state.config.RELEVANCE_THRESHOLD
+            ),
+            bm25_weight=(
+                form_data.bm25_weight
+                if form_data.bm25_weight is not None
+                else request.app.state.config.BM25_WEIGHT
+            ),
+            enable_bm25_search=enable_bm25_search,
+            enable_reranking=enable_reranking,
+            enable_bm25_enriched_texts=(
+                form_data.enable_bm25_enriched_texts
+                if form_data.enable_bm25_enriched_texts is not None
+                else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
+            ),
+        )
     except Exception as e:
         log.exception(e)
         raise HTTPException(
@@ -2394,9 +2405,10 @@ class QueryCollectionsForm(BaseModel):
     k: Optional[int] = None
     k_reranker: Optional[int] = None
     r: Optional[float] = None
-    hybrid: Optional[bool] = None
-    hybrid_bm25_weight: Optional[float] = None
-    enable_enriched_texts: Optional[bool] = None
+    enable_bm25_search: Optional[bool] = None
+    enable_reranking: Optional[bool] = None
+    bm25_weight: Optional[float] = None
+    enable_bm25_enriched_texts: Optional[bool] = None
 
 
 @router.post("/query/collection")
@@ -2406,52 +2418,52 @@ async def query_collection_handler(
     user=Depends(get_verified_user),
 ):
     try:
-        if request.app.state.config.ENABLE_RAG_HYBRID_SEARCH and (
-            form_data.hybrid is None or form_data.hybrid
-        ):
-            return await query_collection_with_hybrid_search(
-                collection_names=form_data.collection_names,
-                queries=[form_data.query],
-                embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                    query, prefix=prefix, user=user
-                ),
-                k=form_data.k if form_data.k else request.app.state.config.TOP_K,
-                reranking_function=(
-                    (
-                        lambda query, documents: request.app.state.RERANKING_FUNCTION(
-                            query, documents, user=user
-                        )
+        enable_bm25_search = (
+            form_data.enable_bm25_search
+            if form_data.enable_bm25_search is not None
+            else request.app.state.config.ENABLE_RAG_BM25_SEARCH
+        )
+        enable_reranking = (
+            form_data.enable_reranking
+            if form_data.enable_reranking is not None
+            else request.app.state.config.ENABLE_RAG_RERANKING
+        )
+
+        return await query_collection_with_rag_pipeline(
+            collection_names=form_data.collection_names,
+            queries=[form_data.query],
+            embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+                query, prefix=prefix, user=user
+            ),
+            k=form_data.k if form_data.k else request.app.state.config.TOP_K,
+            reranking_function=(
+                (
+                    lambda query, documents: request.app.state.RERANKING_FUNCTION(
+                        query, documents, user=user
                     )
-                    if request.app.state.RERANKING_FUNCTION
-                    else None
-                ),
-                k_reranker=form_data.k_reranker
-                or request.app.state.config.TOP_K_RERANKER,
-                r=(
-                    form_data.r
-                    if form_data.r
-                    else request.app.state.config.RELEVANCE_THRESHOLD
-                ),
-                hybrid_bm25_weight=(
-                    form_data.hybrid_bm25_weight
-                    if form_data.hybrid_bm25_weight
-                    else request.app.state.config.HYBRID_BM25_WEIGHT
-                ),
-                enable_enriched_texts=(
-                    form_data.enable_enriched_texts
-                    if form_data.enable_enriched_texts is not None
-                    else request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS
-                ),
-            )
-        else:
-            return await query_collection(
-                collection_names=form_data.collection_names,
-                queries=[form_data.query],
-                embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                    query, prefix=prefix, user=user
-                ),
-                k=form_data.k if form_data.k else request.app.state.config.TOP_K,
-            )
+                )
+                if request.app.state.RERANKING_FUNCTION
+                else None
+            ),
+            k_reranker=form_data.k_reranker or request.app.state.config.TOP_K_RERANKER,
+            r=(
+                form_data.r
+                if form_data.r
+                else request.app.state.config.RELEVANCE_THRESHOLD
+            ),
+            bm25_weight=(
+                form_data.bm25_weight
+                if form_data.bm25_weight is not None
+                else request.app.state.config.BM25_WEIGHT
+            ),
+            enable_bm25_search=enable_bm25_search,
+            enable_reranking=enable_reranking,
+            enable_bm25_enriched_texts=(
+                form_data.enable_bm25_enriched_texts
+                if form_data.enable_bm25_enriched_texts is not None
+                else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
+            ),
+        )
 
     except Exception as e:
         log.exception(e)
@@ -2459,6 +2471,7 @@ async def query_collection_handler(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.DEFAULT(e),
         )
+
 
 
 ####################################
@@ -2484,6 +2497,7 @@ def delete_entries_from_collection(form_data: DeleteForm, user=Depends(get_admin
                 collection_name=form_data.collection_name,
                 metadata={"hash": hash},
             )
+            mark_bm25_collections_dirty([form_data.collection_name])
             return {"status": True}
         else:
             return {"status": False}
@@ -2495,6 +2509,7 @@ def delete_entries_from_collection(form_data: DeleteForm, user=Depends(get_admin
 @router.post("/reset/db")
 def reset_vector_db(user=Depends(get_admin_user)):
     VECTOR_DB_CLIENT.reset()
+    clear_bm25_index_cache()
     Knowledges.delete_all_knowledge()
 
 
@@ -2629,4 +2644,3 @@ async def process_files_batch(
                 )
 
     return BatchProcessFilesResponse(results=file_results, errors=file_errors)
-

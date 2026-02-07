@@ -52,9 +52,6 @@
 	let AzureOpenAIKey = '';
 	let AzureOpenAIVersion = '';
 
-	let OllamaUrl = '';
-	let OllamaKey = '';
-
 	let querySettings = {
 		template: '',
 		r: 0.0,
@@ -66,23 +63,6 @@
 	let RAGConfig = null;
 
 	const embeddingModelUpdateHandler = async () => {
-		if (RAG_EMBEDDING_ENGINE === '' && RAG_EMBEDDING_MODEL.split('/').length - 1 > 1) {
-			toast.error(
-				$i18n.t(
-					'Model filesystem path detected. Model shortname is required for update, cannot continue.'
-				)
-			);
-			return;
-		}
-		if (RAG_EMBEDDING_ENGINE === 'ollama' && RAG_EMBEDDING_MODEL === '') {
-			toast.error(
-				$i18n.t(
-					'Model filesystem path detected. Model shortname is required for update, cannot continue.'
-				)
-			);
-			return;
-		}
-
 		if (RAG_EMBEDDING_ENGINE === 'openai' && RAG_EMBEDDING_MODEL === '') {
 			toast.error(
 				$i18n.t(
@@ -113,10 +93,6 @@
 			RAG_EMBEDDING_MODEL: RAG_EMBEDDING_MODEL,
 			RAG_EMBEDDING_BATCH_SIZE: RAG_EMBEDDING_BATCH_SIZE,
 			ENABLE_ASYNC_EMBEDDING: ENABLE_ASYNC_EMBEDDING,
-			ollama_config: {
-				key: OllamaKey,
-				url: OllamaUrl
-			},
 			openai_config: {
 				key: OpenAIKey,
 				url: OpenAIUrl
@@ -245,8 +221,6 @@
 			OpenAIKey = embeddingConfig.openai_config.key;
 			OpenAIUrl = embeddingConfig.openai_config.url;
 
-			OllamaKey = embeddingConfig.ollama_config.key;
-			OllamaUrl = embeddingConfig.ollama_config.url;
 
 			AzureOpenAIKey = embeddingConfig.azure_openai_config.key;
 			AzureOpenAIUrl = embeddingConfig.azure_openai_config.url;
@@ -735,10 +709,24 @@
 								>
 									<option value="">{$i18n.t('Default')} ({$i18n.t('Character')})</option>
 									<option value="token">{$i18n.t('Token')} ({$i18n.t('Tiktoken')})</option>
-									<option value="markdown_header">{$i18n.t('Markdown (Header)')}</option>
+									<option value="token_voyage">{$i18n.t('Token (Voyage)')}</option>
 								</select>
 							</div>
 						</div>
+
+						{#if RAGConfig.TEXT_SPLITTER === 'token_voyage'}
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="self-start text-xs font-medium mb-1">
+									{$i18n.t('Voyage Tokenizer Model')}
+								</div>
+								<input
+									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="text"
+									placeholder="voyageai/voyage-3-lite"
+									bind:value={RAGConfig.VOYAGE_TOKENIZER_MODEL}
+								/>
+							</div>
+						{/if}
 
 						<div class="  mb-2.5 flex w-full justify-between">
 							<div class=" flex gap-1.5 w-full">
@@ -796,19 +784,13 @@
 										bind:value={RAG_EMBEDDING_ENGINE}
 										placeholder={$i18n.t('Select an embedding model engine')}
 										on:change={(e) => {
-											if (e.target.value === 'ollama') {
-												RAG_EMBEDDING_MODEL = '';
-											} else if (e.target.value === 'openai') {
+											if (e.target.value === 'openai') {
 												RAG_EMBEDDING_MODEL = 'text-embedding-3-small';
 											} else if (e.target.value === 'azure_openai') {
 												RAG_EMBEDDING_MODEL = 'text-embedding-3-small';
-											} else if (e.target.value === '') {
-												RAG_EMBEDDING_MODEL = 'sentence-transformers/all-MiniLM-L6-v2';
 											}
 										}}
 									>
-										<option value="">{$i18n.t('Default (SentenceTransformers)')}</option>
-										<option value="ollama">{$i18n.t('Ollama')}</option>
 										<option value="openai">{$i18n.t('OpenAI')}</option>
 										<option value="azure_openai">{$i18n.t('Azure OpenAI')}</option>
 									</select>
@@ -827,21 +809,6 @@
 									<SensitiveInput
 										placeholder={$i18n.t('API Key')}
 										bind:value={OpenAIKey}
-										required={false}
-									/>
-								</div>
-							{:else if RAG_EMBEDDING_ENGINE === 'ollama'}
-								<div class="my-0.5 flex gap-2 pr-2">
-									<input
-										class="flex-1 w-full text-sm bg-transparent outline-hidden"
-										placeholder={$i18n.t('API Base URL')}
-										bind:value={OllamaUrl}
-										required
-									/>
-
-									<SensitiveInput
-										placeholder={$i18n.t('API Key')}
-										bind:value={OllamaKey}
 										required={false}
 									/>
 								</div>
@@ -872,60 +839,17 @@
 							<div class=" mb-1 text-xs font-medium">{$i18n.t('Embedding Model')}</div>
 
 							<div class="">
-								{#if RAG_EMBEDDING_ENGINE === 'ollama'}
-									<div class="flex w-full">
-										<div class="flex-1 mr-2">
-											<input
-												class="flex-1 w-full text-sm bg-transparent outline-hidden"
-												bind:value={RAG_EMBEDDING_MODEL}
-												placeholder={$i18n.t('Set embedding model')}
-												required
-											/>
-										</div>
+								<div class="flex w-full">
+									<div class="flex-1 mr-2">
+										<input
+											class="flex-1 w-full text-sm bg-transparent outline-hidden"
+											placeholder={$i18n.t('Set embedding model (e.g. {{model}})', {
+												model: RAG_EMBEDDING_MODEL.slice(-40)
+											})}
+											bind:value={RAG_EMBEDDING_MODEL}
+										/>
 									</div>
-								{:else}
-									<div class="flex w-full">
-										<div class="flex-1 mr-2">
-											<input
-												class="flex-1 w-full text-sm bg-transparent outline-hidden"
-												placeholder={$i18n.t('Set embedding model (e.g. {{model}})', {
-													model: RAG_EMBEDDING_MODEL.slice(-40)
-												})}
-												bind:value={RAG_EMBEDDING_MODEL}
-											/>
-										</div>
-
-										{#if RAG_EMBEDDING_ENGINE === ''}
-											<button
-												class="px-2.5 bg-transparent text-gray-800 dark:bg-transparent dark:text-gray-100 rounded-lg transition"
-												on:click={() => {
-													embeddingModelUpdateHandler();
-												}}
-												disabled={updateEmbeddingModelLoading}
-											>
-												{#if updateEmbeddingModelLoading}
-													<div class="self-center">
-														<Spinner />
-													</div>
-												{:else}
-													<svg
-														xmlns="http://www.w3.org/2000/svg"
-														viewBox="0 0 16 16"
-														fill="currentColor"
-														class="w-4 h-4"
-													>
-														<path
-															d="M8.75 2.75a.75.75 0 0 0-1.5 0v5.69L5.03 6.22a.75.75 0 0 0-1.06 1.06l3.5 3.5a.75.75 0 0 0 1.06 0l3.5-3.5a.75.75 0 0 0-1.06-1.06L8.75 8.44V2.75Z"
-														/>
-														<path
-															d="M3.5 9.75a.75.75 0 0 0-1.5 0v1.5A2.75 2.75 0 0 0 4.75 14h6.5A2.75 2.75 0 0 0 14 11.25v-1.5a.75.75 0 0 0-1.5 0v1.5c0 .69-.56 1.25-1.25 1.25h-6.5c-.69 0-1.25-.56-1.25-1.25v-1.5Z"
-														/>
-													</svg>
-												{/if}
-											</button>
-										{/if}
-									</div>
-								{/if}
+								</div>
 							</div>
 
 							<div class="mt-1 mb-1 text-xs text-gray-400 dark:text-gray-500">
@@ -935,7 +859,7 @@
 							</div>
 						</div>
 
-						{#if RAG_EMBEDDING_ENGINE === 'ollama' || RAG_EMBEDDING_ENGINE === 'openai' || RAG_EMBEDDING_ENGINE === 'azure_openai'}
+						{#if RAG_EMBEDDING_ENGINE === 'openai' || RAG_EMBEDDING_ENGINE === 'azure_openai'}
 							<div class="  mb-2.5 flex w-full justify-between">
 								<div class=" self-center text-xs font-medium">
 									{$i18n.t('Embedding Batch Size')}
@@ -995,16 +919,16 @@
 
 						{#if !RAGConfig.RAG_FULL_CONTEXT}
 							<div class="  mb-2.5 flex w-full justify-between">
-								<div class=" self-center text-xs font-medium">{$i18n.t('Hybrid Search')}</div>
+								<div class=" self-center text-xs font-medium">{$i18n.t('BM25 Search')}</div>
 								<div class="flex items-center relative">
-									<Switch bind:state={RAGConfig.ENABLE_RAG_HYBRID_SEARCH} />
+									<Switch bind:state={RAGConfig.ENABLE_RAG_BM25_SEARCH} />
 								</div>
 							</div>
 
-							{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
+							{#if RAGConfig.ENABLE_RAG_BM25_SEARCH === true}
 								<div class="mb-2.5 flex w-full justify-between">
 									<div class="self-center text-xs font-medium">
-										{$i18n.t('Enrich Hybrid Search Text')}
+										{$i18n.t('Enrich BM25 Text')}
 									</div>
 									<div class="flex items-center relative">
 										<Tooltip
@@ -1012,11 +936,87 @@
 												'Adds filenames, titles, sections, and snippets into the BM25 text to improve lexical recall.'
 											)}
 										>
-											<Switch bind:state={RAGConfig.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS} />
+											<Switch bind:state={RAGConfig.ENABLE_RAG_BM25_ENRICHED_TEXTS} />
 										</Tooltip>
 									</div>
 								</div>
 
+								<div class=" mb-2.5 py-0.5 w-full justify-between">
+									<Tooltip
+										content={$i18n.t(
+											'The Weight of BM25 Hybrid Search. 0 more semantic, 1 more lexical. Default 0.5'
+										)}
+										placement="top-start"
+										className="inline-tooltip"
+									>
+										<div class="flex w-full justify-between">
+											<div class=" self-center text-xs font-medium">
+												{$i18n.t('BM25 Weight')}
+											</div>
+											<button
+												class="p-1 px-3 text-xs flex rounded-sm transition shrink-0 outline-hidden"
+												type="button"
+												on:click={() => {
+													RAGConfig.BM25_WEIGHT =
+														(RAGConfig?.BM25_WEIGHT ?? null) === null ? 0.5 : null;
+												}}
+											>
+												{#if (RAGConfig?.BM25_WEIGHT ?? null) === null}
+													<span class="ml-2 self-center"> {$i18n.t('Default')} </span>
+												{:else}
+													<span class="ml-2 self-center"> {$i18n.t('Custom')} </span>
+												{/if}
+											</button>
+										</div>
+									</Tooltip>
+
+									{#if (RAGConfig?.BM25_WEIGHT ?? null) !== null}
+										<div class="flex mt-0.5 space-x-2">
+											<div class=" flex-1">
+												<input
+													id="steps-range"
+													type="range"
+													min="0"
+													max="1"
+													step="0.05"
+													bind:value={RAGConfig.BM25_WEIGHT}
+													class="w-full h-2 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"
+												/>
+
+												<div class="py-0.5">
+													<div class="flex w-full justify-between">
+														<div class=" text-left text-xs font-small">
+															{$i18n.t('semantic')}
+														</div>
+														<div class=" text-right text-xs font-small">
+															{$i18n.t('lexical')}
+														</div>
+													</div>
+												</div>
+											</div>
+											<div>
+												<input
+													bind:value={RAGConfig.BM25_WEIGHT}
+													type="number"
+													class=" bg-transparent text-center w-14"
+													min="0"
+													max="1"
+													step="any"
+												/>
+											</div>
+										</div>
+									{/if}
+								</div>
+							{/if}
+
+							<div class="  mb-2.5 flex w-full justify-between">
+								<div class=" self-center text-xs font-medium">{$i18n.t('Reranking')}</div>
+								<div class="flex items-center relative">
+									<Switch bind:state={RAGConfig.ENABLE_RAG_RERANKING} />
+								</div>
+							</div>
+
+							{#if RAGConfig.ENABLE_RAG_RERANKING === true}
 								<div class="  mb-2.5 flex flex-col w-full justify-between">
 									<div class="flex w-full justify-between">
 										<div class=" self-center text-xs font-medium">
@@ -1028,15 +1028,13 @@
 												bind:value={RAGConfig.RAG_RERANKING_ENGINE}
 												placeholder={$i18n.t('Select a reranking model engine')}
 												on:change={(e) => {
-													if (e.target.value === 'external') {
+													if (['external', 'voyage'].includes(e.target.value)) {
 														RAGConfig.RAG_RERANKING_MODEL = '';
-													} else if (e.target.value === '') {
-														RAGConfig.RAG_RERANKING_MODEL = 'BAAI/bge-reranker-v2-m3';
 													}
 												}}
 											>
-												<option value="">{$i18n.t('Default (SentenceTransformers)')}</option>
 												<option value="external">{$i18n.t('External')}</option>
+												<option value="voyage">Voyage</option>
 											</select>
 										</div>
 									</div>
@@ -1053,6 +1051,21 @@
 											<SensitiveInput
 												placeholder={$i18n.t('API Key')}
 												bind:value={RAGConfig.RAG_EXTERNAL_RERANKER_API_KEY}
+												required={false}
+											/>
+										</div>
+									{:else if RAGConfig.RAG_RERANKING_ENGINE === "voyage"}
+										<div class="my-0.5 flex gap-2 pr-2">
+											<input
+												class="flex-1 w-full text-sm bg-transparent outline-hidden"
+												placeholder={$i18n.t("API Base URL")}
+												bind:value={RAGConfig.RAG_VOYAGE_RERANKER_URL}
+												required
+											/>
+
+											<SensitiveInput
+												placeholder={$i18n.t("API Key")}
+												bind:value={RAGConfig.RAG_VOYAGE_RERANKER_API_KEY}
 												required={false}
 											/>
 										</div>
@@ -1092,7 +1105,7 @@
 								</div>
 							</div>
 
-							{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
+							{#if RAGConfig.ENABLE_RAG_RERANKING === true}
 								<div class="mb-2.5 flex w-full justify-between">
 									<div class="self-center text-xs font-medium">{$i18n.t('Top K Reranker')}</div>
 									<div class="flex items-center relative">
@@ -1106,9 +1119,7 @@
 										/>
 									</div>
 								</div>
-							{/if}
 
-							{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
 								<div class="  mb-2.5 flex flex-col w-full justify-between">
 									<div class=" flex w-full justify-between">
 										<div class=" self-center text-xs font-medium">
@@ -1136,76 +1147,8 @@
 									</div>
 								</div>
 							{/if}
-
-							{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
-								<div class=" mb-2.5 py-0.5 w-full justify-between">
-									<Tooltip
-										content={$i18n.t(
-											'The Weight of BM25 Hybrid Search. 0 more semantic, 1 more lexical. Default 0.5'
-										)}
-										placement="top-start"
-										className="inline-tooltip"
-									>
-										<div class="flex w-full justify-between">
-											<div class=" self-center text-xs font-medium">
-												{$i18n.t('BM25 Weight')}
-											</div>
-											<button
-												class="p-1 px-3 text-xs flex rounded-sm transition shrink-0 outline-hidden"
-												type="button"
-												on:click={() => {
-													RAGConfig.HYBRID_BM25_WEIGHT =
-														(RAGConfig?.HYBRID_BM25_WEIGHT ?? null) === null ? 0.5 : null;
-												}}
-											>
-												{#if (RAGConfig?.HYBRID_BM25_WEIGHT ?? null) === null}
-													<span class="ml-2 self-center"> {$i18n.t('Default')} </span>
-												{:else}
-													<span class="ml-2 self-center"> {$i18n.t('Custom')} </span>
-												{/if}
-											</button>
-										</div>
-									</Tooltip>
-
-									{#if (RAGConfig?.HYBRID_BM25_WEIGHT ?? null) !== null}
-										<div class="flex mt-0.5 space-x-2">
-											<div class=" flex-1">
-												<input
-													id="steps-range"
-													type="range"
-													min="0"
-													max="1"
-													step="0.05"
-													bind:value={RAGConfig.HYBRID_BM25_WEIGHT}
-													class="w-full h-2 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"
-												/>
-
-												<div class="py-0.5">
-													<div class="flex w-full justify-between">
-														<div class=" text-left text-xs font-small">
-															{$i18n.t('semantic')}
-														</div>
-														<div class=" text-right text-xs font-small">
-															{$i18n.t('lexical')}
-														</div>
-													</div>
-												</div>
-											</div>
-											<div>
-												<input
-													bind:value={RAGConfig.HYBRID_BM25_WEIGHT}
-													type="number"
-													class=" bg-transparent text-center w-14"
-													min="0"
-													max="1"
-													step="any"
-												/>
-											</div>
-										</div>
-									{/if}
-								</div>
-							{/if}
 						{/if}
+
 
 						<div class="  mb-2.5 flex flex-col w-full justify-between">
 							<div class=" mb-1 text-xs font-medium">{$i18n.t('RAG Template')}</div>

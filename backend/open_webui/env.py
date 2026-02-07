@@ -246,14 +246,6 @@ if FROM_INIT_PY:
 # Database
 ####################################
 
-# Check if the file exists
-if os.path.exists(f"{DATA_DIR}/ollama.db"):
-    # Rename the file
-    os.rename(f"{DATA_DIR}/ollama.db", f"{DATA_DIR}/webui.db")
-    log.info("Database migrated from Ollama-WebUI successfully.")
-else:
-    pass
-
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR}/webui.db")
 
 DATABASE_TYPE = os.environ.get("DATABASE_TYPE")
@@ -738,27 +730,6 @@ else:
         )
     except Exception:
         SENTENCE_TRANSFORMERS_MODEL_KWARGS = None
-
-
-SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND = os.environ.get(
-    "SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND", ""
-)
-if SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND == "":
-    SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND = "torch"
-
-
-SENTENCE_TRANSFORMERS_CROSS_ENCODER_MODEL_KWARGS = os.environ.get(
-    "SENTENCE_TRANSFORMERS_CROSS_ENCODER_MODEL_KWARGS", ""
-)
-if SENTENCE_TRANSFORMERS_CROSS_ENCODER_MODEL_KWARGS == "":
-    SENTENCE_TRANSFORMERS_CROSS_ENCODER_MODEL_KWARGS = None
-else:
-    try:
-        SENTENCE_TRANSFORMERS_CROSS_ENCODER_MODEL_KWARGS = json.loads(
-            SENTENCE_TRANSFORMERS_CROSS_ENCODER_MODEL_KWARGS
-        )
-    except Exception:
-        SENTENCE_TRANSFORMERS_CROSS_ENCODER_MODEL_KWARGS = None
 
 ####################################
 # OFFLINE_MODE
