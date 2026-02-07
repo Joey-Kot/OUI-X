@@ -85,6 +85,7 @@
 
 	import CommandSuggestionList from './MessageInput/CommandSuggestionList.svelte';
 	import Knobs from '../icons/Knobs.svelte';
+	import BookOpen from '../icons/BookOpen.svelte';
 	import ValvesModal from '../workspace/common/ValvesModal.svelte';
 	import PageEdit from '../icons/PageEdit.svelte';
 	import { goto } from '$app/navigation';
@@ -120,6 +121,7 @@
 	export let imageGenerationEnabled = false;
 	export let webSearchEnabled = false;
 	export let codeInterpreterEnabled = false;
+	export let disableRagEnabled = false;
 
 	let inputContent = null;
 
@@ -152,7 +154,8 @@
 		selectedFilterIds,
 		imageGenerationEnabled,
 		webSearchEnabled,
-		codeInterpreterEnabled
+		codeInterpreterEnabled,
+		disableRagEnabled
 	});
 
 	const inputVariableHandler = async (text: string): Promise<string> => {
@@ -1394,6 +1397,7 @@
 															webSearchEnabled = false;
 															imageGenerationEnabled = false;
 															codeInterpreterEnabled = false;
+															disableRagEnabled = false;
 														}
 													}}
 													on:paste={async (e) => {
@@ -1538,10 +1542,26 @@
 											>
 												<Component className="size-4.5" strokeWidth="1.5" />
 											</div>
-										</IntegrationsMenu>
-									{/if}
+												</IntegrationsMenu>
+											{/if}
 
-									{#if selectedModelIds.length === 1 && $models.find((m) => m.id === selectedModelIds[0])?.has_user_valves}
+											<Tooltip content={$i18n.t('Disable RAG')} placement="top">
+												<button
+													type="button"
+													aria-label={disableRagEnabled ? $i18n.t('Enable RAG') : $i18n.t('Disable RAG')}
+													aria-pressed={disableRagEnabled}
+													on:click={() => {
+														disableRagEnabled = !disableRagEnabled;
+													}}
+													class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden border transition-colors {disableRagEnabled
+														? 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30 border-red-200 dark:border-red-800'
+														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 border-transparent'}"
+												>
+													<BookOpen className="size-4.5" strokeWidth="1.75" />
+												</button>
+											</Tooltip>
+
+											{#if selectedModelIds.length === 1 && $models.find((m) => m.id === selectedModelIds[0])?.has_user_valves}
 										<div class="ml-1 flex gap-1.5">
 											<Tooltip content={$i18n.t('Valves')} placement="top">
 												<button

@@ -1233,11 +1233,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         *form_data.get("files", []),
                     ]
 
+    features = form_data.get("features", {}) or {}
+    rag_disabled = bool(features.get("disable_rag", False))
+
     # Model "Knowledge" handling
     user_message = get_last_user_message(form_data["messages"])
     model_knowledge = model.get("info", {}).get("meta", {}).get("knowledge", False)
 
-    if model_knowledge:
+    if model_knowledge and not rag_disabled:
         await event_emitter(
             {
                 "type": "status",
@@ -1322,7 +1325,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 request, form_data, extra_params, user
             )
 
-        if "web_search" in features and features["web_search"]:
+        if (
+            "web_search" in features
+            and features["web_search"]
+            and not rag_disabled
+        ):
             form_data = await chat_web_search_handler(
                 request, form_data, extra_params, user
             )
@@ -1559,13 +1566,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             except Exception as e:
                 log.exception(e)
 
-    try:
-        form_data, flags = await chat_completion_files_handler(
-            request, form_data, extra_params, user
-        )
-        sources.extend(flags.get("sources", []))
-    except Exception as e:
-        log.exception(e)
+    if not rag_disabled:
+        try:
+            form_data, flags = await chat_completion_files_handler(
+                request, form_data, extra_params, user
+            )
+            sources.extend(flags.get("sources", []))
+        except Exception as e:
+            log.exception(e)
 
     # If context is not empty, insert it into the messages
     if len(sources) > 0:
