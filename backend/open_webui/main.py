@@ -1154,8 +1154,6 @@ app.state.config.TTS_AZURE_SPEECH_OUTPUT_FORMAT = AUDIO_TTS_AZURE_SPEECH_OUTPUT_
 
 
 app.state.faster_whisper_model = None
-app.state.speech_synthesiser = None
-app.state.speech_speaker_embeddings_dataset = None
 
 
 ########################################

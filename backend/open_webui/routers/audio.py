@@ -5,7 +5,6 @@ import os
 import uuid
 import html
 import base64
-from functools import lru_cache
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
 from concurrent.futures import ThreadPoolExecutor
@@ -41,7 +40,6 @@ from open_webui.config import (
     WHISPER_MODEL_DIR,
     CACHE_DIR,
     WHISPER_LANGUAGE,
-    ELEVENLABS_API_BASE_URL,
 )
 
 from open_webui.constants import ERROR_MESSAGES
@@ -311,21 +309,6 @@ async def update_audio_config(
     }
 
 
-def load_speech_pipeline(request):
-    from transformers import pipeline
-    from datasets import load_dataset
-
-    if request.app.state.speech_synthesiser is None:
-        request.app.state.speech_synthesiser = pipeline(
-            "text-to-speech", "microsoft/speecht5_tts"
-        )
-
-    if request.app.state.speech_speaker_embeddings_dataset is None:
-        request.app.state.speech_speaker_embeddings_dataset = load_dataset(
-            "Matthijs/cmu-arctic-xvectors", split="validation"
-        )
-
-
 @router.post("/speech")
 async def speech(request: Request, user=Depends(get_verified_user)):
     body = await request.body()
@@ -409,61 +392,6 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                 detail=detail,
             )
 
-    elif request.app.state.config.TTS_ENGINE == "elevenlabs":
-        voice_id = payload.get("voice", "")
-
-        if voice_id not in get_available_voices(request):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid voice id",
-            )
-
-        try:
-            timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
-            async with aiohttp.ClientSession(
-                timeout=timeout, trust_env=True
-            ) as session:
-                async with session.post(
-                    f"{ELEVENLABS_API_BASE_URL}/v1/text-to-speech/{voice_id}",
-                    json={
-                        "text": payload["input"],
-                        "model_id": request.app.state.config.TTS_MODEL,
-                        "voice_settings": {"stability": 0.5, "similarity_boost": 0.5},
-                    },
-                    headers={
-                        "Accept": "audio/mpeg",
-                        "Content-Type": "application/json",
-                        "xi-api-key": request.app.state.config.TTS_API_KEY,
-                    },
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
-                ) as r:
-                    r.raise_for_status()
-
-                    async with aiofiles.open(file_path, "wb") as f:
-                        await f.write(await r.read())
-
-                    async with aiofiles.open(file_body_path, "w") as f:
-                        await f.write(json.dumps(payload))
-
-            return FileResponse(file_path)
-
-        except Exception as e:
-            log.exception(e)
-            detail = None
-
-            try:
-                if r.status != 200:
-                    res = await r.json()
-                    if "error" in res:
-                        detail = f"External: {res['error'].get('message', '')}"
-            except Exception:
-                detail = f"External: {e}"
-
-            raise HTTPException(
-                status_code=getattr(r, "status", 500) if r else 500,
-                detail=detail if detail else "Open WebUI: Server Connection Error",
-            )
-
     elif request.app.state.config.TTS_ENGINE == "azure":
         try:
             payload = json.loads(body.decode("utf-8"))
@@ -522,45 +450,6 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                 status_code=getattr(r, "status", 500) if r else 500,
                 detail=detail if detail else "Open WebUI: Server Connection Error",
             )
-
-    elif request.app.state.config.TTS_ENGINE == "transformers":
-        payload = None
-        try:
-            payload = json.loads(body.decode("utf-8"))
-        except Exception as e:
-            log.exception(e)
-            raise HTTPException(status_code=400, detail="Invalid JSON payload")
-
-        import torch
-        import soundfile as sf
-
-        load_speech_pipeline(request)
-
-        embeddings_dataset = request.app.state.speech_speaker_embeddings_dataset
-
-        speaker_index = 6799
-        try:
-            speaker_index = embeddings_dataset["filename"].index(
-                request.app.state.config.TTS_MODEL
-            )
-        except Exception:
-            pass
-
-        speaker_embedding = torch.tensor(
-            embeddings_dataset[speaker_index]["xvector"]
-        ).unsqueeze(0)
-
-        speech = request.app.state.speech_synthesiser(
-            payload["input"],
-            forward_params={"speaker_embeddings": speaker_embedding},
-        )
-
-        sf.write(file_path, speech["audio"], samplerate=speech["sampling_rate"])
-
-        async with aiofiles.open(file_body_path, "w") as f:
-            await f.write(json.dumps(payload))
-
-        return FileResponse(file_path)
 
 
 def transcription_handler(request, file_path, metadata, user=None):
@@ -1224,24 +1113,6 @@ def get_available_models(request: Request) -> list[dict]:
                 available_models = [{"id": "tts-1"}, {"id": "tts-1-hd"}]
         else:
             available_models = [{"id": "tts-1"}, {"id": "tts-1-hd"}]
-    elif request.app.state.config.TTS_ENGINE == "elevenlabs":
-        try:
-            response = requests.get(
-                f"{ELEVENLABS_API_BASE_URL}/v1/models",
-                headers={
-                    "xi-api-key": request.app.state.config.TTS_API_KEY,
-                    "Content-Type": "application/json",
-                },
-                timeout=5,
-            )
-            response.raise_for_status()
-            models = response.json()
-
-            available_models = [
-                {"name": model["name"], "id": model["model_id"]} for model in models
-            ]
-        except requests.RequestException as e:
-            log.error(f"Error fetching voices: {str(e)}")
     return available_models
 
 
@@ -1285,14 +1156,6 @@ def get_available_voices(request) -> dict:
                 "nova": "nova",
                 "shimmer": "shimmer",
             }
-    elif request.app.state.config.TTS_ENGINE == "elevenlabs":
-        try:
-            available_voices = get_elevenlabs_voices(
-                api_key=request.app.state.config.TTS_API_KEY
-            )
-        except Exception:
-            # Avoided @lru_cache with exception
-            pass
     elif request.app.state.config.TTS_ENGINE == "azure":
         try:
             region = request.app.state.config.TTS_AZURE_SPEECH_REGION
@@ -1316,39 +1179,6 @@ def get_available_voices(request) -> dict:
             log.error(f"Error fetching voices: {str(e)}")
 
     return available_voices
-
-
-@lru_cache
-def get_elevenlabs_voices(api_key: str) -> dict:
-    """
-    Note, set the following in your .env file to use Elevenlabs:
-    AUDIO_TTS_ENGINE=elevenlabs
-    AUDIO_TTS_API_KEY=sk_...  # Your Elevenlabs API key
-    AUDIO_TTS_VOICE=EXAVITQu4vr4xnSDxMaL  # From https://api.elevenlabs.io/v1/voices
-    AUDIO_TTS_MODEL=eleven_multilingual_v2
-    """
-
-    try:
-        # TODO: Add retries
-        response = requests.get(
-            f"{ELEVENLABS_API_BASE_URL}/v1/voices",
-            headers={
-                "xi-api-key": api_key,
-                "Content-Type": "application/json",
-            },
-        )
-        response.raise_for_status()
-        voices_data = response.json()
-
-        voices = {}
-        for voice in voices_data.get("voices", []):
-            voices[voice["voice_id"]] = voice["name"]
-    except requests.RequestException as e:
-        # Avoid @lru_cache with exception
-        log.error(f"Error fetching voices: {str(e)}")
-        raise RuntimeError(f"Error fetching voices: {str(e)}")
-
-    return voices
 
 
 @router.get("/voices")
