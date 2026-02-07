@@ -1848,6 +1848,12 @@ ENABLE_RETRIEVAL_QUERY_GENERATION = PersistentConfig(
     os.environ.get("ENABLE_RETRIEVAL_QUERY_GENERATION", "True").lower() == "true",
 )
 
+RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS = PersistentConfig(
+    "RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS",
+    "task.query.retrieval.refer_context.turns",
+    int(os.environ.get("RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS", "3")),
+)
+
 
 QUERY_GENERATION_PROMPT_TEMPLATE = PersistentConfig(
     "QUERY_GENERATION_PROMPT_TEMPLATE",
