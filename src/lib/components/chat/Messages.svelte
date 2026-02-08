@@ -252,15 +252,6 @@
 		}
 	};
 
-	const rateMessage = async (messageId, rating) => {
-		history.messages[messageId].annotation = {
-			...history.messages[messageId].annotation,
-			rating: rating
-		};
-
-		await updateChat();
-	};
-
 	const editMessage = async (messageId, { content, files }, submit = true) => {
 		if ((selectedModels ?? []).filter((id) => id).length === 0) {
 			toast.error($i18n.t('Model not selected'));
@@ -438,7 +429,6 @@
 								{updateChat}
 								{editMessage}
 								{deleteMessage}
-								{rateMessage}
 								{actionMessage}
 								{saveMessage}
 								{submitMessage}

@@ -140,6 +140,31 @@ def warm_voyage_tokenizer(model: str) -> None:
         log.warning(f"Failed to warm voyage tokenizer: {e}")
 
 
+def _normalize_voyage_tokenizer_model(model: Optional[str]) -> str:
+    normalized_model = (model or "").strip()
+    if not normalized_model:
+        return DEFAULT_VOYAGE_TOKENIZER_MODEL.value
+
+    return normalized_model
+
+
+def _should_warm_voyage_tokenizer(
+    previous_text_splitter: str,
+    current_text_splitter: str,
+    previous_voyage_tokenizer_model_raw: Optional[str],
+    current_voyage_tokenizer_model_raw: Optional[str],
+) -> tuple[bool, bool, bool]:
+    splitter_enabled = (
+        previous_text_splitter != "token_voyage"
+        and current_text_splitter == "token_voyage"
+    )
+    voyage_model_changed = _normalize_voyage_tokenizer_model(
+        previous_voyage_tokenizer_model_raw
+    ) != _normalize_voyage_tokenizer_model(current_voyage_tokenizer_model_raw)
+
+    return splitter_enabled or voyage_model_changed, splitter_enabled, voyage_model_changed
+
+
 def get_ef(
     engine: str,
     embedding_model: str,
@@ -970,6 +995,7 @@ async def update_rag_config(
 
     # Chunking settings
     previous_text_splitter = request.app.state.config.TEXT_SPLITTER
+    previous_voyage_tokenizer_model_raw = request.app.state.config.VOYAGE_TOKENIZER_MODEL
     request.app.state.config.TEXT_SPLITTER = (
         form_data.TEXT_SPLITTER
         if form_data.TEXT_SPLITTER is not None
@@ -980,12 +1006,18 @@ async def update_rag_config(
         if form_data.VOYAGE_TOKENIZER_MODEL is not None
         else request.app.state.config.VOYAGE_TOKENIZER_MODEL
     )
+    current_text_splitter = request.app.state.config.TEXT_SPLITTER
+    current_voyage_tokenizer_model_raw = request.app.state.config.VOYAGE_TOKENIZER_MODEL
+
     if (
-        request.app.state.config.TEXT_SPLITTER == "token_voyage"
-        and not (request.app.state.config.VOYAGE_TOKENIZER_MODEL or "").strip()
+        current_text_splitter == "token_voyage"
+        and not (current_voyage_tokenizer_model_raw or "").strip()
     ):
         request.app.state.config.VOYAGE_TOKENIZER_MODEL = (
             DEFAULT_VOYAGE_TOKENIZER_MODEL.value
+        )
+        current_voyage_tokenizer_model_raw = (
+            request.app.state.config.VOYAGE_TOKENIZER_MODEL
         )
     request.app.state.config.CHUNK_SIZE = (
         form_data.CHUNK_SIZE
@@ -997,14 +1029,35 @@ async def update_rag_config(
         if form_data.CHUNK_OVERLAP is not None
         else request.app.state.config.CHUNK_OVERLAP
     )
-    if (
-        previous_text_splitter != "token_voyage"
-        and request.app.state.config.TEXT_SPLITTER == "token_voyage"
-    ):
+    (
+        should_warm_voyage_tokenizer,
+        splitter_enabled,
+        voyage_model_changed,
+    ) = _should_warm_voyage_tokenizer(
+        previous_text_splitter=previous_text_splitter,
+        current_text_splitter=current_text_splitter,
+        previous_voyage_tokenizer_model_raw=previous_voyage_tokenizer_model_raw,
+        current_voyage_tokenizer_model_raw=current_voyage_tokenizer_model_raw,
+    )
+    target_voyage_tokenizer_model = _normalize_voyage_tokenizer_model(
+        current_voyage_tokenizer_model_raw
+    )
+
+    if should_warm_voyage_tokenizer:
+        reasons = []
+        if splitter_enabled:
+            reasons.append("splitter_enabled")
+        if voyage_model_changed:
+            reasons.append("model_changed")
+
+        log.info(
+            "Scheduling voyage tokenizer warmup: "
+            f"model={target_voyage_tokenizer_model}, reason={','.join(reasons)}"
+        )
         asyncio.create_task(
             run_in_threadpool(
                 warm_voyage_tokenizer,
-                request.app.state.config.VOYAGE_TOKENIZER_MODEL,
+                target_voyage_tokenizer_model,
             )
         )
 

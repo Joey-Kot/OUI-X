@@ -1,5 +1,10 @@
 <script>
-	import Evaluations from '$lib/components/admin/Evaluations.svelte';
+	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
+
+	onMount(() => {
+		goto('/admin');
+	});
 </script>
 
-<Evaluations />
+<div />
