@@ -630,15 +630,7 @@ async def get_knowledge_config_by_id(id: str, request: Request, user=Depends(get
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    if not (
-        user.role == "admin"
-        or knowledge.user_id == user.id
-        or has_access(user.id, "read", knowledge.access_control)
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
-        )
+    _ensure_write_access(knowledge, user)
 
     config_info = resolve_collection_rag_config(knowledge.meta, request.app.state.config)
     active_collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)

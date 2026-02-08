@@ -50,6 +50,8 @@
 	import SyncConfirmDialog from '../../common/ConfirmDialog.svelte';
 	import Drawer from '$lib/components/common/Drawer.svelte';
 	import ChevronLeft from '$lib/components/icons/ChevronLeft.svelte';
+	import ArrowPath from '$lib/components/icons/ArrowPath.svelte';
+	import Cog6 from '$lib/components/icons/Cog6.svelte';
 	import LockClosed from '$lib/components/icons/LockClosed.svelte';
 	import AccessControlModal from '../common/AccessControlModal.svelte';
 	import Search from '$lib/components/icons/Search.svelte';
@@ -626,8 +628,15 @@
 	};
 
 	const loadCollectionConfig = async () => {
+		if (!knowledge?.write_access) {
+			return;
+		}
+
 		const res = await getKnowledgeConfigById(localStorage.token, id).catch((e) => {
-			toast.error(String(e));
+			const message = String(e ?? '');
+			if (!message.toLowerCase().includes('permission to access this resource')) {
+				toast.error(message);
+			}
 			return null;
 		});
 
@@ -792,7 +801,9 @@
 		if (res) {
 			knowledge = res;
 			knowledgeId = knowledge?.id;
-			await loadCollectionConfig();
+			if (knowledge?.write_access) {
+				await loadCollectionConfig();
+			}
 		} else {
 			goto('/workspace/knowledge');
 		}
@@ -938,6 +949,8 @@
 										showReindexConfirmModal = true;
 									}}
 								>
+									<ArrowPath strokeWidth="2.5" className="size-3.5 shrink-0" />
+
 									<div class="text-sm font-medium shrink-0">{$i18n.t('Reindex')}</div>
 								</button>
 
@@ -948,6 +961,8 @@
 										showConfigModal = true;
 									}}
 								>
+									<Cog6 strokeWidth="2.5" className="size-3.5 shrink-0" />
+
 									<div class="text-sm font-medium shrink-0">{$i18n.t('Config')}</div>
 								</button>
 								<button
@@ -957,7 +972,7 @@
 										showAccessControlModal = true;
 									}}
 								>
-									<LockClosed strokeWidth="2.5" className="size-3.5" />
+									<LockClosed strokeWidth="2.5" className="size-3.5 shrink-0" />
 
 									<div class="text-sm font-medium shrink-0">
 										{$i18n.t('Access')}
