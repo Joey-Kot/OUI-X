@@ -29,6 +29,7 @@
 
 	export let show = false;
 	export let edit = false;
+	export let openapiOnly = false;
 
 	export let direct = false;
 	export let connection = null;
@@ -96,6 +97,10 @@
 	};
 
 	const verifyHandler = async () => {
+		if (openapiOnly) {
+			type = 'openapi';
+		}
+
 		if (url === '') {
 			toast.error($i18n.t('Please enter a valid URL'));
 			return;
@@ -250,6 +255,10 @@
 	const submitHandler = async () => {
 		loading = true;
 
+		if (openapiOnly) {
+			type = 'openapi';
+		}
+
 		// remove trailing slash from url
 		url = url.replace(/\/$/, '');
 		if (id.includes(':') || id.includes('|')) {
@@ -291,7 +300,7 @@
 		}
 
 		const connection = {
-			type,
+			type: openapiOnly ? 'openapi' : type,
 			url,
 
 			spec_type,
@@ -344,7 +353,7 @@
 
 	const init = () => {
 		if (connection) {
-			type = connection?.type ?? 'openapi';
+			type = openapiOnly ? 'openapi' : (connection?.type ?? 'openapi');
 			url = connection.url;
 
 			spec_type = connection?.spec_type ?? 'url';
@@ -435,7 +444,7 @@
 					}}
 				>
 					<div class="px-1">
-						{#if !direct}
+						{#if !direct && !openapiOnly}
 							<div class="flex gap-2 mb-1.5">
 								<div class="flex w-full justify-between items-center">
 									<div class=" text-xs text-gray-500">{$i18n.t('Type')}</div>
@@ -654,7 +663,7 @@
 
 											{#if !direct}
 												<option value="system_oauth">{$i18n.t('OAuth')}</option>
-												{#if type === 'mcp'}
+												{#if type === 'mcp' && !openapiOnly}
 													<option value="oauth_2.1">{$i18n.t('OAuth 2.1')}</option>
 												{/if}
 											{/if}

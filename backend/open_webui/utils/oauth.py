@@ -452,20 +452,20 @@ class OAuthClientManager:
 
     def ensure_client_from_config(self, client_id):
         """
-        Lazy-load an OAuth client from the current TOOL_SERVER_CONNECTIONS
+        Lazy-load an OAuth client from the current MCP_TOOL_SERVER_CONNECTIONS
         config if it hasn't been registered on this node yet.
         """
         if client_id in self.clients:
             return self.clients[client_id]["client"]
 
         try:
-            connections = getattr(self.app.state.config, "TOOL_SERVER_CONNECTIONS", [])
+            connections = getattr(
+                self.app.state.config, "MCP_TOOL_SERVER_CONNECTIONS", []
+            )
         except Exception:
             connections = []
 
         for connection in connections or []:
-            if connection.get("type", "openapi") != "mcp":
-                continue
             if connection.get("auth_type", "none") != "oauth_2.1":
                 continue
 

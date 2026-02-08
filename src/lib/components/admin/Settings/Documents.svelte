@@ -1081,7 +1081,7 @@
 												<input
 													class="flex-1 w-full text-sm bg-transparent outline-hidden"
 													placeholder={$i18n.t('Set reranking model (e.g. {{model}})', {
-														model: 'BAAI/bge-reranker-v2-m3'
+														model: 'text-embedding-3-large'
 													})}
 													bind:value={RAGConfig.RAG_RERANKING_MODEL}
 												/>

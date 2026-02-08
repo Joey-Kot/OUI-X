@@ -1,29 +1,23 @@
 <script lang="ts">
-	import { getContext, tick } from 'svelte';
+	import { getContext } from 'svelte';
 	const i18n = getContext('i18n');
 
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
-	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
 	import Cog6 from '$lib/components/icons/Cog6.svelte';
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
-	import AddToolServerModal from '$lib/components/AddToolServerModal.svelte';
 	import WrenchAlt from '$lib/components/icons/WrenchAlt.svelte';
+	import AddMCPToolServerModal from '$lib/components/AddMCPToolServerModal.svelte';
 
 	export let onDelete = () => {};
 	export let onSubmit = () => {};
-
 	export let connection = null;
-	export let direct = false;
-	export let openapiOnly = false;
 
 	let showConfigModal = false;
 	let showDeleteConfirmDialog = false;
 </script>
 
-<AddToolServerModal
+<AddMCPToolServerModal
 	edit
-	{direct}
-	{openapiOnly}
 	bind:show={showConfigModal}
 	{connection}
 	onDelete={() => {
@@ -51,20 +45,14 @@
 					? 'opacity-50'
 					: ''}"
 			>
-				<Tooltip content={connection?.type === 'mcp' ? $i18n.t('MCP') : $i18n.t('OpenAPI')}>
+				<Tooltip content={$i18n.t('MCP')}>
 					<WrenchAlt />
 				</Tooltip>
 
-				{#if connection?.info?.name}
-					<div class=" capitalize outline-hidden w-full bg-transparent">
-						{connection?.info?.name ?? connection?.url}
-						<span class="text-gray-500">{connection?.info?.id ?? ''}</span>
-					</div>
-				{:else}
-					<div>
-						{connection?.url}
-					</div>
-				{/if}
+				<div class="capitalize outline-hidden w-full bg-transparent">
+					{connection?.info?.name ?? connection?.url}
+					<span class="text-gray-500">{connection?.info?.id ?? ''}</span>
+				</div>
 			</div>
 		</div>
 	</Tooltip>

@@ -1829,5 +1829,12 @@
 	"Your entire contribution will go directly to the plugin developer; Open WebUI does not take any percentage. However, the chosen funding platform might have its own fees.": "",
 	"YouTube": "",
 	"Youtube Language": "",
-	"Youtube Proxy URL": ""
+	"Youtube Proxy URL": "",
+	"Manage MCP Tools": "Manage MCP Tools",
+	"Transport": "Transport",
+	"SSE": "SSE",
+	"Tool Enablement": "Tool Enablement",
+	"Verify before configuring tools": "Verify before configuring tools",
+	"Please enter a valid URL and ID": "Please enter a valid URL and ID",
+	"Manage MCP Streamable HTTP and SSE tool servers separately from remote servers.": "Manage MCP Streamable HTTP and SSE tool servers separately from remote servers."
 }

@@ -39,6 +39,7 @@ loguru==0.7.3
 asgiref==3.11.0
 
 mcp==1.25.0
+fastmcp>=3.0.0b2
 openai
 
 langchain==0.3.27

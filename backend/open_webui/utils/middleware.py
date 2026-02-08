@@ -24,7 +24,6 @@ from fastapi.responses import HTMLResponse
 from starlette.responses import Response, StreamingResponse, JSONResponse
 
 
-from open_webui.utils.misc import is_string_allowed
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.models.chats import Chats
 from open_webui.models.folders import Folders
@@ -1405,11 +1404,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     mcp_server_connection = None
                     for (
                         server_connection
-                    ) in request.app.state.config.TOOL_SERVER_CONNECTIONS:
-                        if (
-                            server_connection.get("type", "") == "mcp"
-                            and server_connection.get("info", {}).get("id") == server_id
-                        ):
+                    ) in getattr(
+                        request.app.state.config, 'MCP_TOOL_SERVER_CONNECTIONS', []
+                    ):
+                        if server_connection.get("info", {}).get("id") == server_id:
                             mcp_server_connection = server_connection
                             break
 
@@ -1462,14 +1460,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     await mcp_clients[server_id].connect(
                         url=mcp_server_connection.get("url", ""),
                         headers=headers if headers else None,
+                        transport=mcp_server_connection.get(
+                            "transport", "streamable_http"
+                        ),
                     )
 
-                    function_name_filter_list = mcp_server_connection.get(
-                        "config", {}
-                    ).get("function_name_filter_list", "")
-
-                    if isinstance(function_name_filter_list, str):
-                        function_name_filter_list = function_name_filter_list.split(",")
+                    tools_config = (
+                        mcp_server_connection.get("config", {}).get("tools", {}) or {}
+                    )
 
                     tool_specs = await mcp_clients[server_id].list_tool_specs()
                     for tool_spec in tool_specs:
@@ -1483,12 +1481,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
                             return tool_function
 
-                        if function_name_filter_list:
-                            if not is_string_allowed(
-                                tool_spec["name"], function_name_filter_list
-                            ):
-                                # Skip this function
-                                continue
+                        tool_enabled = tools_config.get(tool_spec["name"], {}).get(
+                            "enabled", True
+                        )
+                        if not tool_enabled:
+                            continue
 
                         tool_function = make_tool_function(
                             mcp_clients[server_id], tool_spec["name"]

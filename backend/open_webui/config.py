@@ -1062,6 +1062,21 @@ TOOL_SERVER_CONNECTIONS = PersistentConfig(
     tool_server_connections,
 )
 
+try:
+    mcp_tool_server_connections = json.loads(
+        os.environ.get("MCP_TOOL_SERVER_CONNECTIONS", "[]")
+    )
+except Exception as e:
+    log.exception(f"Error loading MCP_TOOL_SERVER_CONNECTIONS: {e}")
+    mcp_tool_server_connections = []
+
+
+MCP_TOOL_SERVER_CONNECTIONS = PersistentConfig(
+    "MCP_TOOL_SERVER_CONNECTIONS",
+    "mcp_tool_server.connections",
+    mcp_tool_server_connections,
+)
+
 ####################################
 # WEBUI
 ####################################

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel, ConfigDict
 import aiohttp
 
-from typing import Optional
+from typing import Optional, Literal, Any
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.config import get_config, save_config
@@ -15,7 +15,7 @@ from open_webui.utils.tools import (
     get_tool_server_url,
     set_tool_servers,
 )
-from open_webui.utils.mcp.client import MCPClient
+from open_webui.utils.mcp.client import MCPClient, MCPClientError
 from open_webui.models.oauth_sessions import OAuthSessions
 
 
@@ -133,24 +133,84 @@ async def register_oauth_client(
 
 
 ############################
-# ToolServers Config
+# ToolServers Config (OpenAPI)
 ############################
 
 
 class ToolServerConnection(BaseModel):
     url: str
     path: str
-    type: Optional[str] = "openapi"  # openapi, mcp
     auth_type: Optional[str]
     headers: Optional[dict | str] = None
     key: Optional[str]
     config: Optional[dict]
+    info: Optional[dict]
+    spec_type: Optional[str]
+    spec: Optional[str]
 
     model_config = ConfigDict(extra="allow")
 
 
 class ToolServersConfigForm(BaseModel):
     TOOL_SERVER_CONNECTIONS: list[ToolServerConnection]
+
+
+class MCPToolServerVerifyCache(BaseModel):
+    verified: bool
+    verified_at: Optional[int] = None
+    tools: Optional[list[dict[str, Any]]] = None
+
+
+class MCPToolServerConnection(BaseModel):
+    url: str
+    transport: Literal["streamable_http", "sse"] = "streamable_http"
+    auth_type: Optional[
+        Literal["none", "bearer", "session", "system_oauth", "oauth_2.1"]
+    ] = "none"
+    headers: Optional[dict | str] = None
+    key: Optional[str] = None
+    info: dict[str, Any]
+    config: Optional[dict[str, Any]] = None
+    verify_cache: Optional[MCPToolServerVerifyCache] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class MCPToolServersConfigForm(BaseModel):
+    MCP_TOOL_SERVER_CONNECTIONS: list[MCPToolServerConnection]
+
+
+async def _get_connection_headers(
+    request: Request,
+    user,
+    auth_type: Optional[str],
+    key: Optional[str],
+    headers: Optional[dict | str],
+) -> Optional[dict]:
+    token = None
+    if auth_type == "bearer":
+        token = key
+    elif auth_type == "session":
+        token = request.state.token.credentials
+    elif auth_type == "system_oauth":
+        try:
+            if request.cookies.get("oauth_session_id", None):
+                oauth_token = await request.app.state.oauth_manager.get_oauth_token(
+                    user.id,
+                    request.cookies.get("oauth_session_id", None),
+                )
+
+                if oauth_token:
+                    token = oauth_token.get("access_token", "")
+        except Exception:
+            pass
+
+    request_headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    if headers and isinstance(headers, dict):
+        request_headers.update(headers)
+
+    return request_headers if request_headers else None
 
 
 @router.get("/tool_servers", response_model=ToolServersConfigForm)
@@ -166,47 +226,12 @@ async def set_tool_servers_config(
     form_data: ToolServersConfigForm,
     user=Depends(get_admin_user),
 ):
-    for connection in request.app.state.config.TOOL_SERVER_CONNECTIONS:
-        server_type = connection.get("type", "openapi")
-        auth_type = connection.get("auth_type", "none")
-
-        if auth_type == "oauth_2.1":
-            # Remove existing OAuth clients for tool servers
-            server_id = connection.get("info", {}).get("id")
-            client_key = f"{server_type}:{server_id}"
-
-            try:
-                request.app.state.oauth_client_manager.remove_client(client_key)
-            except:
-                pass
-
-    # Set new tool server connections
     request.app.state.config.TOOL_SERVER_CONNECTIONS = [
-        connection.model_dump() for connection in form_data.TOOL_SERVER_CONNECTIONS
+        {**connection.model_dump(), "type": "openapi"}
+        for connection in form_data.TOOL_SERVER_CONNECTIONS
     ]
 
     await set_tool_servers(request)
-
-    for connection in request.app.state.config.TOOL_SERVER_CONNECTIONS:
-        server_type = connection.get("type", "openapi")
-        if server_type == "mcp":
-            server_id = connection.get("info", {}).get("id")
-            auth_type = connection.get("auth_type", "none")
-
-            if auth_type == "oauth_2.1" and server_id:
-                try:
-                    oauth_client_info = connection.get("info", {}).get(
-                        "oauth_client_info", ""
-                    )
-                    oauth_client_info = decrypt_data(oauth_client_info)
-
-                    request.app.state.oauth_client_manager.add_client(
-                        f"{server_type}:{server_id}",
-                        OAuthClientInformationFull(**oauth_client_info),
-                    )
-                except Exception as e:
-                    log.debug(f"Failed to add OAuth client for MCP tool server: {e}")
-                    continue
 
     return {
         "TOOL_SERVER_CONNECTIONS": request.app.state.config.TOOL_SERVER_CONNECTIONS,
@@ -218,133 +243,166 @@ async def verify_tool_servers_config(
     request: Request, form_data: ToolServerConnection, user=Depends(get_admin_user)
 ):
     """
-    Verify the connection to the tool server.
+    Verify the connection to an OpenAPI tool server.
     """
     try:
-        if form_data.type == "mcp":
-            if form_data.auth_type == "oauth_2.1":
-                discovery_urls = get_discovery_urls(form_data.url)
-                for discovery_url in discovery_urls:
-                    log.debug(
-                        f"Trying to fetch OAuth 2.1 discovery document from {discovery_url}"
-                    )
-                    async with aiohttp.ClientSession(trust_env=True) as session:
-                        async with session.get(
-                            discovery_url
-                        ) as oauth_server_metadata_response:
-                            if oauth_server_metadata_response.status == 200:
-                                try:
-                                    oauth_server_metadata = (
-                                        OAuthMetadata.model_validate(
-                                            await oauth_server_metadata_response.json()
-                                        )
-                                    )
-                                    return {
-                                        "status": True,
-                                        "oauth_server_metadata": oauth_server_metadata.model_dump(
-                                            mode="json"
-                                        ),
-                                    }
-                                except Exception as e:
-                                    log.info(
-                                        f"Failed to parse OAuth 2.1 discovery document: {e}"
-                                    )
-                                    raise HTTPException(
-                                        status_code=400,
-                                        detail=f"Failed to parse OAuth 2.1 discovery document from {discovery_url}",
-                                    )
+        headers = await _get_connection_headers(
+            request,
+            user,
+            form_data.auth_type,
+            form_data.key,
+            form_data.headers,
+        )
 
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Failed to fetch OAuth 2.1 discovery document from {discovery_urls}",
-                )
-            else:
-                try:
-                    client = MCPClient()
-                    headers = None
-
-                    token = None
-                    if form_data.auth_type == "bearer":
-                        token = form_data.key
-                    elif form_data.auth_type == "session":
-                        token = request.state.token.credentials
-                    elif form_data.auth_type == "system_oauth":
-                        oauth_token = None
-                        try:
-                            if request.cookies.get("oauth_session_id", None):
-                                oauth_token = await request.app.state.oauth_manager.get_oauth_token(
-                                    user.id,
-                                    request.cookies.get("oauth_session_id", None),
-                                )
-
-                                if oauth_token:
-                                    token = oauth_token.get("access_token", "")
-                        except Exception as e:
-                            pass
-                    if token:
-                        headers = {"Authorization": f"Bearer {token}"}
-
-                    if form_data.headers and isinstance(form_data.headers, dict):
-                        if headers is None:
-                            headers = {}
-                        headers.update(form_data.headers)
-
-                    await client.connect(form_data.url, headers=headers)
-                    specs = await client.list_tool_specs()
-                    return {
-                        "status": True,
-                        "specs": specs,
-                    }
-                except Exception as e:
-                    log.debug(f"Failed to create MCP client: {e}")
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Failed to create MCP client",
-                    )
-                finally:
-                    if client:
-                        await client.disconnect()
-        else:  # openapi
-            token = None
-            headers = None
-            if form_data.auth_type == "bearer":
-                token = form_data.key
-            elif form_data.auth_type == "session":
-                token = request.state.token.credentials
-            elif form_data.auth_type == "system_oauth":
-                try:
-                    if request.cookies.get("oauth_session_id", None):
-                        oauth_token = (
-                            await request.app.state.oauth_manager.get_oauth_token(
-                                user.id,
-                                request.cookies.get("oauth_session_id", None),
-                            )
-                        )
-
-                        if oauth_token:
-                            token = oauth_token.get("access_token", "")
-
-                except Exception as e:
-                    pass
-
-            if token:
-                headers = {"Authorization": f"Bearer {token}"}
-
-            if form_data.headers and isinstance(form_data.headers, dict):
-                if headers is None:
-                    headers = {}
-                headers.update(form_data.headers)
-
-            url = get_tool_server_url(form_data.url, form_data.path)
-            return await get_tool_server_data(url, headers=headers)
+        url = get_tool_server_url(form_data.url, form_data.path)
+        return await get_tool_server_data(url, headers=headers)
     except HTTPException as e:
         raise e
     except Exception as e:
-        log.debug(f"Failed to connect to the tool server: {e}")
+        log.debug(f"Failed to connect to OpenAPI tool server: {e}")
         raise HTTPException(
             status_code=400,
-            detail=f"Failed to connect to the tool server",
+            detail="Failed to connect to the OpenAPI tool server",
         )
+
+
+############################
+# MCP ToolServers Config
+############################
+
+
+@router.get("/mcp/tool_servers", response_model=MCPToolServersConfigForm)
+async def get_mcp_tool_servers_config(request: Request, user=Depends(get_admin_user)):
+    return {
+        "MCP_TOOL_SERVER_CONNECTIONS": request.app.state.config.MCP_TOOL_SERVER_CONNECTIONS,
+    }
+
+
+@router.post("/mcp/tool_servers", response_model=MCPToolServersConfigForm)
+async def set_mcp_tool_servers_config(
+    request: Request,
+    form_data: MCPToolServersConfigForm,
+    user=Depends(get_admin_user),
+):
+    for connection in request.app.state.config.MCP_TOOL_SERVER_CONNECTIONS:
+        auth_type = connection.get("auth_type", "none")
+        if auth_type != "oauth_2.1":
+            continue
+
+        server_id = connection.get("info", {}).get("id")
+        if not server_id:
+            continue
+
+        try:
+            request.app.state.oauth_client_manager.remove_client(f"mcp:{server_id}")
+        except Exception:
+            pass
+
+    request.app.state.config.MCP_TOOL_SERVER_CONNECTIONS = [
+        connection.model_dump() for connection in form_data.MCP_TOOL_SERVER_CONNECTIONS
+    ]
+
+    for connection in request.app.state.config.MCP_TOOL_SERVER_CONNECTIONS:
+        server_id = connection.get("info", {}).get("id")
+        auth_type = connection.get("auth_type", "none")
+
+        if auth_type == "oauth_2.1" and server_id:
+            try:
+                oauth_client_info = connection.get("info", {}).get("oauth_client_info", "")
+                oauth_client_info = decrypt_data(oauth_client_info)
+
+                request.app.state.oauth_client_manager.add_client(
+                    f"mcp:{server_id}",
+                    OAuthClientInformationFull(**oauth_client_info),
+                )
+            except Exception as e:
+                log.debug(f"Failed to add OAuth client for MCP tool server: {e}")
+                continue
+
+    return {
+        "MCP_TOOL_SERVER_CONNECTIONS": request.app.state.config.MCP_TOOL_SERVER_CONNECTIONS,
+    }
+
+
+@router.post("/mcp/tool_servers/verify")
+async def verify_mcp_tool_servers_config(
+    request: Request,
+    form_data: MCPToolServerConnection,
+    user=Depends(get_admin_user),
+):
+    """
+    Verify the connection to an MCP tool server.
+    """
+
+    if form_data.auth_type == "oauth_2.1":
+        discovery_urls = get_discovery_urls(form_data.url)
+        for discovery_url in discovery_urls:
+            log.debug(
+                f"Trying to fetch OAuth 2.1 discovery document from {discovery_url}"
+            )
+            async with aiohttp.ClientSession(trust_env=True) as session:
+                async with session.get(
+                    discovery_url
+                ) as oauth_server_metadata_response:
+                    if oauth_server_metadata_response.status == 200:
+                        try:
+                            oauth_server_metadata = OAuthMetadata.model_validate(
+                                await oauth_server_metadata_response.json()
+                            )
+                            return {
+                                "status": True,
+                                "oauth_server_metadata": oauth_server_metadata.model_dump(
+                                    mode="json"
+                                ),
+                            }
+                        except Exception as e:
+                            log.info(
+                                f"Failed to parse OAuth 2.1 discovery document: {e}"
+                            )
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Failed to parse OAuth 2.1 discovery document from {discovery_url}",
+                            )
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to fetch OAuth 2.1 discovery document from {discovery_urls}",
+        )
+
+    client = MCPClient()
+    try:
+        headers = await _get_connection_headers(
+            request,
+            user,
+            form_data.auth_type,
+            form_data.key,
+            form_data.headers,
+        )
+
+        await client.connect(
+            form_data.url,
+            headers=headers,
+            transport=form_data.transport,
+        )
+        specs = await client.list_tool_specs()
+
+        return {
+            "status": True,
+            "specs": specs,
+        }
+    except MCPClientError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail=str(e),
+        )
+    except Exception as e:
+        log.exception("Failed to verify MCP tool server")
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to create MCP client",
+        )
+    finally:
+        await client.disconnect()
 
 
 ############################

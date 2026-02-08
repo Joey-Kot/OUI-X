@@ -93,48 +93,43 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
         )
 
     # MCP Tool Servers
-    for server in request.app.state.config.TOOL_SERVER_CONNECTIONS:
-        if server.get("type", "openapi") == "mcp":
-            server_id = server.get("info", {}).get("id")
-            auth_type = server.get("auth_type", "none")
+    for server in getattr(request.app.state.config, 'MCP_TOOL_SERVER_CONNECTIONS', []):
+        server_id = server.get("info", {}).get("id")
+        auth_type = server.get("auth_type", "none")
 
-            session_token = None
-            if auth_type == "oauth_2.1":
-                splits = server_id.split(":")
-                server_id = splits[-1] if len(splits) > 1 else server_id
+        session_token = None
+        if auth_type == "oauth_2.1" and server_id:
+            splits = server_id.split(":")
+            server_id = splits[-1] if len(splits) > 1 else server_id
 
-                session_token = (
-                    await request.app.state.oauth_client_manager.get_oauth_token(
-                        user.id, f"mcp:{server_id}"
-                    )
-                )
-
-            tools.append(
-                ToolUserResponse(
-                    **{
-                        "id": f"server:mcp:{server.get('info', {}).get('id')}",
-                        "user_id": f"server:mcp:{server.get('info', {}).get('id')}",
-                        "name": server.get("info", {}).get("name", "MCP Tool Server"),
-                        "meta": {
-                            "description": server.get("info", {}).get(
-                                "description", ""
-                            ),
-                        },
-                        "access_control": server.get("config", {}).get(
-                            "access_control", None
-                        ),
-                        "updated_at": int(time.time()),
-                        "created_at": int(time.time()),
-                        **(
-                            {
-                                "authenticated": session_token is not None,
-                            }
-                            if auth_type == "oauth_2.1"
-                            else {}
-                        ),
-                    }
-                )
+            session_token = await request.app.state.oauth_client_manager.get_oauth_token(
+                user.id, f"mcp:{server_id}"
             )
+
+        tools.append(
+            ToolUserResponse(
+                **{
+                    "id": f"server:mcp:{server.get('info', {}).get('id')}",
+                    "user_id": f"server:mcp:{server.get('info', {}).get('id')}",
+                    "name": server.get("info", {}).get("name", "MCP Tool Server"),
+                    "meta": {
+                        "description": server.get("info", {}).get("description", ""),
+                    },
+                    "access_control": server.get("config", {}).get(
+                        "access_control", None
+                    ),
+                    "updated_at": int(time.time()),
+                    "created_at": int(time.time()),
+                    **(
+                        {
+                            "authenticated": session_token is not None,
+                        }
+                        if auth_type == "oauth_2.1"
+                        else {}
+                    ),
+                }
+            )
+        )
 
     if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
         # Admin can see all tools
