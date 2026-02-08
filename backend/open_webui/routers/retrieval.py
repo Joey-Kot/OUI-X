@@ -83,6 +83,7 @@ from open_webui.retrieval.utils import (
     query_collection_with_rag_pipeline,
     query_doc,
     query_doc_with_rag_pipeline,
+    merge_and_sort_query_results,
 )
 from open_webui.retrieval.vector.utils import filter_metadata
 from open_webui.utils.misc import (
@@ -104,6 +105,10 @@ from open_webui.env import (
 )
 
 from open_webui.constants import ERROR_MESSAGES
+from open_webui.utils.knowledge import (
+    get_active_vector_collection_name,
+    resolve_collection_rag_config,
+)
 
 log = logging.getLogger(__name__)
 
@@ -224,6 +229,82 @@ def get_rf(
             raise Exception(ERROR_MESSAGES.DEFAULT(e))
 
     return rf
+
+
+def get_collection_effective_config(request: Request, collection_name: str | None) -> dict:
+    if not collection_name:
+        return resolve_collection_rag_config(None, request.app.state.config)["effective"]
+
+    knowledge = Knowledges.get_knowledge_by_id(collection_name)
+    if not knowledge:
+        for kb in Knowledges.get_knowledge_bases():
+            if (
+                get_active_vector_collection_name(kb.id, kb.meta)
+                == collection_name
+            ):
+                knowledge = kb
+                break
+
+    if not knowledge:
+        return resolve_collection_rag_config(None, request.app.state.config)["effective"]
+
+    return resolve_collection_rag_config(knowledge.meta, request.app.state.config)["effective"]
+
+
+def get_physical_collection_name(collection_name: str | None) -> str | None:
+    if not collection_name:
+        return None
+
+    knowledge = Knowledges.get_knowledge_by_id(collection_name)
+    if not knowledge:
+        return collection_name
+
+    return get_active_vector_collection_name(knowledge.id, knowledge.meta)
+
+
+def build_embedding_function_from_effective_config(request: Request, effective_config: dict):
+    engine = effective_config["RAG_EMBEDDING_ENGINE"]
+    return get_embedding_function(
+        engine,
+        effective_config["RAG_EMBEDDING_MODEL"],
+        request.app.state.ef,
+        (
+            request.app.state.config.RAG_OPENAI_API_BASE_URL
+            if engine == "openai"
+            else request.app.state.config.RAG_AZURE_OPENAI_BASE_URL
+        ),
+        (
+            request.app.state.config.RAG_OPENAI_API_KEY
+            if engine == "openai"
+            else request.app.state.config.RAG_AZURE_OPENAI_API_KEY
+        ),
+        effective_config["RAG_EMBEDDING_BATCH_SIZE"],
+        azure_api_version=(
+            request.app.state.config.RAG_AZURE_OPENAI_API_VERSION
+            if engine == "azure_openai"
+            else None
+        ),
+        enable_async=request.app.state.config.ENABLE_ASYNC_EMBEDDING,
+    )
+
+
+def build_reranking_function_from_effective_config(request: Request, effective_config: dict):
+    model = effective_config.get("RAG_RERANKING_MODEL", "")
+    if not model:
+        return None
+
+    engine = effective_config.get("RAG_RERANKING_ENGINE", "external")
+    rf = get_rf(
+        engine,
+        model,
+        request.app.state.config.RAG_EXTERNAL_RERANKER_URL,
+        request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
+        request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
+        request.app.state.config.RAG_VOYAGE_RERANKER_URL,
+        request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY,
+        request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT,
+    )
+    return get_reranking_function(engine, model, rf)
 
 
 ##########################################
@@ -1433,6 +1514,7 @@ def save_docs_to_vector_db(
     split: bool = True,
     add: bool = False,
     user=None,
+    effective_config: Optional[dict] = None,
 ) -> bool:
     def _get_docs_info(docs: list[Document]) -> str:
         docs_info = set()
@@ -1467,39 +1549,43 @@ def save_docs_to_vector_db(
                 log.info(f"Document with hash {metadata['hash']} already exists")
                 raise ValueError(ERROR_MESSAGES.DUPLICATE_CONTENT)
 
+    rag_config = effective_config or resolve_collection_rag_config(
+        None, request.app.state.config
+    )["effective"]
+
     if split:
-        if request.app.state.config.TEXT_SPLITTER in ["", "character"]:
+        if rag_config["TEXT_SPLITTER"] in ["", "character"]:
             text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=request.app.state.config.CHUNK_SIZE,
-                chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
+                chunk_size=rag_config["CHUNK_SIZE"],
+                chunk_overlap=rag_config["CHUNK_OVERLAP"],
                 add_start_index=True,
             )
             docs = text_splitter.split_documents(docs)
-        elif request.app.state.config.TEXT_SPLITTER == "token":
+        elif rag_config["TEXT_SPLITTER"] == "token":
             log.info(
                 f"Using token text splitter: tiktoken ({request.app.state.config.TIKTOKEN_ENCODING_NAME})"
             )
 
             text_splitter = TiktokenTextSplitter(
                 encoding_name=request.app.state.config.TIKTOKEN_ENCODING_NAME,
-                chunk_size=request.app.state.config.CHUNK_SIZE,
-                chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
+                chunk_size=rag_config["CHUNK_SIZE"],
+                chunk_overlap=rag_config["CHUNK_OVERLAP"],
                 add_start_index=True,
             )
 
             docs = text_splitter.split_documents(docs)
-        elif request.app.state.config.TEXT_SPLITTER == "token_voyage":
+        elif rag_config["TEXT_SPLITTER"] == "token_voyage":
             log.info(
                 "Using token text splitter: "
-                f"{request.app.state.config.VOYAGE_TOKENIZER_MODEL} (HF AutoTokenizer)"
+                f"{rag_config['VOYAGE_TOKENIZER_MODEL']} (HF AutoTokenizer)"
             )
 
             text_splitter = HFTokenTextSplitter(
                 tokenizer=get_voyage_tokenizer(
-                    request.app.state.config.VOYAGE_TOKENIZER_MODEL
+                    rag_config["VOYAGE_TOKENIZER_MODEL"]
                 ),
-                chunk_size=request.app.state.config.CHUNK_SIZE,
-                chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
+                chunk_size=rag_config["CHUNK_SIZE"],
+                chunk_overlap=rag_config["CHUNK_OVERLAP"],
                 add_start_index=True,
             )
 
@@ -1516,8 +1602,8 @@ def save_docs_to_vector_db(
             **doc.metadata,
             **(metadata if metadata else {}),
             "embedding_config": {
-                "engine": request.app.state.config.RAG_EMBEDDING_ENGINE,
-                "model": request.app.state.config.RAG_EMBEDDING_MODEL,
+                "engine": rag_config["RAG_EMBEDDING_ENGINE"],
+                "model": rag_config["RAG_EMBEDDING_MODEL"],
             },
         }
         for doc in docs
@@ -1539,23 +1625,23 @@ def save_docs_to_vector_db(
 
         log.info(f"generating embeddings for {collection_name}")
         embedding_function = get_embedding_function(
-            request.app.state.config.RAG_EMBEDDING_ENGINE,
-            request.app.state.config.RAG_EMBEDDING_MODEL,
+            rag_config["RAG_EMBEDDING_ENGINE"],
+            rag_config["RAG_EMBEDDING_MODEL"],
             request.app.state.ef,
             (
                 request.app.state.config.RAG_OPENAI_API_BASE_URL
-                if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
+                if rag_config["RAG_EMBEDDING_ENGINE"] == "openai"
                 else request.app.state.config.RAG_AZURE_OPENAI_BASE_URL
             ),
             (
                 request.app.state.config.RAG_OPENAI_API_KEY
-                if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
+                if rag_config["RAG_EMBEDDING_ENGINE"] == "openai"
                 else request.app.state.config.RAG_AZURE_OPENAI_API_KEY
             ),
-            request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
+            rag_config["RAG_EMBEDDING_BATCH_SIZE"],
             azure_api_version=(
                 request.app.state.config.RAG_AZURE_OPENAI_API_VERSION
-                if request.app.state.config.RAG_EMBEDDING_ENGINE == "azure_openai"
+                if rag_config["RAG_EMBEDDING_ENGINE"] == "azure_openai"
                 else None
             ),
             enable_async=request.app.state.config.ENABLE_ASYNC_EMBEDDING,
@@ -1599,6 +1685,7 @@ class ProcessFileForm(BaseModel):
     file_id: str
     content: Optional[str] = None
     collection_name: Optional[str] = None
+    knowledge_id: Optional[str] = None
 
 
 @router.post("/process/file")
@@ -1619,9 +1706,17 @@ def process_file(
         try:
 
             collection_name = form_data.collection_name
+            logical_collection_name = form_data.knowledge_id or form_data.collection_name
 
             if collection_name is None:
                 collection_name = f"file-{file.id}"
+                logical_collection_name = None
+            else:
+                collection_name = get_physical_collection_name(collection_name)
+
+            effective_config = get_collection_effective_config(
+                request, logical_collection_name
+            )
 
             if form_data.content:
                 # Update the content in the file
@@ -1781,6 +1876,7 @@ def process_file(
                         },
                         add=(True if form_data.collection_name else False),
                         user=user,
+                        effective_config=effective_config,
                     )
                     log.info(f"added {len(docs)} items to collection {collection_name}")
 
@@ -2393,6 +2489,14 @@ async def query_doc_handler(
     user=Depends(get_verified_user),
 ):
     try:
+        physical_collection_name = get_physical_collection_name(form_data.collection_name)
+        effective_config = get_collection_effective_config(
+            request, form_data.collection_name
+        )
+        embedding_function = build_embedding_function_from_effective_config(
+            request, effective_config
+        )
+
         enable_bm25_search = (
             form_data.enable_bm25_search
             if form_data.enable_bm25_search is not None
@@ -2403,33 +2507,40 @@ async def query_doc_handler(
             if form_data.enable_reranking is not None
             else request.app.state.config.ENABLE_RAG_RERANKING
         )
+        reranking_function = (
+            build_reranking_function_from_effective_config(request, effective_config)
+            if enable_reranking
+            else None
+        )
 
         collection_result = None
         if enable_bm25_search:
-            collection_result = VECTOR_DB_CLIENT.get(collection_name=form_data.collection_name)
+            collection_result = VECTOR_DB_CLIENT.get(
+                collection_name=physical_collection_name
+            )
 
         return await query_doc_with_rag_pipeline(
-            collection_name=form_data.collection_name,
+            collection_name=physical_collection_name,
             collection_result=collection_result,
             query=form_data.query,
-            embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+            embedding_function=lambda query, prefix: embedding_function(
                 query, prefix=prefix, user=user
             ),
-            k=form_data.k if form_data.k else request.app.state.config.TOP_K,
+            k=form_data.k if form_data.k else effective_config["TOP_K"],
             reranking_function=(
                 (
-                    lambda query, documents: request.app.state.RERANKING_FUNCTION(
+                    lambda query, documents: reranking_function(
                         query, documents, user=user
                     )
                 )
-                if request.app.state.RERANKING_FUNCTION
+                if reranking_function
                 else None
             ),
-            k_reranker=form_data.k_reranker or request.app.state.config.TOP_K_RERANKER,
+            k_reranker=form_data.k_reranker or effective_config["TOP_K_RERANKER"],
             r=(
                 form_data.r
                 if form_data.r
-                else request.app.state.config.RELEVANCE_THRESHOLD
+                else effective_config["RELEVANCE_THRESHOLD"]
             ),
             bm25_weight=(
                 form_data.bm25_weight
@@ -2471,6 +2582,7 @@ async def query_collection_handler(
     user=Depends(get_verified_user),
 ):
     try:
+        effective_base_k = form_data.k if form_data.k else request.app.state.config.TOP_K
         enable_bm25_search = (
             form_data.enable_bm25_search
             if form_data.enable_bm25_search is not None
@@ -2481,42 +2593,72 @@ async def query_collection_handler(
             if form_data.enable_reranking is not None
             else request.app.state.config.ENABLE_RAG_RERANKING
         )
+        results = []
 
-        return await query_collection_with_rag_pipeline(
-            collection_names=form_data.collection_names,
-            queries=[form_data.query],
-            embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                query, prefix=prefix, user=user
-            ),
-            k=form_data.k if form_data.k else request.app.state.config.TOP_K,
-            reranking_function=(
-                (
-                    lambda query, documents: request.app.state.RERANKING_FUNCTION(
-                        query, documents, user=user
-                    )
-                )
-                if request.app.state.RERANKING_FUNCTION
+        for logical_collection_name in form_data.collection_names:
+            physical_collection_name = get_physical_collection_name(logical_collection_name)
+            effective_config = get_collection_effective_config(
+                request, logical_collection_name
+            )
+
+            embedding_function = build_embedding_function_from_effective_config(
+                request, effective_config
+            )
+            reranking_function = (
+                build_reranking_function_from_effective_config(request, effective_config)
+                if enable_reranking
                 else None
-            ),
-            k_reranker=form_data.k_reranker or request.app.state.config.TOP_K_RERANKER,
-            r=(
-                form_data.r
-                if form_data.r
-                else request.app.state.config.RELEVANCE_THRESHOLD
-            ),
-            bm25_weight=(
-                form_data.bm25_weight
-                if form_data.bm25_weight is not None
-                else request.app.state.config.BM25_WEIGHT
-            ),
-            enable_bm25_search=enable_bm25_search,
-            enable_reranking=enable_reranking,
-            enable_bm25_enriched_texts=(
-                form_data.enable_bm25_enriched_texts
-                if form_data.enable_bm25_enriched_texts is not None
-                else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
-            ),
-        )
+            )
+
+            collection_result = None
+            if enable_bm25_search:
+                collection_result = VECTOR_DB_CLIENT.get(
+                    collection_name=physical_collection_name
+                )
+
+            query_result = await query_doc_with_rag_pipeline(
+                collection_name=physical_collection_name,
+                collection_result=collection_result,
+                query=form_data.query,
+                embedding_function=lambda query, prefix: embedding_function(
+                    query, prefix=prefix, user=user
+                ),
+                k=effective_base_k,
+                reranking_function=(
+                    (
+                        lambda query, documents: reranking_function(
+                            query, documents, user=user
+                        )
+                    )
+                    if reranking_function
+                    else None
+                ),
+                k_reranker=(
+                    form_data.k_reranker
+                    if form_data.k_reranker is not None
+                    else effective_config["TOP_K_RERANKER"]
+                ),
+                r=(
+                    form_data.r
+                    if form_data.r is not None
+                    else effective_config["RELEVANCE_THRESHOLD"]
+                ),
+                bm25_weight=(
+                    form_data.bm25_weight
+                    if form_data.bm25_weight is not None
+                    else request.app.state.config.BM25_WEIGHT
+                ),
+                enable_bm25_search=enable_bm25_search,
+                enable_reranking=enable_reranking,
+                enable_bm25_enriched_texts=(
+                    form_data.enable_bm25_enriched_texts
+                    if form_data.enable_bm25_enriched_texts is not None
+                    else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
+                ),
+            )
+            results.append(query_result)
+
+        return merge_and_sort_query_results(results, k=effective_base_k)
 
     except Exception as e:
         log.exception(e)

@@ -27,9 +27,12 @@
 	import {
 		addFileToKnowledgeById,
 		getKnowledgeById,
+		getKnowledgeConfigById,
+		reindexKnowledgeById,
 		removeFileFromKnowledgeById,
 		resetKnowledgeById,
 		updateFileFromKnowledgeById,
+		updateKnowledgeConfigById,
 		updateKnowledgeById,
 		searchKnowledgeFilesById
 	} from '$lib/apis/knowledge';
@@ -54,6 +57,7 @@
 	import DropdownOptions from '$lib/components/common/DropdownOptions.svelte';
 	import Pagination from '$lib/components/common/Pagination.svelte';
 	import AttachWebpageModal from '$lib/components/chat/MessageInput/AttachWebpageModal.svelte';
+	import ConfigModal from './KnowledgeBase/ConfigModal.svelte';
 
 	let largeScreen = true;
 
@@ -65,6 +69,13 @@
 
 	let showSyncConfirmModal = false;
 	let showAccessControlModal = false;
+	let showConfigModal = false;
+	let showReindexConfirmModal = false;
+
+	let collectionConfigMode: 'default' | 'custom' = 'default';
+	let collectionConfigGlobalDefaults = {};
+	let collectionConfigOverrides = {};
+	let collectionConfigLoading = false;
 
 	let minSize = 0;
 	type Knowledge = {
@@ -614,6 +625,52 @@
 		}, 1000);
 	};
 
+	const loadCollectionConfig = async () => {
+		const res = await getKnowledgeConfigById(localStorage.token, id).catch((e) => {
+			toast.error(String(e));
+			return null;
+		});
+
+		if (res) {
+			collectionConfigMode = res.mode ?? 'default';
+			collectionConfigOverrides = res.overrides ?? {};
+			collectionConfigGlobalDefaults = res.global_defaults ?? {};
+		}
+	};
+
+	const saveCollectionConfig = async ({ mode, overrides }) => {
+		collectionConfigLoading = true;
+		const res = await updateKnowledgeConfigById(localStorage.token, id, {
+			mode,
+			overrides
+		}).catch((e) => {
+			toast.error(String(e));
+			return null;
+		});
+		collectionConfigLoading = false;
+
+		if (res) {
+			collectionConfigMode = res.mode ?? mode;
+			collectionConfigOverrides = res.overrides ?? overrides ?? {};
+			showConfigModal = false;
+			toast.success($i18n.t('Knowledge updated successfully'));
+		}
+	};
+
+	const reindexCollection = async () => {
+		const res = await reindexKnowledgeById(localStorage.token, id).catch((e) => {
+			toast.error(String(e));
+			return null;
+		});
+
+		if (res?.status) {
+			toast.success($i18n.t('Success'));
+			await loadCollectionConfig();
+		} else {
+			toast.error($i18n.t('Failed to process'));
+		}
+	};
+
 	const handleMediaQuery = async (e) => {
 		if (e.matches) {
 			largeScreen = true;
@@ -735,6 +792,7 @@
 		if (res) {
 			knowledge = res;
 			knowledgeId = knowledge?.id;
+			await loadCollectionConfig();
 		} else {
 			goto('/workspace/knowledge');
 		}
@@ -773,6 +831,25 @@
 	}}
 />
 
+
+<SyncConfirmDialog
+	bind:show={showReindexConfirmModal}
+	message={$i18n.t(
+		'After changing retrieval settings, reindexing is required for this collection. Do you want to continue?'
+	)}
+	on:confirm={() => {
+		reindexCollection();
+	}}
+/>
+
+<ConfigModal
+	bind:show={showConfigModal}
+	loading={collectionConfigLoading}
+	mode={collectionConfigMode}
+	globalDefaults={collectionConfigGlobalDefaults}
+	overrides={collectionConfigOverrides}
+	onSave={saveCollectionConfig}
+/>
 <AttachWebpageModal
 	bind:show={showAddWebpageModal}
 	onSubmit={async (e) => {
@@ -853,7 +930,26 @@
 						</div>
 
 						{#if knowledge?.write_access}
-							<div class="self-center shrink-0">
+							<div class="self-center shrink-0 flex items-center gap-2">
+								<button
+									class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full flex gap-1 items-center"
+									type="button"
+									on:click={() => {
+										showReindexConfirmModal = true;
+									}}
+								>
+									<div class="text-sm font-medium shrink-0">{$i18n.t('Reindex')}</div>
+								</button>
+
+								<button
+									class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full flex gap-1 items-center"
+									type="button"
+									on:click={() => {
+										showConfigModal = true;
+									}}
+								>
+									<div class="text-sm font-medium shrink-0">{$i18n.t('Config')}</div>
+								</button>
 								<button
 									class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full flex gap-1 items-center"
 									type="button"

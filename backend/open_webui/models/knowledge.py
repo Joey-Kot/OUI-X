@@ -136,8 +136,10 @@ class KnowledgeUserResponse(KnowledgeUserModel):
 
 
 class KnowledgeForm(BaseModel):
-    name: str
-    description: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    data: Optional[dict] = None
+    meta: Optional[dict] = None
     access_control: Optional[dict] = None
 
 
@@ -555,9 +557,10 @@ class KnowledgeTable:
         try:
             with get_db() as db:
                 knowledge = self.get_knowledge_by_id(id=id)
+                update_data = form_data.model_dump(exclude_none=True)
                 db.query(Knowledge).filter_by(id=id).update(
                     {
-                        **form_data.model_dump(),
+                        **update_data,
                         "updated_at": int(time.time()),
                     }
                 )

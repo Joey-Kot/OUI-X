@@ -35,6 +35,10 @@ from open_webui.models.notes import Notes
 
 from open_webui.retrieval.vector.main import GetResult
 from open_webui.utils.access_control import has_access
+from open_webui.utils.knowledge import (
+    get_active_vector_collection_name,
+    resolve_collection_rag_config,
+)
 from open_webui.utils.headers import include_user_info_headers
 from open_webui.utils.misc import get_message_list
 
@@ -1113,6 +1117,93 @@ def get_reranking_function(reranking_engine, reranking_model, reranking_function
         )
 
 
+def _build_collection_runtime_functions(request, collection_name: str):
+    knowledge = Knowledges.get_knowledge_by_id(collection_name)
+    if not knowledge:
+        return {
+            "physical_collection_name": collection_name,
+            "effective_config": resolve_collection_rag_config(None, request.app.state.config)[
+                "effective"
+            ],
+            "embedding_function": request.app.state.EMBEDDING_FUNCTION,
+            "reranking_function": request.app.state.RERANKING_FUNCTION,
+        }
+
+    effective_config = resolve_collection_rag_config(
+        knowledge.meta, request.app.state.config
+    )["effective"]
+
+    embedding_function = get_embedding_function(
+        effective_config["RAG_EMBEDDING_ENGINE"],
+        effective_config["RAG_EMBEDDING_MODEL"],
+        request.app.state.ef,
+        (
+            request.app.state.config.RAG_OPENAI_API_BASE_URL
+            if effective_config["RAG_EMBEDDING_ENGINE"] == "openai"
+            else request.app.state.config.RAG_AZURE_OPENAI_BASE_URL
+        ),
+        (
+            request.app.state.config.RAG_OPENAI_API_KEY
+            if effective_config["RAG_EMBEDDING_ENGINE"] == "openai"
+            else request.app.state.config.RAG_AZURE_OPENAI_API_KEY
+        ),
+        effective_config["RAG_EMBEDDING_BATCH_SIZE"],
+        azure_api_version=(
+            request.app.state.config.RAG_AZURE_OPENAI_API_VERSION
+            if effective_config["RAG_EMBEDDING_ENGINE"] == "azure_openai"
+            else None
+        ),
+        enable_async=request.app.state.config.ENABLE_ASYNC_EMBEDDING,
+    )
+
+    reranking_function = None
+    model = effective_config.get("RAG_RERANKING_MODEL", "")
+    if model:
+        try:
+            if effective_config.get("RAG_RERANKING_ENGINE") == "voyage":
+                from open_webui.retrieval.models.voyage import VoyageReranker
+
+                rf = VoyageReranker(
+                    url=request.app.state.config.RAG_VOYAGE_RERANKER_URL,
+                    api_key=request.app.state.config.RAG_VOYAGE_RERANKER_API_KEY,
+                    model=model,
+                    timeout=(
+                        int(request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT)
+                        if request.app.state.config.RAG_VOYAGE_RERANKER_TIMEOUT
+                        else None
+                    ),
+                )
+            else:
+                from open_webui.retrieval.models.external import ExternalReranker
+
+                rf = ExternalReranker(
+                    url=request.app.state.config.RAG_EXTERNAL_RERANKER_URL,
+                    api_key=request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
+                    model=model,
+                    timeout=(
+                        int(request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT)
+                        if request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT
+                        else None
+                    ),
+                )
+            reranking_function = get_reranking_function(
+                effective_config.get("RAG_RERANKING_ENGINE", "external"),
+                model,
+                rf,
+            )
+        except Exception as e:
+            log.warning(f"Failed to build collection reranker for {collection_name}: {e}")
+
+    return {
+        "physical_collection_name": get_active_vector_collection_name(
+            knowledge.id, knowledge.meta
+        ),
+        "effective_config": effective_config,
+        "embedding_function": embedding_function,
+        "reranking_function": reranking_function,
+    }
+
+
 async def get_sources_from_items(
     request,
     items,
@@ -1338,18 +1429,62 @@ async def get_sources_from_items(
                 else:
                     query_result = None
                     try:
-                        query_result = await query_collection_with_rag_pipeline(
-                            collection_names=collection_names,
-                            queries=queries,
-                            embedding_function=embedding_function,
-                            k=k,
-                            reranking_function=reranking_function,
-                            k_reranker=k_reranker,
-                            r=r,
-                            bm25_weight=bm25_weight,
-                            enable_bm25_search=enable_bm25_search,
-                            enable_reranking=enable_reranking,
-                            enable_bm25_enriched_texts=enable_bm25_enriched_texts,
+                        per_collection_results = []
+                        for collection_name in collection_names:
+                            runtime = _build_collection_runtime_functions(
+                                request, collection_name
+                            )
+                            effective_config = runtime["effective_config"]
+                            physical_collection_name = runtime[
+                                "physical_collection_name"
+                            ]
+                            collection_embedding_function = runtime[
+                                "embedding_function"
+                            ]
+                            collection_reranking_function = runtime.get(
+                                "reranking_function"
+                            )
+
+                            collection_result = None
+                            if enable_bm25_search:
+                                collection_result = VECTOR_DB_CLIENT.get(
+                                    collection_name=physical_collection_name
+                                )
+
+                            for query in queries:
+                                result = await query_doc_with_rag_pipeline(
+                                    collection_name=physical_collection_name,
+                                    collection_result=collection_result,
+                                    query=query,
+                                    embedding_function=lambda q, prefix, ef=collection_embedding_function: ef(
+                                        q,
+                                        prefix=prefix,
+                                        user=user,
+                                    ),
+                                    k=k,
+                                    reranking_function=(
+                                        (
+                                            lambda q, documents, rf=collection_reranking_function: rf(
+                                                q,
+                                                documents,
+                                                user=user,
+                                            )
+                                        )
+                                        if collection_reranking_function
+                                        and enable_reranking
+                                        else None
+                                    ),
+                                    k_reranker=effective_config["TOP_K_RERANKER"],
+                                    r=effective_config["RELEVANCE_THRESHOLD"],
+                                    bm25_weight=bm25_weight,
+                                    enable_bm25_search=enable_bm25_search,
+                                    enable_reranking=enable_reranking,
+                                    enable_bm25_enriched_texts=enable_bm25_enriched_texts,
+                                )
+                                per_collection_results.append(result)
+
+                        query_result = merge_and_sort_query_results(
+                            per_collection_results, k=k
                         )
                     except Exception:
                         log.debug(
@@ -1357,8 +1492,14 @@ async def get_sources_from_items(
                         )
 
                     if query_result is None:
+                        physical_collection_names = [
+                            _build_collection_runtime_functions(request, name)[
+                                "physical_collection_name"
+                            ]
+                            for name in collection_names
+                        ]
                         query_result = await query_collection(
-                            collection_names=collection_names,
+                            collection_names=physical_collection_names,
                             queries=queries,
                             embedding_function=embedding_function,
                             k=k,

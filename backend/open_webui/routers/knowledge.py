@@ -1,4 +1,6 @@
 from typing import List, Optional
+import time
+import uuid
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
 from fastapi.concurrency import run_in_threadpool
@@ -29,11 +31,23 @@ from open_webui.utils.access_control import has_access, has_permission
 
 from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL
 from open_webui.models.models import Models, ModelForm
+from open_webui.utils.knowledge import (
+    get_active_vector_collection_name,
+    resolve_collection_rag_config,
+    sanitize_rag_overrides,
+    upsert_collection_rag_meta,
+    upsert_reindex_status_meta,
+)
 
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+SUPPORTED_EMBEDDING_ENGINES = {"openai", "azure_openai"}
+SUPPORTED_TEXT_SPLITTERS = {"", "character", "token", "token_voyage"}
+SUPPORTED_RERANKING_ENGINES = {"external", "voyage"}
 
 ############################
 # getKnowledgeBases
@@ -49,6 +63,163 @@ class KnowledgeAccessResponse(KnowledgeUserResponse):
 class KnowledgeAccessListResponse(BaseModel):
     items: list[KnowledgeAccessResponse]
     total: int
+
+
+class CollectionRagConfigUpdateForm(BaseModel):
+    mode: str = "default"
+    overrides: Optional[dict] = None
+
+
+def _ensure_write_access(knowledge, user):
+    if (
+        knowledge.user_id != user.id
+        and not has_access(user.id, "write", knowledge.access_control)
+        and user.role != "admin"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+
+def _validate_collection_rag_overrides(overrides: dict):
+    if "RAG_EMBEDDING_ENGINE" in overrides and overrides["RAG_EMBEDDING_ENGINE"] not in SUPPORTED_EMBEDDING_ENGINES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid embedding engine",
+        )
+
+    if "TEXT_SPLITTER" in overrides and overrides["TEXT_SPLITTER"] not in SUPPORTED_TEXT_SPLITTERS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid text splitter",
+        )
+
+    if "RAG_RERANKING_ENGINE" in overrides and overrides["RAG_RERANKING_ENGINE"] not in SUPPORTED_RERANKING_ENGINES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid reranking engine",
+        )
+
+    for int_key in [
+        "CHUNK_SIZE",
+        "CHUNK_OVERLAP",
+        "RAG_EMBEDDING_BATCH_SIZE",
+        "TOP_K",
+        "TOP_K_RERANKER",
+    ]:
+        if int_key in overrides and overrides[int_key] < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{int_key} must be >= 0",
+            )
+
+    if "RELEVANCE_THRESHOLD" in overrides and not (
+        0.0 <= overrides["RELEVANCE_THRESHOLD"] <= 1.0
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RELEVANCE_THRESHOLD must be between 0.0 and 1.0",
+        )
+
+
+async def _reindex_collection_internal(request: Request, knowledge, user):
+    active_collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
+    temp_collection_name = f"{knowledge.id}__reindex_tmp__{uuid.uuid4().hex[:8]}"
+
+    pending_meta = upsert_reindex_status_meta(
+        knowledge.meta,
+        active_collection_name=active_collection_name,
+        status="running",
+        success=False,
+    )
+    Knowledges.update_knowledge_by_id(
+        id=knowledge.id,
+        form_data=KnowledgeForm(meta=pending_meta),
+    )
+
+    files = Knowledges.get_files_by_id(knowledge.id)
+    failed_files = []
+
+    try:
+        try:
+            if VECTOR_DB_CLIENT.has_collection(collection_name=temp_collection_name):
+                VECTOR_DB_CLIENT.delete_collection(collection_name=temp_collection_name)
+        except Exception:
+            pass
+
+        for file in files:
+            try:
+                await run_in_threadpool(
+                    process_file,
+                    request,
+                    ProcessFileForm(
+                        file_id=file.id,
+                        collection_name=temp_collection_name,
+                        knowledge_id=knowledge.id,
+                    ),
+                    user=user,
+                )
+            except Exception as e:
+                failed_files.append({"file_id": file.id, "error": str(e)})
+
+        if failed_files:
+            raise Exception("Reindex failed for one or more files")
+
+        next_meta = upsert_reindex_status_meta(
+            knowledge.meta,
+            active_collection_name=temp_collection_name,
+            status="success",
+            success=True,
+        )
+        Knowledges.update_knowledge_by_id(
+            id=knowledge.id,
+            form_data=KnowledgeForm(meta=next_meta),
+        )
+
+        if active_collection_name != temp_collection_name:
+            try:
+                if VECTOR_DB_CLIENT.has_collection(collection_name=active_collection_name):
+                    VECTOR_DB_CLIENT.delete_collection(collection_name=active_collection_name)
+            except Exception as e:
+                log.warning(
+                    f"Failed to delete old collection {active_collection_name} after successful reindex: {e}"
+                )
+
+        return {
+            "status": True,
+            "collection_name": knowledge.id,
+            "active_collection_name": temp_collection_name,
+            "total_files": len(files),
+            "failed_files": failed_files,
+        }
+    except Exception as e:
+        try:
+            if VECTOR_DB_CLIENT.has_collection(collection_name=temp_collection_name):
+                VECTOR_DB_CLIENT.delete_collection(collection_name=temp_collection_name)
+        except Exception:
+            pass
+
+        failed_meta = upsert_reindex_status_meta(
+            knowledge.meta,
+            active_collection_name=active_collection_name,
+            status="failed",
+            success=False,
+        )
+        Knowledges.update_knowledge_by_id(
+            id=knowledge.id,
+            form_data=KnowledgeForm(meta=failed_meta),
+        )
+
+        log.exception(f"Collection reindex failed for {knowledge.id}: {e}")
+        return {
+            "status": False,
+            "collection_name": knowledge.id,
+            "active_collection_name": active_collection_name,
+            "total_files": len(files),
+            "failed_files": failed_files,
+            "error": str(e),
+        }
 
 
 @router.get("/", response_model=KnowledgeAccessListResponse)
@@ -179,6 +350,15 @@ async def create_new_knowledge(
     ):
         form_data.access_control = {}
 
+    if not (form_data.name and form_data.name.strip()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Knowledge name is required",
+        )
+
+    if form_data.description is None:
+        form_data.description = ""
+
     knowledge = Knowledges.insert_new_knowledge(user.id, form_data)
 
     if knowledge:
@@ -208,49 +388,113 @@ async def reindex_knowledge_files(request: Request, user=Depends(get_verified_us
     log.info(f"Starting reindexing for {len(knowledge_bases)} knowledge bases")
 
     for knowledge_base in knowledge_bases:
-        try:
-            files = Knowledges.get_files_by_id(knowledge_base.id)
-            try:
-                if VECTOR_DB_CLIENT.has_collection(collection_name=knowledge_base.id):
-                    VECTOR_DB_CLIENT.delete_collection(
-                        collection_name=knowledge_base.id
-                    )
-            except Exception as e:
-                log.error(f"Error deleting collection {knowledge_base.id}: {str(e)}")
-                continue  # Skip, don't raise
-
-            failed_files = []
-            for file in files:
-                try:
-                    await run_in_threadpool(
-                        process_file,
-                        request,
-                        ProcessFileForm(
-                            file_id=file.id, collection_name=knowledge_base.id
-                        ),
-                        user=user,
-                    )
-                except Exception as e:
-                    log.error(
-                        f"Error processing file {file.filename} (ID: {file.id}): {str(e)}"
-                    )
-                    failed_files.append({"file_id": file.id, "error": str(e)})
-                    continue
-
-        except Exception as e:
-            log.error(f"Error processing knowledge base {knowledge_base.id}: {str(e)}")
-            # Don't raise, just continue
-            continue
-
-        if failed_files:
+        result = await _reindex_collection_internal(request, knowledge_base, user)
+        if not result.get("status"):
             log.warning(
-                f"Failed to process {len(failed_files)} files in knowledge base {knowledge_base.id}"
+                f"Collection reindex failed for {knowledge_base.id}: {result.get('error', 'unknown error')}"
             )
-            for failed in failed_files:
-                log.warning(f"File ID: {failed['file_id']}, Error: {failed['error']}")
 
     log.info(f"Reindexing completed.")
     return True
+
+
+@router.get("/{id}/config")
+async def get_knowledge_config_by_id(id: str, request: Request, user=Depends(get_verified_user)):
+    knowledge = Knowledges.get_knowledge_by_id(id=id)
+    if not knowledge:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    if not (
+        user.role == "admin"
+        or knowledge.user_id == user.id
+        or has_access(user.id, "read", knowledge.access_control)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    config_info = resolve_collection_rag_config(knowledge.meta, request.app.state.config)
+    active_collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
+
+    vector_meta = (knowledge.meta or {}).get("collection_vector") or {}
+
+    return {
+        "status": True,
+        "mode": config_info["mode"],
+        "overrides": config_info["overrides"],
+        "global_defaults": config_info["global_defaults"],
+        "effective": config_info["effective"],
+        "vector": {
+            "active_collection_name": active_collection_name,
+            "reindex_version": int(vector_meta.get("reindex_version") or 0),
+            "last_reindexed_at": vector_meta.get("last_reindexed_at"),
+            "last_reindex_status": vector_meta.get("last_reindex_status"),
+        },
+    }
+
+
+@router.post("/{id}/config")
+async def update_knowledge_config_by_id(
+    id: str,
+    request: Request,
+    form_data: CollectionRagConfigUpdateForm,
+    user=Depends(get_verified_user),
+):
+    knowledge = Knowledges.get_knowledge_by_id(id=id)
+    if not knowledge:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    _ensure_write_access(knowledge, user)
+
+    mode = form_data.mode if form_data.mode in {"default", "custom"} else "default"
+    overrides = sanitize_rag_overrides(form_data.overrides)
+    _validate_collection_rag_overrides(overrides)
+
+    next_meta = upsert_collection_rag_meta(
+        knowledge.meta,
+        mode=mode,
+        overrides=overrides,
+    )
+
+    updated = Knowledges.update_knowledge_by_id(
+        id=id,
+        form_data=KnowledgeForm(meta=next_meta),
+    )
+
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ERROR_MESSAGES.DEFAULT("Failed to update collection config"),
+        )
+
+    config_info = resolve_collection_rag_config(updated.meta, request.app.state.config)
+
+    return {
+        "status": True,
+        "mode": config_info["mode"],
+        "overrides": config_info["overrides"],
+        "effective": config_info["effective"],
+    }
+
+
+@router.post("/{id}/reindex")
+async def reindex_knowledge_by_id(id: str, request: Request, user=Depends(get_verified_user)):
+    knowledge = Knowledges.get_knowledge_by_id(id=id)
+    if not knowledge:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    _ensure_write_access(knowledge, user)
+    return await _reindex_collection_internal(request, knowledge, user)
 
 
 ############################
@@ -442,9 +686,14 @@ def add_file_to_knowledge_by_id(
 
     # Add content to the vector database
     try:
+        collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
         process_file(
             request,
-            ProcessFileForm(file_id=form_data.file_id, collection_name=id),
+            ProcessFileForm(
+                file_id=form_data.file_id,
+                collection_name=collection_name,
+                knowledge_id=knowledge.id,
+            ),
             user=user,
         )
 
@@ -504,15 +753,20 @@ def update_file_from_knowledge_by_id(
         )
 
     # Remove content from the vector database
+    collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
     VECTOR_DB_CLIENT.delete(
-        collection_name=knowledge.id, filter={"file_id": form_data.file_id}
+        collection_name=collection_name, filter={"file_id": form_data.file_id}
     )
 
     # Add content to the vector database
     try:
         process_file(
             request,
-            ProcessFileForm(file_id=form_data.file_id, collection_name=id),
+            ProcessFileForm(
+                file_id=form_data.file_id,
+                collection_name=collection_name,
+                knowledge_id=knowledge.id,
+            ),
             user=user,
         )
     except Exception as e:
@@ -574,13 +828,14 @@ def remove_file_from_knowledge_by_id(
     )
 
     # Remove content from the vector database
+    collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
     try:
         VECTOR_DB_CLIENT.delete(
-            collection_name=knowledge.id, filter={"file_id": form_data.file_id}
+            collection_name=collection_name, filter={"file_id": form_data.file_id}
         )  # Remove by file_id first
 
         VECTOR_DB_CLIENT.delete(
-            collection_name=knowledge.id, filter={"hash": file.hash}
+            collection_name=collection_name, filter={"hash": file.hash}
         )  # Remove by hash as well in case of duplicates
     except Exception as e:
         log.debug("This was most likely caused by bypassing embedding processing")
@@ -667,8 +922,10 @@ async def delete_knowledge_by_id(id: str, user=Depends(get_verified_user)):
                 Models.update_model_by_id(model.id, model_form)
 
     # Clean up vector DB
+    active_collection_name = get_active_vector_collection_name(id, knowledge.meta)
     try:
-        VECTOR_DB_CLIENT.delete_collection(collection_name=id)
+        if VECTOR_DB_CLIENT.has_collection(collection_name=active_collection_name):
+            VECTOR_DB_CLIENT.delete_collection(collection_name=active_collection_name)
     except Exception as e:
         log.debug(e)
         pass
@@ -701,12 +958,25 @@ async def reset_knowledge_by_id(id: str, user=Depends(get_verified_user)):
         )
 
     try:
-        VECTOR_DB_CLIENT.delete_collection(collection_name=id)
+        active_collection_name = get_active_vector_collection_name(id, knowledge.meta)
+        if VECTOR_DB_CLIENT.has_collection(collection_name=active_collection_name):
+            VECTOR_DB_CLIENT.delete_collection(collection_name=active_collection_name)
     except Exception as e:
         log.debug(e)
         pass
 
     knowledge = Knowledges.reset_knowledge_by_id(id=id)
+    if knowledge:
+        next_meta = upsert_reindex_status_meta(
+            knowledge.meta,
+            active_collection_name=id,
+            status="success",
+            success=False,
+        )
+        knowledge = Knowledges.update_knowledge_by_id(
+            id=id,
+            form_data=KnowledgeForm(meta=next_meta),
+        )
     return knowledge
 
 
@@ -756,9 +1026,10 @@ async def add_files_to_knowledge_batch(
 
     # Process files
     try:
+        collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
         result = await process_files_batch(
             request=request,
-            form_data=BatchProcessFilesForm(files=files, collection_name=id),
+            form_data=BatchProcessFilesForm(files=files, collection_name=collection_name),
             user=user,
         )
     except Exception as e:
