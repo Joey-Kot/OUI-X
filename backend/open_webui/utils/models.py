@@ -1,4 +1,3 @@
-import time
 import logging
 import asyncio
 import sys
@@ -25,7 +24,6 @@ from open_webui.utils.access_control import has_access
 
 from open_webui.config import (
     BYPASS_ADMIN_ACCESS_CONTROL,
-    DEFAULT_ARENA_MODEL,
 )
 
 from open_webui.env import BYPASS_MODEL_ACCESS_CONTROL, GLOBAL_LOG_LEVEL
@@ -73,41 +71,6 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
     # If there are no models, return an empty list
     if len(models) == 0:
         return []
-
-    # Add arena models
-    if request.app.state.config.ENABLE_EVALUATION_ARENA_MODELS:
-        arena_models = []
-        if len(request.app.state.config.EVALUATION_ARENA_MODELS) > 0:
-            arena_models = [
-                {
-                    "id": model["id"],
-                    "name": model["name"],
-                    "info": {
-                        "meta": model["meta"],
-                    },
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "arena",
-                    "arena": True,
-                }
-                for model in request.app.state.config.EVALUATION_ARENA_MODELS
-            ]
-        else:
-            # Add default arena model
-            arena_models = [
-                {
-                    "id": DEFAULT_ARENA_MODEL["id"],
-                    "name": DEFAULT_ARENA_MODEL["name"],
-                    "info": {
-                        "meta": DEFAULT_ARENA_MODEL["meta"],
-                    },
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "arena",
-                    "arena": True,
-                }
-            ]
-        models = models + arena_models
 
     global_action_ids = [
         function.id for function in Functions.get_global_action_functions()
@@ -310,26 +273,14 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
 
 
 def check_model_access(user, model):
-    if model.get("arena"):
-        if not has_access(
-            user.id,
-            type="read",
-            access_control=model.get("info", {})
-            .get("meta", {})
-            .get("access_control", {}),
-        ):
-            raise Exception("Model not found")
-    else:
-        model_info = Models.get_model_by_id(model.get("id"))
-        if not model_info:
-            raise Exception("Model not found")
-        elif not (
-            user.id == model_info.user_id
-            or has_access(
-                user.id, type="read", access_control=model_info.access_control
-            )
-        ):
-            raise Exception("Model not found")
+    model_info = Models.get_model_by_id(model.get("id"))
+    if not model_info:
+        raise Exception("Model not found")
+    elif not (
+        user.id == model_info.user_id
+        or has_access(user.id, type="read", access_control=model_info.access_control)
+    ):
+        raise Exception("Model not found")
 
 
 def get_filtered_models(models, user):
@@ -338,7 +289,7 @@ def get_filtered_models(models, user):
         user.role == "user"
         or (user.role == "admin" and not BYPASS_ADMIN_ACCESS_CONTROL)
     ) and not BYPASS_MODEL_ACCESS_CONTROL:
-        model_ids = [model["id"] for model in models if not model.get("arena")]
+        model_ids = [model["id"] for model in models]
         model_infos = {
             model_info.id: model_info
             for model_info in Models.get_models_by_ids(model_ids)
@@ -347,18 +298,6 @@ def get_filtered_models(models, user):
         filtered_models = []
         user_group_ids = {group.id for group in Groups.get_groups_by_member_id(user.id)}
         for model in models:
-            if model.get("arena"):
-                if has_access(
-                    user.id,
-                    type="read",
-                    access_control=model.get("info", {})
-                    .get("meta", {})
-                    .get("access_control", {}),
-                    user_group_ids=user_group_ids,
-                ):
-                    filtered_models.append(model)
-                continue
-
             model_info = model_infos.get(model["id"], None)
             if model_info:
                 if (

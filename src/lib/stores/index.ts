@@ -100,23 +100,19 @@ export const currentChatPage = writable(1);
 export const isLastActiveTab = writable(true);
 export const playingNotificationSound = writable(false);
 
-export type Model = OpenAIModel | ArenaModel;
+export type Model = OpenAIModel;
 
 type BaseModel = {
 	id: string;
 	name: string;
 	info?: ModelConfig;
-	owned_by: 'openai' | 'arena';
+	owned_by: 'openai';
 };
 
 export interface OpenAIModel extends BaseModel {
 	owned_by: 'openai';
 	external: boolean;
 	source?: string;
-}
-
-export interface ArenaModel extends BaseModel {
-	owned_by: 'arena';
 }
 
 type Settings = {

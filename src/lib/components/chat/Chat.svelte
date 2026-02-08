@@ -1474,7 +1474,6 @@
 
 		if (selected_model_id) {
 			message.selectedModelId = selected_model_id;
-			message.arena = true;
 		}
 
 		if (usage) {
@@ -2183,9 +2182,7 @@
 			responseMessage.done = false;
 			await tick();
 
-			const model = $models
-				.filter((m) => m.id === (responseMessage?.selectedModelId ?? responseMessage.model))
-				.at(0);
+			const model = $models.filter((m) => m.id === responseMessage.model).at(0);
 
 			if (model) {
 				await sendMessageSocket(

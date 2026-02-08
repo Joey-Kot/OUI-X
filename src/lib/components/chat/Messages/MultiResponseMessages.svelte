@@ -35,7 +35,6 @@
 	export let updateChat: Function;
 	export let editMessage: Function;
 	export let saveMessage: Function;
-	export let rateMessage: Function;
 	export let actionMessage: Function;
 
 	export let submitMessage: Function;
@@ -299,7 +298,6 @@
 									{updateChat}
 									{editMessage}
 									{saveMessage}
-									{rateMessage}
 									{deleteMessage}
 									{actionMessage}
 									{submitMessage}
@@ -355,7 +353,6 @@
 										{updateChat}
 										{editMessage}
 										{saveMessage}
-										{rateMessage}
 										{deleteMessage}
 										{actionMessage}
 										{submitMessage}

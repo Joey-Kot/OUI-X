@@ -8,7 +8,11 @@
 	const i18n = getContext('i18n');
 
 	import { WEBUI_NAME, knowledge, user } from '$lib/stores';
-	import { deleteKnowledgeById, searchKnowledgeBases } from '$lib/apis/knowledge';
+	import {
+		cloneKnowledgeById,
+		deleteKnowledgeById,
+		searchKnowledgeBases
+	} from '$lib/apis/knowledge';
 
 	import { goto } from '$app/navigation';
 	import { capitalizeFirstLetter } from '$lib/utils';
@@ -100,6 +104,23 @@
 
 		if (res) {
 			toast.success($i18n.t('Knowledge deleted successfully.'));
+			init();
+		}
+	};
+
+	const cloneHandler = async (item) => {
+		const res = await cloneKnowledgeById(localStorage.token, item.id).catch((e) => {
+			toast.error(`${e}`);
+			return null;
+		});
+
+		if (res) {
+			toast.success($i18n.t('Collection cloned successfully.'));
+
+			if (res?.warnings?.message) {
+				toast.warning($i18n.t(res.warnings.message));
+			}
+
 			init();
 		}
 	};
@@ -239,11 +260,14 @@
 											<div class="flex items-center gap-2">
 												<div class=" flex self-center">
 													<ItemMenu
-														on:delete={() => {
-															selectedItem = item;
-															showDeleteConfirm = true;
-														}}
-													/>
+													on:clone={() => {
+														cloneHandler(item);
+													}}
+													on:delete={() => {
+														selectedItem = item;
+														showDeleteConfirm = true;
+													}}
+												/>
 												</div>
 											</div>
 										{/if}

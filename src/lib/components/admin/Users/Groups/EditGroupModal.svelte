@@ -71,7 +71,6 @@
 			delete_message: true,
 			continue_response: true,
 			regenerate_response: true,
-			rate_response: true,
 			edit: true,
 			share: true,
 			export: true,

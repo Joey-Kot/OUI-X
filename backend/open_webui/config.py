@@ -1333,10 +1333,6 @@ USER_PERMISSIONS_CHAT_REGENERATE_RESPONSE = (
     == "true"
 )
 
-USER_PERMISSIONS_CHAT_RATE_RESPONSE = (
-    os.environ.get("USER_PERMISSIONS_CHAT_RATE_RESPONSE", "True").lower() == "true"
-)
-
 USER_PERMISSIONS_CHAT_EDIT = (
     os.environ.get("USER_PERMISSIONS_CHAT_EDIT", "True").lower() == "true"
 )
@@ -1446,7 +1442,6 @@ DEFAULT_USER_PERMISSIONS = {
         "delete_message": USER_PERMISSIONS_CHAT_DELETE_MESSAGE,
         "continue_response": USER_PERMISSIONS_CHAT_CONTINUE_RESPONSE,
         "regenerate_response": USER_PERMISSIONS_CHAT_REGENERATE_RESPONSE,
-        "rate_response": USER_PERMISSIONS_CHAT_RATE_RESPONSE,
         "edit": USER_PERMISSIONS_CHAT_EDIT,
         "share": USER_PERMISSIONS_CHAT_SHARE,
         "export": USER_PERMISSIONS_CHAT_EXPORT,
@@ -1495,27 +1490,6 @@ ENABLE_NOTES = PersistentConfig(
     os.environ.get("ENABLE_NOTES", "True").lower() == "true",
 )
 
-ENABLE_EVALUATION_ARENA_MODELS = PersistentConfig(
-    "ENABLE_EVALUATION_ARENA_MODELS",
-    "evaluation.arena.enable",
-    os.environ.get("ENABLE_EVALUATION_ARENA_MODELS", "True").lower() == "true",
-)
-EVALUATION_ARENA_MODELS = PersistentConfig(
-    "EVALUATION_ARENA_MODELS",
-    "evaluation.arena.models",
-    [],
-)
-
-DEFAULT_ARENA_MODEL = {
-    "id": "arena-model",
-    "name": "Arena Model",
-    "meta": {
-        "profile_image_url": "/favicon.png",
-        "description": "Submit your questions to anonymous AI chatbots and vote on the best response.",
-        "model_ids": None,
-    },
-}
-
 WEBHOOK_URL = PersistentConfig(
     "WEBHOOK_URL", "webhook_url", os.environ.get("WEBHOOK_URL", "")
 )
@@ -1542,12 +1516,6 @@ ENABLE_COMMUNITY_SHARING = PersistentConfig(
     "ENABLE_COMMUNITY_SHARING",
     "ui.enable_community_sharing",
     os.environ.get("ENABLE_COMMUNITY_SHARING", "True").lower() == "true",
-)
-
-ENABLE_MESSAGE_RATING = PersistentConfig(
-    "ENABLE_MESSAGE_RATING",
-    "ui.enable_message_rating",
-    os.environ.get("ENABLE_MESSAGE_RATING", "True").lower() == "true",
 )
 
 ENABLE_USER_WEBHOOKS = PersistentConfig(

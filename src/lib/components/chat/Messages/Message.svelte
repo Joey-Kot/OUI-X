@@ -30,7 +30,6 @@
 	export let editMessage;
 	export let saveMessage;
 	export let deleteMessage;
-	export let rateMessage;
 	export let actionMessage;
 	export let submitMessage;
 
@@ -88,7 +87,6 @@
 				{updateChat}
 				{editMessage}
 				{saveMessage}
-				{rateMessage}
 				{actionMessage}
 				{submitMessage}
 				{deleteMessage}
@@ -111,7 +109,6 @@
 					{updateChat}
 					{editMessage}
 					{saveMessage}
-					{rateMessage}
 					{actionMessage}
 					{submitMessage}
 					{deleteMessage}
