@@ -3,6 +3,7 @@ import logging
 import sys
 import os
 import base64
+import hashlib
 import textwrap
 
 import asyncio
@@ -141,6 +142,18 @@ DEFAULT_REASONING_TAGS = [
 ]
 DEFAULT_SOLUTION_TAGS = [("<|begin_of_solution|>", "<|end_of_solution|>")]
 DEFAULT_CODE_INTERPRETER_TAGS = [("<code_interpreter>", "</code_interpreter>")]
+MAX_CODE_INTERPRETER_ATTEMPTS = 2
+
+
+def normalize_code_interpreter_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    return str(content).strip()
+
+
+def hash_code_interpreter_content(content: Any) -> str:
+    normalized = normalize_code_interpreter_content(content)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def process_tool_result(
@@ -1345,13 +1358,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             )
 
         if "code_interpreter" in features and features["code_interpreter"]:
-            form_data["messages"] = add_or_update_user_message(
+            form_data["messages"] = add_or_update_system_message(
                 (
                     request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE
                     if request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE != ""
                     else DEFAULT_CODE_INTERPRETER_PROMPT
                 ),
                 form_data["messages"],
+                append=True,
             )
 
     tool_ids = form_data.pop("tool_ids", None)
@@ -2919,13 +2933,25 @@ async def process_chat_response(
                     log.info("native_tool_loop_end reason=no_tool_calls")
 
                 if DETECT_CODE_INTERPRETER:
-                    MAX_RETRIES = 5
                     retries = 0
+                    ci_loop_end_reason = "no_new_ci_block"
+                    previous_code_hash = None
 
-                    while (
-                        content_blocks[-1]["type"] == "code_interpreter"
-                        and retries < MAX_RETRIES
-                    ):
+                    while content_blocks and content_blocks[-1]["type"] == "code_interpreter":
+                        if retries >= MAX_CODE_INTERPRETER_ATTEMPTS:
+                            ci_loop_end_reason = "max_retries"
+                            break
+
+                        current_code = normalize_code_interpreter_content(
+                            content_blocks[-1].get("content", "")
+                        )
+                        current_code_hash = hash_code_interpreter_content(current_code)
+                        if (
+                            previous_code_hash is not None
+                            and current_code_hash == previous_code_hash
+                        ):
+                            ci_loop_end_reason = "duplicate_code_block"
+                            break
 
                         await event_emitter(
                             {
@@ -2937,9 +2963,9 @@ async def process_chat_response(
                         )
 
                         retries += 1
-                        log.debug(f"Attempt count: {retries}")
-
                         output = ""
+                        engine = request.app.state.config.CODE_INTERPRETER_ENGINE
+
                         try:
                             if content_blocks[-1]["attributes"].get("type") == "code":
                                 code = content_blocks[-1]["content"]
@@ -2965,10 +2991,7 @@ async def process_chat_response(
                                     )
                                     code = blocking_code + "\n" + code
 
-                                if (
-                                    request.app.state.config.CODE_INTERPRETER_ENGINE
-                                    == "pyodide"
-                                ):
+                                if engine == "pyodide":
                                     output = await event_caller(
                                         {
                                             "type": "execute:python",
@@ -2981,10 +3004,7 @@ async def process_chat_response(
                                             },
                                         }
                                     )
-                                elif (
-                                    request.app.state.config.CODE_INTERPRETER_ENGINE
-                                    == "jupyter"
-                                ):
+                                elif engine == "jupyter":
                                     output = await execute_code_jupyter(
                                         request.app.state.config.CODE_INTERPRETER_JUPYTER_URL,
                                         code,
@@ -3049,6 +3069,16 @@ async def process_chat_response(
                         except Exception as e:
                             output = str(e)
 
+                        has_output = bool(output)
+                        log.info(
+                            "ci_attempt attempt_index=%s code_hash=%s engine=%s has_output=%s",
+                            retries,
+                            current_code_hash,
+                            engine,
+                            has_output,
+                        )
+                        previous_code_hash = current_code_hash
+
                         content_blocks[-1]["output"] = output
 
                         content_blocks.append(
@@ -3096,6 +3126,16 @@ async def process_chat_response(
                         except Exception as e:
                             log.debug(e)
                             break
+
+                    if ci_loop_end_reason == "no_new_ci_block":
+                        if content_blocks and content_blocks[-1]["type"] == "code_interpreter":
+                            ci_loop_end_reason = "max_retries"
+
+                    log.info(
+                        "ci_loop_end reason=%s attempts=%s",
+                        ci_loop_end_reason,
+                        retries,
+                    )
 
                 title = Chats.get_chat_title_by_id(metadata["chat_id"])
                 data = {
