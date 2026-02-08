@@ -123,6 +123,8 @@ from open_webui.config import (
     # Tool Server Configs
     TOOL_SERVER_CONNECTIONS,
     MCP_TOOL_SERVER_CONNECTIONS,
+    TOOL_CALL_TIMEOUT_SECONDS,
+    MAX_TOOL_CALLS_PER_ROUND,
     # Code Execution
     ENABLE_CODE_EXECUTION,
     CODE_EXECUTION_ENGINE,
@@ -684,6 +686,8 @@ app.state.OPENAI_MODELS = {}
 
 app.state.config.TOOL_SERVER_CONNECTIONS = TOOL_SERVER_CONNECTIONS
 app.state.config.MCP_TOOL_SERVER_CONNECTIONS = MCP_TOOL_SERVER_CONNECTIONS
+app.state.config.TOOL_CALL_TIMEOUT_SECONDS = TOOL_CALL_TIMEOUT_SECONDS
+app.state.config.MAX_TOOL_CALLS_PER_ROUND = MAX_TOOL_CALLS_PER_ROUND
 app.state.TOOL_SERVERS = []
 
 ########################################

@@ -11,6 +11,92 @@ from open_webui.utils.tools_runtime import ToolExecutionOutcome
 
 log = logging.getLogger(__name__)
 
+DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = 60
+DEFAULT_MAX_TOOL_CALLS_PER_ROUND = 20
+
+
+def clamp_tool_timeout_seconds(value: Any) -> int:
+    try:
+        normalized = int(value)
+    except Exception:
+        normalized = DEFAULT_TOOL_CALL_TIMEOUT_SECONDS
+    return max(1, min(600, normalized))
+
+
+def clamp_max_tool_calls_per_round(value: Any) -> int:
+    try:
+        normalized = int(value)
+    except Exception:
+        normalized = DEFAULT_MAX_TOOL_CALLS_PER_ROUND
+    return max(1, min(100, normalized))
+
+
+def _is_user_scoped_mcp_tool(tool: dict | None) -> bool:
+    if not tool:
+        return False
+    return tool.get("source") == "mcp" and tool.get("scope") == "user"
+
+
+def _get_tool_calling_configs(metadata: dict | None) -> tuple[dict, dict]:
+    config = (metadata or {}).get("tool_calling_config", {}) if isinstance(metadata, dict) else {}
+    global_config = config.get("global", {}) if isinstance(config, dict) else {}
+    user_config = config.get("user", {}) if isinstance(config, dict) else {}
+    return (
+        global_config if isinstance(global_config, dict) else {},
+        user_config if isinstance(user_config, dict) else {},
+    )
+
+
+def _resolve_timeout_for_tool(
+    tool: dict | None,
+    metadata: dict,
+    fallback_timeout_seconds: int,
+) -> int:
+    global_config, user_config = _get_tool_calling_configs(metadata)
+    timeout_seconds = clamp_tool_timeout_seconds(
+        global_config.get("tool_call_timeout_seconds", fallback_timeout_seconds)
+    )
+
+    if _is_user_scoped_mcp_tool(tool) and "tool_call_timeout_seconds" in user_config:
+        timeout_seconds = clamp_tool_timeout_seconds(
+            user_config.get("tool_call_timeout_seconds")
+        )
+
+    return timeout_seconds
+
+
+def _resolve_effective_max_calls_for_round(
+    *,
+    tool_calls: list[dict],
+    tools: dict[str, dict],
+    metadata: dict,
+    fallback_max_calls: int,
+    user_override_policy: str,
+) -> int:
+    global_config, user_config = _get_tool_calling_configs(metadata)
+    effective_max = clamp_max_tool_calls_per_round(
+        global_config.get("max_tool_calls_per_round", fallback_max_calls)
+    )
+
+    user_max = user_config.get("max_tool_calls_per_round")
+    if user_max is None:
+        return effective_max
+
+    if user_override_policy != "whole_round":
+        return effective_max
+
+    has_user_mcp_call = False
+    for tool_call in tool_calls:
+        tool_name = tool_call.get("function", {}).get("name", "")
+        if _is_user_scoped_mcp_tool(tools.get(tool_name)):
+            has_user_mcp_call = True
+            break
+
+    if has_user_mcp_call:
+        return clamp_max_tool_calls_per_round(user_max)
+
+    return effective_max
+
 
 def parse_tool_arguments(arguments: Any) -> dict:
     if isinstance(arguments, dict):
@@ -107,6 +193,7 @@ async def _execute_single_tool_call(
     request,
     user,
     process_tool_result: Callable,
+    timeout_seconds: int,
 ) -> ToolExecutionOutcome:
     async with max_concurrency_sem:
         tool_call_id = tool_call.get("id", "")
@@ -138,7 +225,7 @@ async def _execute_single_tool_call(
 
             try:
                 if direct_tool:
-                    tool_result = await event_caller(
+                    execution_coro = event_caller(
                         {
                             "type": "execute:tool",
                             "data": {
@@ -158,7 +245,18 @@ async def _execute_single_tool_call(
                             "__files__": metadata.get("files", []),
                         },
                     )
-                    tool_result = await tool_function(**tool_function_params)
+
+                    execution_coro = tool_function(**tool_function_params)
+
+                tool_result = await asyncio.wait_for(execution_coro, timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                error = f"tool execution timed out after {timeout_seconds}s"
+                tool_result = {
+                    "ok": False,
+                    "error": error,
+                    "tool": tool_function_name,
+                    "code": "tool_timeout",
+                }
             except Exception as exc:
                 error = str(exc)
                 tool_result = {
@@ -209,11 +307,25 @@ async def execute_tool_calls_parallel(
     request,
     user,
     process_tool_result: Callable,
+    tool_timeout_seconds: int = DEFAULT_TOOL_CALL_TIMEOUT_SECONDS,
+    max_tool_calls_per_round: int = DEFAULT_MAX_TOOL_CALLS_PER_ROUND,
+    user_override_policy: str = "whole_round",
 ) -> list[ToolExecutionOutcome]:
     if not tool_calls:
         return []
 
     sanitized_calls = sanitize_tool_calls(tool_calls)
+    effective_max_calls = _resolve_effective_max_calls_for_round(
+        tool_calls=sanitized_calls,
+        tools=tools,
+        metadata=metadata,
+        fallback_max_calls=max_tool_calls_per_round,
+        user_override_policy=user_override_policy,
+    )
+
+    executable_calls = sanitized_calls[:effective_max_calls]
+    skipped_calls = sanitized_calls[effective_max_calls:]
+
     sem = asyncio.Semaphore(max(1, max_concurrency))
 
     tasks = [
@@ -227,10 +339,39 @@ async def execute_tool_calls_parallel(
             request=request,
             user=user,
             process_tool_result=process_tool_result,
+            timeout_seconds=_resolve_timeout_for_tool(
+                tools.get(tool_call.get("function", {}).get("name", "")),
+                metadata,
+                tool_timeout_seconds,
+            ),
         )
-        for tool_call in sanitized_calls
+        for tool_call in executable_calls
     ]
     outcomes = await asyncio.gather(*tasks)
+
+    for skipped_call in skipped_calls:
+        skipped_tool_name = skipped_call.get("function", {}).get("name", "")
+        skipped_id = skipped_call.get("id", "")
+        skipped_error = (
+            f"Tool calls were skipped because the maximum number of calls per round for a single tool ({effective_max_calls}) had been reached."
+        )
+        outcomes.append(
+            ToolExecutionOutcome(
+                tool_call_id=skipped_id,
+                name=skipped_tool_name,
+                ok=False,
+                content=json.dumps(
+                    {
+                        "ok": False,
+                        "error": skipped_error,
+                        "tool": skipped_tool_name,
+                        "code": "tool_skipped_max_calls",
+                    },
+                    ensure_ascii=False,
+                ),
+                error=skipped_error,
+            )
+        )
 
     outcomes_by_id = {outcome.tool_call_id: outcome for outcome in outcomes}
     ordered = [

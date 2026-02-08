@@ -97,7 +97,11 @@ from open_webui.utils.filter import (
 )
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.payload import apply_system_prompt_to_body
-from open_webui.utils.tool_orchestrator import execute_tool_calls_parallel
+from open_webui.utils.tool_orchestrator import (
+    execute_tool_calls_parallel,
+    clamp_tool_timeout_seconds,
+    clamp_max_tool_calls_per_round,
+)
 from open_webui.utils.tools_runtime import build_tool_registry, registry_to_legacy_tools
 
 
@@ -1382,6 +1386,44 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         "tool_ids": tool_ids,
         "files": files,
     }
+
+    user_tool_calling_config = {}
+    if user and metadata.get("params", {}).get("function_calling") == "native":
+        try:
+            user_record = Users.get_user_by_id(user.id)
+            user_settings = user_record.settings if user_record else {}
+            if hasattr(user_settings, "model_dump"):
+                user_settings = user_settings.model_dump()
+
+            user_tool_calling_config = (
+                user_settings.get("ui", {}).get("mcpToolCallingConfig", {})
+                if isinstance(user_settings, dict)
+                else {}
+            )
+        except Exception as e:
+            log.debug(e)
+
+    metadata["tool_calling_config"] = {
+        "global": {
+            "tool_call_timeout_seconds": clamp_tool_timeout_seconds(
+                getattr(request.app.state.config, "TOOL_CALL_TIMEOUT_SECONDS", 60)
+            ),
+            "max_tool_calls_per_round": clamp_max_tool_calls_per_round(
+                getattr(request.app.state.config, "MAX_TOOL_CALLS_PER_ROUND", 20)
+            ),
+        },
+        "user": {
+            "tool_call_timeout_seconds": clamp_tool_timeout_seconds(
+                user_tool_calling_config.get("toolCallingTimeoutSeconds", 60)
+            ),
+            "max_tool_calls_per_round": clamp_max_tool_calls_per_round(
+                user_tool_calling_config.get("maxToolCallsPerRound", 20)
+            ),
+        }
+        if isinstance(user_tool_calling_config, dict) and user_tool_calling_config
+        else {},
+    }
+
     form_data["metadata"] = metadata
 
     # Server side tools
@@ -2808,6 +2850,13 @@ async def process_chat_response(
                         request=request,
                         user=user,
                         process_tool_result=process_tool_result,
+                        tool_timeout_seconds=metadata.get("tool_calling_config", {})
+                        .get("global", {})
+                        .get("tool_call_timeout_seconds", 60),
+                        max_tool_calls_per_round=metadata.get("tool_calling_config", {})
+                        .get("global", {})
+                        .get("max_tool_calls_per_round", 20),
+                        user_override_policy="whole_round",
                     )
 
                     results = [

@@ -180,6 +180,27 @@ class MCPToolServersConfigForm(BaseModel):
     MCP_TOOL_SERVER_CONNECTIONS: list[MCPToolServerConnection]
 
 
+class ToolCallingConfigForm(BaseModel):
+    TOOL_CALL_TIMEOUT_SECONDS: int | str = 60
+    MAX_TOOL_CALLS_PER_ROUND: int | str = 20
+
+
+def _normalize_tool_call_timeout(value: Any) -> int:
+    try:
+        normalized = int(value)
+    except Exception:
+        normalized = 60
+    return max(1, min(600, normalized))
+
+
+def _normalize_max_tool_calls_per_round(value: Any) -> int:
+    try:
+        normalized = int(value)
+    except Exception:
+        normalized = 20
+    return max(1, min(100, normalized))
+
+
 async def _get_connection_headers(
     request: Request,
     user,
@@ -269,6 +290,37 @@ async def verify_tool_servers_config(
 ############################
 # MCP ToolServers Config
 ############################
+
+
+@router.get("/tool_calling", response_model=ToolCallingConfigForm)
+async def get_tool_calling_config(request: Request, user=Depends(get_admin_user)):
+    return {
+        "TOOL_CALL_TIMEOUT_SECONDS": _normalize_tool_call_timeout(
+            request.app.state.config.TOOL_CALL_TIMEOUT_SECONDS
+        ),
+        "MAX_TOOL_CALLS_PER_ROUND": _normalize_max_tool_calls_per_round(
+            request.app.state.config.MAX_TOOL_CALLS_PER_ROUND
+        ),
+    }
+
+
+@router.post("/tool_calling", response_model=ToolCallingConfigForm)
+async def set_tool_calling_config(
+    request: Request,
+    form_data: ToolCallingConfigForm,
+    user=Depends(get_admin_user),
+):
+    request.app.state.config.TOOL_CALL_TIMEOUT_SECONDS = _normalize_tool_call_timeout(
+        form_data.TOOL_CALL_TIMEOUT_SECONDS
+    )
+    request.app.state.config.MAX_TOOL_CALLS_PER_ROUND = (
+        _normalize_max_tool_calls_per_round(form_data.MAX_TOOL_CALLS_PER_ROUND)
+    )
+
+    return {
+        "TOOL_CALL_TIMEOUT_SECONDS": request.app.state.config.TOOL_CALL_TIMEOUT_SECONDS,
+        "MAX_TOOL_CALLS_PER_ROUND": request.app.state.config.MAX_TOOL_CALLS_PER_ROUND,
+    }
 
 
 @router.get("/mcp/tool_servers", response_model=MCPToolServersConfigForm)

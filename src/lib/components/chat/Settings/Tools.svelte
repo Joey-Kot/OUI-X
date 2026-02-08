@@ -1,4 +1,4 @@
-<script lang="ts"> 
+<script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import { onMount, getContext } from 'svelte';
 	import { getToolServersData } from '$lib/apis';
@@ -21,6 +21,10 @@
 
 	let servers = null;
 	let mcpServers = null;
+	let mcpToolCallingConfig = {
+		toolCallingTimeoutSeconds: 60,
+		maxToolCallsPerRound: 20
+	};
 	let showConnectionModal = false;
 	let showMCPConnectionModal = false;
 
@@ -61,9 +65,22 @@
 		}
 	};
 
+	const updateMCPToolCallingConfigHandler = async () => {
+		await saveSettings({
+			mcpToolCallingConfig: {
+				toolCallingTimeoutSeconds: Number(mcpToolCallingConfig.toolCallingTimeoutSeconds),
+				maxToolCallsPerRound: Number(mcpToolCallingConfig.maxToolCallsPerRound)
+			}
+		});
+	};
+
 	onMount(async () => {
 		servers = $settings?.toolServers ?? [];
 		mcpServers = $settings?.mcpToolServers ?? [];
+		mcpToolCallingConfig = {
+			toolCallingTimeoutSeconds: $settings?.mcpToolCallingConfig?.toolCallingTimeoutSeconds ?? 60,
+			maxToolCallsPerRound: $settings?.mcpToolCallingConfig?.maxToolCallsPerRound ?? 20
+		};
 	});
 </script>
 
@@ -91,6 +108,7 @@
 	on:submit|preventDefault={async () => {
 		await updateOpenAPIHandler();
 		await updateMCPHandler();
+		await updateMCPToolCallingConfigHandler();
 	}}
 >
 	<div class="overflow-y-scroll scrollbar-hidden h-full">
@@ -180,6 +198,37 @@
 					<div class="my-1.5">
 						<div class={getDescriptionClass()}>
 							{$i18n.t('Manage MCP Streamable HTTP and SSE tool servers separately from remote servers.')}
+						</div>
+					</div>
+				</div>
+
+				<div class="mt-4">
+					<div class="font-medium mb-0.5">{$i18n.t('Tool Calling Config')}</div>
+					<div class="flex flex-col gap-2 rounded-sm border border-gray-100/40 dark:border-gray-850/40 px-3 py-2">
+						<div class="mb-2.5 flex w-full flex-col">
+							<div class="self-start text-xs font-medium mb-1">
+								{$i18n.t('Tool Calling Timeout')} ({$i18n.t('seconds')})
+							</div>
+							<input
+								class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+								type="number"
+								min="1"
+								max="600"
+								bind:value={mcpToolCallingConfig.toolCallingTimeoutSeconds}
+							/>
+						</div>
+
+						<div class="mb-2.5 flex w-full flex-col">
+							<div class="self-start text-xs font-medium mb-1">
+								{$i18n.t('Maximum Number of Tool Calling')} ({$i18n.t('Maximum number of calls per round for a single tool')})
+							</div>
+							<input
+								class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+								type="number"
+								min="1"
+								max="100"
+								bind:value={mcpToolCallingConfig.maxToolCallsPerRound}
+							/>
 						</div>
 					</div>
 				</div>

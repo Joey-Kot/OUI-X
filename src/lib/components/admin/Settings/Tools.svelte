@@ -14,8 +14,10 @@
 	import AddMCPToolServerModal from '$lib/components/AddMCPToolServerModal.svelte';
 	import {
 		getMCPToolServerConnections,
+		getToolCallingConfig,
 		getToolServerConnections,
 		setMCPToolServerConnections,
+		setToolCallingConfig,
 		setToolServerConnections
 	} from '$lib/apis/configs';
 
@@ -23,6 +25,10 @@
 
 	let openapiServers = null;
 	let mcpServers = null;
+	let toolCallingConfig = {
+		TOOL_CALL_TIMEOUT_SECONDS: 60,
+		MAX_TOOL_CALLS_PER_ROUND: 20
+	};
 
 	let showOpenAPIConnectionModal = false;
 	let showMCPConnectionModal = false;
@@ -53,14 +59,37 @@
 		}
 	};
 
+	const updateToolCallingConfigHandler = async () => {
+		const res = await setToolCallingConfig(localStorage.token, {
+			TOOL_CALL_TIMEOUT_SECONDS: Number(toolCallingConfig.TOOL_CALL_TIMEOUT_SECONDS),
+			MAX_TOOL_CALLS_PER_ROUND: Number(toolCallingConfig.MAX_TOOL_CALLS_PER_ROUND)
+		}).catch(() => {
+			toast.error($i18n.t('Failed to save tool calling config'));
+			return null;
+		});
+
+		if (res) {
+			toolCallingConfig = {
+				TOOL_CALL_TIMEOUT_SECONDS: res.TOOL_CALL_TIMEOUT_SECONDS,
+				MAX_TOOL_CALLS_PER_ROUND: res.MAX_TOOL_CALLS_PER_ROUND
+			};
+			toast.success($i18n.t('Tool calling config saved successfully'));
+		}
+	};
+
 	onMount(async () => {
-		const [openapiRes, mcpRes] = await Promise.all([
+		const [openapiRes, mcpRes, toolCallingRes] = await Promise.all([
 			getToolServerConnections(localStorage.token),
-			getMCPToolServerConnections(localStorage.token)
+			getMCPToolServerConnections(localStorage.token),
+			getToolCallingConfig(localStorage.token)
 		]);
 
 		openapiServers = openapiRes?.TOOL_SERVER_CONNECTIONS ?? [];
 		mcpServers = mcpRes?.MCP_TOOL_SERVER_CONNECTIONS ?? [];
+		toolCallingConfig = {
+			TOOL_CALL_TIMEOUT_SECONDS: toolCallingRes?.TOOL_CALL_TIMEOUT_SECONDS ?? 60,
+			MAX_TOOL_CALLS_PER_ROUND: toolCallingRes?.MAX_TOOL_CALLS_PER_ROUND ?? 20
+		};
 	});
 </script>
 
@@ -148,6 +177,45 @@
 					<div class="my-1.5">
 						<div class="text-xs text-gray-500">
 							{$i18n.t('Manage MCP Streamable HTTP and SSE tool servers separately from remote servers.')}
+						</div>
+					</div>
+				</div>
+
+				<div class="mb-2.5 flex flex-col w-full justify-between">
+					<div class="font-medium mb-1">{$i18n.t('Tool Calling Config')}</div>
+					<div class="flex flex-col gap-2 rounded-sm border border-gray-100/40 dark:border-gray-850/40 px-3 py-2">
+						<div class="mb-2.5 flex w-full flex-col">
+							<div class="self-start text-xs font-medium mb-1">
+								{$i18n.t('Tool Calling Timeout')} ({$i18n.t('seconds')})
+							</div>
+							<input
+								class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+								type="number"
+								min="1"
+								max="600"
+								bind:value={toolCallingConfig.TOOL_CALL_TIMEOUT_SECONDS}
+							/>
+						</div>
+						<div class="mb-2.5 flex w-full flex-col">
+							<div class="self-start text-xs font-medium mb-1">
+								{$i18n.t('Maximum Number of Tool Calling')} ({$i18n.t('Maximum number of calls per round for a single tool')})
+							</div>
+							<input
+								class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+								type="number"
+								min="1"
+								max="100"
+								bind:value={toolCallingConfig.MAX_TOOL_CALLS_PER_ROUND}
+							/>
+						</div>
+						<div class="flex justify-end">
+							<button
+								type="button"
+								class="px-2.5 py-1 text-xs rounded-sm bg-black text-white dark:bg-white dark:text-black"
+								on:click={updateToolCallingConfigHandler}
+							>
+								{$i18n.t('Save')}
+							</button>
 						</div>
 					</div>
 				</div>

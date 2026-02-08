@@ -1077,6 +1077,18 @@ MCP_TOOL_SERVER_CONNECTIONS = PersistentConfig(
     mcp_tool_server_connections,
 )
 
+TOOL_CALL_TIMEOUT_SECONDS = PersistentConfig(
+    "TOOL_CALL_TIMEOUT_SECONDS",
+    "tool_calling.timeout_seconds",
+    os.environ.get("TOOL_CALL_TIMEOUT_SECONDS", "60"),
+)
+
+MAX_TOOL_CALLS_PER_ROUND = PersistentConfig(
+    "MAX_TOOL_CALLS_PER_ROUND",
+    "tool_calling.max_calls_per_round",
+    os.environ.get("MAX_TOOL_CALLS_PER_ROUND", "20"),
+)
+
 ####################################
 # WEBUI
 ####################################

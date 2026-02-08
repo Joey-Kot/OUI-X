@@ -119,6 +119,10 @@ type Settings = {
 	pinnedModels?: never[];
 	toolServers?: never[];
 	mcpToolServers?: never[];
+	mcpToolCallingConfig?: {
+		toolCallingTimeoutSeconds?: number;
+		maxToolCallsPerRound?: number;
+	};
 	detectArtifacts?: boolean;
 	showUpdateToast?: boolean;
 	showChangelog?: boolean;

@@ -397,6 +397,8 @@ def registry_to_legacy_tools(registry: dict[str, ToolRegistryEntry]) -> dict[str
             "spec": _normalize_spec(entry.spec, name=name),
             "callable": entry.executor,
             "type": meta.get("type", entry.source),
+            "source": entry.source,
+            "scope": meta.get("scope"),
             "direct": meta.get("direct", False),
             "server": meta.get("server", {}),
             "tool_id": meta.get("tool_id"),
