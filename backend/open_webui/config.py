@@ -1044,23 +1044,8 @@ ENABLE_BASE_MODELS_CACHE = PersistentConfig(
 
 
 ####################################
-# TOOL_SERVERS
+# MCP_TOOL_SERVERS
 ####################################
-
-try:
-    tool_server_connections = json.loads(
-        os.environ.get("TOOL_SERVER_CONNECTIONS", "[]")
-    )
-except Exception as e:
-    log.exception(f"Error loading TOOL_SERVER_CONNECTIONS: {e}")
-    tool_server_connections = []
-
-
-TOOL_SERVER_CONNECTIONS = PersistentConfig(
-    "TOOL_SERVER_CONNECTIONS",
-    "tool_server.connections",
-    tool_server_connections,
-)
 
 try:
     mcp_tool_server_connections = json.loads(

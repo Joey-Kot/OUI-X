@@ -1,5 +1,4 @@
 import logging
-import copy
 from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel, ConfigDict
 import aiohttp
@@ -10,11 +9,6 @@ from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.config import get_config, save_config
 from open_webui.config import BannerModel
 
-from open_webui.utils.tools import (
-    get_tool_server_data,
-    get_tool_server_url,
-    set_tool_servers,
-)
 from open_webui.utils.mcp.client import MCPClient, MCPClientError
 from open_webui.models.oauth_sessions import OAuthSessions
 
@@ -132,29 +126,6 @@ async def register_oauth_client(
         )
 
 
-############################
-# ToolServers Config (OpenAPI)
-############################
-
-
-class ToolServerConnection(BaseModel):
-    url: str
-    path: str
-    auth_type: Optional[str]
-    headers: Optional[dict | str] = None
-    key: Optional[str]
-    config: Optional[dict]
-    info: Optional[dict]
-    spec_type: Optional[str]
-    spec: Optional[str]
-
-    model_config = ConfigDict(extra="allow")
-
-
-class ToolServersConfigForm(BaseModel):
-    TOOL_SERVER_CONNECTIONS: list[ToolServerConnection]
-
-
 class MCPToolServerVerifyCache(BaseModel):
     verified: bool
     verified_at: Optional[int] = None
@@ -233,58 +204,6 @@ async def _get_connection_headers(
 
     return request_headers if request_headers else None
 
-
-@router.get("/tool_servers", response_model=ToolServersConfigForm)
-async def get_tool_servers_config(request: Request, user=Depends(get_admin_user)):
-    return {
-        "TOOL_SERVER_CONNECTIONS": request.app.state.config.TOOL_SERVER_CONNECTIONS,
-    }
-
-
-@router.post("/tool_servers", response_model=ToolServersConfigForm)
-async def set_tool_servers_config(
-    request: Request,
-    form_data: ToolServersConfigForm,
-    user=Depends(get_admin_user),
-):
-    request.app.state.config.TOOL_SERVER_CONNECTIONS = [
-        {**connection.model_dump(), "type": "openapi"}
-        for connection in form_data.TOOL_SERVER_CONNECTIONS
-    ]
-
-    await set_tool_servers(request)
-
-    return {
-        "TOOL_SERVER_CONNECTIONS": request.app.state.config.TOOL_SERVER_CONNECTIONS,
-    }
-
-
-@router.post("/tool_servers/verify")
-async def verify_tool_servers_config(
-    request: Request, form_data: ToolServerConnection, user=Depends(get_admin_user)
-):
-    """
-    Verify the connection to an OpenAPI tool server.
-    """
-    try:
-        headers = await _get_connection_headers(
-            request,
-            user,
-            form_data.auth_type,
-            form_data.key,
-            form_data.headers,
-        )
-
-        url = get_tool_server_url(form_data.url, form_data.path)
-        return await get_tool_server_data(url, headers=headers)
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        log.debug(f"Failed to connect to OpenAPI tool server: {e}")
-        raise HTTPException(
-            status_code=400,
-            detail="Failed to connect to the OpenAPI tool server",
-        )
 
 
 ############################

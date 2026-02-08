@@ -65,7 +65,6 @@ export const knowledge: Writable<null | Document[]> = writable(null);
 export const tools = writable(null);
 export const functions = writable(null);
 
-export const toolServers = writable([]);
 
 export const banners: Writable<Banner[]> = writable([]);
 
@@ -117,7 +116,6 @@ export interface OpenAIModel extends BaseModel {
 
 type Settings = {
 	pinnedModels?: never[];
-	toolServers?: never[];
 	mcpToolServers?: never[];
 	mcpToolCallingConfig?: {
 		toolCallingTimeoutSeconds?: number;

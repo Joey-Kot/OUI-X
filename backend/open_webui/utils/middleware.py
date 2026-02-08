@@ -1442,20 +1442,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # Server side tools
     tool_ids = metadata.get("tool_ids", None)
-    # Client side tools
-    direct_tool_servers = metadata.get("tool_servers", None)
-
     log.debug(f"{tool_ids=}")
-    log.debug(f"{direct_tool_servers=}")
 
     tools_dict = {}
 
     mcp_clients = {}
 
     if tool_ids:
-        include_openapi = (
-            metadata.get("params", {}).get("function_calling") != "native"
-        )
         registry, mcp_clients, _warnings = await build_tool_registry(
             request=request,
             tool_ids=tool_ids,
@@ -1465,20 +1458,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             messages=form_data["messages"],
             files=metadata.get("files", []),
             event_emitter=event_emitter,
-            include_openapi=include_openapi,
         )
         tools_dict = registry_to_legacy_tools(registry)
 
-    if direct_tool_servers:
-        for tool_server in direct_tool_servers:
-            tool_specs = tool_server.pop("specs", [])
-
-            for tool in tool_specs:
-                tools_dict[tool["name"]] = {
-                    "spec": tool,
-                    "direct": True,
-                    "server": tool_server,
-                }
 
     if mcp_clients:
         metadata["mcp_clients"] = mcp_clients

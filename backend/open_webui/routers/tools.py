@@ -25,7 +25,6 @@ from open_webui.utils.plugin import (
 from open_webui.utils.tools import get_tool_specs
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access, has_permission
-from open_webui.utils.tools import get_tool_servers
 
 from open_webui.config import CACHE_DIR, BYPASS_ADMIN_ACCESS_CONTROL
 from open_webui.constants import ERROR_MESSAGES
@@ -62,32 +61,6 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
                 **{
                     **tool.model_dump(),
                     "has_user_valves": hasattr(tool_module, "UserValves"),
-                }
-            )
-        )
-
-    # OpenAPI Tool Servers
-    for server in await get_tool_servers(request):
-        tools.append(
-            ToolUserResponse(
-                **{
-                    "id": f"server:{server.get('id')}",
-                    "user_id": f"server:{server.get('id')}",
-                    "name": server.get("openapi", {})
-                    .get("info", {})
-                    .get("title", "Tool Server"),
-                    "meta": {
-                        "description": server.get("openapi", {})
-                        .get("info", {})
-                        .get("description", ""),
-                    },
-                    "access_control": request.app.state.config.TOOL_SERVER_CONNECTIONS[
-                        server.get("idx", 0)
-                    ]
-                    .get("config", {})
-                    .get("access_control", None),
-                    "updated_at": int(time.time()),
-                    "created_at": int(time.time()),
                 }
             )
         )

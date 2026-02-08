@@ -364,8 +364,7 @@ async def update_user_settings_by_session_user(
     if (
         user.role != "admin"
         and (
-            "toolServers" in ui_settings
-            or "mcpToolServers" in ui_settings
+            "mcpToolServers" in ui_settings
             or "mcpToolCallingConfig" in ui_settings
         )
         and not has_permission(
@@ -375,7 +374,6 @@ async def update_user_settings_by_session_user(
         )
     ):
         # If the user is not an admin and does not have permission to use tool servers, remove the key
-        updated_user_settings["ui"].pop("toolServers", None)
         updated_user_settings["ui"].pop("mcpToolServers", None)
         updated_user_settings["ui"].pop("mcpToolCallingConfig", None)
 

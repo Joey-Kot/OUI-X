@@ -121,7 +121,6 @@ from open_webui.config import (
     # Thread pool size for FastAPI/AnyIO
     THREAD_POOL_SIZE,
     # Tool Server Configs
-    TOOL_SERVER_CONNECTIONS,
     MCP_TOOL_SERVER_CONNECTIONS,
     TOOL_CALL_TIMEOUT_SECONDS,
     MAX_TOOL_CALLS_PER_ROUND,
@@ -684,11 +683,9 @@ app.state.OPENAI_MODELS = {}
 #
 ########################################
 
-app.state.config.TOOL_SERVER_CONNECTIONS = TOOL_SERVER_CONNECTIONS
 app.state.config.MCP_TOOL_SERVER_CONNECTIONS = MCP_TOOL_SERVER_CONNECTIONS
 app.state.config.TOOL_CALL_TIMEOUT_SECONDS = TOOL_CALL_TIMEOUT_SECONDS
 app.state.config.MAX_TOOL_CALLS_PER_ROUND = MAX_TOOL_CALLS_PER_ROUND
-app.state.TOOL_SERVERS = []
 
 ########################################
 #
@@ -1572,7 +1569,6 @@ async def chat_completion(
             "session_id": form_data.pop("session_id", None),
             "filter_ids": form_data.pop("filter_ids", []),
             "tool_ids": form_data.get("tool_ids", None),
-            "tool_servers": form_data.pop("tool_servers", None),
             "files": form_data.get("files", None),
             "features": form_data.get("features", {}),
             "variables": form_data.get("variables", {}),

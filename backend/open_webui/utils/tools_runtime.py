@@ -81,16 +81,13 @@ async def build_local_registry(
     model: dict,
     messages: list[dict],
     files: list[dict] | None,
-    include_openapi: bool,
 ) -> dict[str, ToolRegistryEntry]:
     if not tool_ids:
         return {}
 
     filtered_tool_ids = []
     for tool_id in tool_ids:
-        if tool_id.startswith("server:mcp:"):
-            continue
-        if not include_openapi and tool_id.startswith("server:"):
+        if tool_id.startswith("server:"):
             continue
         filtered_tool_ids.append(tool_id)
 
@@ -357,7 +354,6 @@ async def build_tool_registry(
     messages: list[dict],
     files: list[dict] | None,
     event_emitter=None,
-    include_openapi: bool = True,
 ) -> tuple[dict[str, ToolRegistryEntry], dict[str, MCPClient], list[str]]:
     local_registry = await build_local_registry(
         request=request,
@@ -367,7 +363,6 @@ async def build_tool_registry(
         model=model,
         messages=messages,
         files=files,
-        include_openapi=include_openapi,
     )
     mcp_registry, mcp_clients = await build_mcp_registry(
         request=request,

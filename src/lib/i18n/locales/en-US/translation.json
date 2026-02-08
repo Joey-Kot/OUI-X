@@ -1843,6 +1843,5 @@
 	"Tool calling config saved successfully": "Tool calling config saved successfully",
 	"Verify before configuring tools": "Verify before configuring tools",
 	"Please enter a valid URL and ID": "Please enter a valid URL and ID",
-	"Manage MCP Streamable HTTP and SSE tool servers separately from remote servers.": "Manage MCP Streamable HTTP and SSE tool servers separately from remote servers.",
 	"Manage MCP Streamable HTTP and SSE tool servers.": "Manage MCP Streamable HTTP and SSE tool servers."
 }
