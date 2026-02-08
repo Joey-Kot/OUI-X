@@ -1397,7 +1397,129 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if tool_ids:
         for tool_id in tool_ids:
-            if tool_id.startswith("server:mcp:"):
+            if tool_id.startswith("server:mcp:user:"):
+                try:
+                    server_id = tool_id[len("server:mcp:user:") :]
+
+                    user_record = Users.get_user_by_id(user.id)
+                    user_settings = user_record.settings if user_record else {}
+                    if hasattr(user_settings, "model_dump"):
+                        user_settings = user_settings.model_dump()
+
+                    mcp_server_connection = None
+                    for server_connection in user_settings.get("ui", {}).get(
+                        "mcpToolServers", []
+                    ):
+                        if server_connection.get("info", {}).get("id") == server_id:
+                            mcp_server_connection = server_connection
+                            break
+
+                    if not mcp_server_connection:
+                        log.error(f"User MCP server with id {server_id} not found")
+                        continue
+
+                    auth_type = mcp_server_connection.get("auth_type", "")
+                    headers = {}
+                    if auth_type == "bearer":
+                        headers["Authorization"] = (
+                            f"Bearer {mcp_server_connection.get('key', '')}"
+                        )
+                    elif auth_type == "none":
+                        pass
+                    elif auth_type == "session":
+                        headers["Authorization"] = (
+                            f"Bearer {request.state.token.credentials}"
+                        )
+                    elif auth_type == "system_oauth":
+                        oauth_token = extra_params.get("__oauth_token__", None)
+                        if oauth_token:
+                            headers["Authorization"] = (
+                                f"Bearer {oauth_token.get('access_token', '')}"
+                            )
+                    elif auth_type == "oauth_2.1":
+                        try:
+                            oauth_token = await request.app.state.oauth_client_manager.get_oauth_token(
+                                user.id, f"mcp:user:{user.id}:{server_id}"
+                            )
+
+                            if oauth_token:
+                                headers["Authorization"] = (
+                                    f"Bearer {oauth_token.get('access_token', '')}"
+                                )
+                        except Exception as e:
+                            log.error(f"Error getting OAuth token: {e}")
+                            oauth_token = None
+
+                    connection_headers = mcp_server_connection.get("headers", None)
+                    if connection_headers and isinstance(connection_headers, dict):
+                        for key, value in connection_headers.items():
+                            headers[key] = value
+
+                    mcp_client_key = f"user_{server_id}"
+                    mcp_clients[mcp_client_key] = MCPClient()
+                    await mcp_clients[mcp_client_key].connect(
+                        url=mcp_server_connection.get("url", ""),
+                        headers=headers if headers else None,
+                        transport=mcp_server_connection.get(
+                            "transport", "streamable_http"
+                        ),
+                    )
+
+                    tools_config = (
+                        mcp_server_connection.get("config", {}).get("tools", {}) or {}
+                    )
+
+                    tool_specs = await mcp_clients[mcp_client_key].list_tool_specs()
+                    for tool_spec in tool_specs:
+
+                        def make_tool_function(client, function_name):
+                            async def tool_function(**kwargs):
+                                return await client.call_tool(
+                                    function_name,
+                                    function_args=kwargs,
+                                )
+
+                            return tool_function
+
+                        tool_enabled = tools_config.get(tool_spec["name"], {}).get(
+                            "enabled", True
+                        )
+                        if not tool_enabled:
+                            continue
+
+                        tool_function = make_tool_function(
+                            mcp_clients[mcp_client_key], tool_spec["name"]
+                        )
+
+                        tool_name_prefix = f"user_{server_id}"
+                        mcp_tools_dict[f"{tool_name_prefix}_{tool_spec['name']}"] = {
+                            "spec": {
+                                **tool_spec,
+                                "name": f"{tool_name_prefix}_{tool_spec['name']}",
+                            },
+                            "callable": tool_function,
+                            "type": "mcp",
+                            "client": mcp_clients[mcp_client_key],
+                            "direct": False,
+                        }
+                except Exception as e:
+                    log.debug(e)
+                    if event_emitter:
+                        await event_emitter(
+                            {
+                                "type": "chat:message:error",
+                                "data": {
+                                    "error": {
+                                        "content": f"Failed to connect to user MCP server {server_id}"
+                                    }
+                                },
+                            }
+                        )
+                    continue
+
+            if tool_id.startswith("server:mcp:") and not tool_id.startswith(
+                "server:mcp:user:"
+            ):
                 try:
                     server_id = tool_id[len("server:mcp:") :]
 

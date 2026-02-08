@@ -11,6 +11,7 @@
 	export let onDelete = () => {};
 	export let onSubmit = () => {};
 	export let connection = null;
+	export let userScoped = false;
 
 	let showConfigModal = false;
 	let showDeleteConfirmDialog = false;
@@ -19,6 +20,7 @@
 <AddMCPToolServerModal
 	edit
 	bind:show={showConfigModal}
+	{userScoped}
 	{connection}
 	onDelete={() => {
 		showDeleteConfirmDialog = true;

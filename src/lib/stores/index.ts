@@ -118,6 +118,7 @@ export interface OpenAIModel extends BaseModel {
 type Settings = {
 	pinnedModels?: never[];
 	toolServers?: never[];
+	mcpToolServers?: never[];
 	detectArtifacts?: boolean;
 	showUpdateToast?: boolean;
 	showChangelog?: boolean;

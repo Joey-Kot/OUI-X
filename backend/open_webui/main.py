@@ -2178,6 +2178,11 @@ async def oauth_client_authorize(
     client = oauth_client_manager.get_client(client_id)
     client_info = oauth_client_manager.get_client_info(client_id)
     if client is None or client_info is None:
+        oauth_client_manager.ensure_client_from_user_settings(client_id, user.id)
+        client = oauth_client_manager.get_client(client_id)
+        client_info = oauth_client_manager.get_client_info(client_id)
+
+    if client is None or client_info is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
     if not await oauth_client_manager._preflight_authorization_url(client, client_info):
@@ -2219,6 +2224,7 @@ async def oauth_client_callback(
     response: Response,
     user=Depends(get_verified_user),
 ):
+    oauth_client_manager.ensure_client_from_user_settings(client_id, user.id)
     return await oauth_client_manager.handle_callback(
         request,
         client_id=client_id,

@@ -12,12 +12,17 @@
 	import XMark from '$lib/components/icons/XMark.svelte';
 	import Textarea from './common/Textarea.svelte';
 	import { registerOAuthClient, verifyMCPToolServerConnection } from '$lib/apis/configs';
+	import {
+		registerUserMCPOAuthClient,
+		verifyUserMCPToolServerConnection
+	} from '$lib/apis/users';
 
 	export let onSubmit: Function = () => {};
 	export let onDelete: Function = () => {};
 	export let show = false;
 	export let edit = false;
 	export let connection = null;
+	export let userScoped = false;
 
 	let url = '';
 	let transport = 'streamable_http';
@@ -84,7 +89,11 @@
 		if (headers && parsedHeaders === null) return;
 
 		verifying = true;
-		const res = await verifyMCPToolServerConnection(localStorage.token, basePayload(parsedHeaders)).catch(
+		const verifyConnection = userScoped
+			? verifyUserMCPToolServerConnection
+			: verifyMCPToolServerConnection;
+
+		const res = await verifyConnection(localStorage.token, basePayload(parsedHeaders)).catch(
 			() => {
 				toast.error($i18n.t('Connection failed'));
 				return null;
@@ -120,13 +129,15 @@
 			return;
 		}
 
-		const res = await registerOAuthClient(
+		const registerClient = userScoped ? registerUserMCPOAuthClient : registerOAuthClient;
+
+		const res = await registerClient(
 			localStorage.token,
 			{
 				url,
 				client_id: id
 			},
-			'mcp'
+			userScoped ? undefined : 'mcp'
 		).catch(() => {
 			toast.error($i18n.t('Registration failed'));
 			return null;

@@ -335,10 +335,17 @@
 								if (!(tools[toolId]?.authenticated ?? true)) {
 									e.preventDefault();
 
-									let parts = toolId.split(':');
-									let serverId = parts?.at(-1) ?? toolId;
+									const oauthClientId = tools[toolId]?.oauth_client_id;
+									let authUrl = '';
 
-									const authUrl = getOAuthClientAuthorizationUrl(serverId, 'mcp');
+									if (oauthClientId) {
+										authUrl = getOAuthClientAuthorizationUrl(oauthClientId);
+									} else {
+										let parts = toolId.split(':');
+										let serverId = parts?.at(-1) ?? toolId;
+										authUrl = getOAuthClientAuthorizationUrl(serverId, 'mcp');
+									}
+
 									window.open(authUrl, '_self', 'noopener');
 								} else {
 									tools[toolId].enabled = !tools[toolId].enabled;

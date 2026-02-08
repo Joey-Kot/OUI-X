@@ -131,6 +131,52 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
             )
         )
 
+    # User-scoped MCP Tool Servers
+    user_settings = getattr(user, "settings", None) or {}
+    if hasattr(user_settings, "model_dump"):
+        user_settings = user_settings.model_dump()
+
+    user_mcp_servers = user_settings.get("ui", {}).get("mcpToolServers", [])
+    for server in user_mcp_servers:
+        server_id = server.get("info", {}).get("id")
+        if not server_id:
+            continue
+
+        auth_type = server.get("auth_type", "none")
+        oauth_client_id = f"mcp:user:{user.id}:{server_id}"
+
+        session_token = None
+        if auth_type == "oauth_2.1":
+            session_token = await request.app.state.oauth_client_manager.get_oauth_token(
+                user.id, oauth_client_id
+            )
+
+        tools.append(
+            ToolUserResponse(
+                **{
+                    "id": f"server:mcp:user:{server_id}",
+                    "user_id": user.id,
+                    "name": server.get("info", {}).get("name", "MCP Tool Server"),
+                    "meta": {
+                        "description": server.get("info", {}).get("description", ""),
+                    },
+                    "access_control": server.get("config", {}).get(
+                        "access_control", None
+                    ),
+                    "updated_at": int(time.time()),
+                    "created_at": int(time.time()),
+                    **(
+                        {
+                            "authenticated": session_token is not None,
+                            "oauth_client_id": oauth_client_id,
+                        }
+                        if auth_type == "oauth_2.1"
+                        else {}
+                    ),
+                }
+            )
+        )
+
     if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
         # Admin can see all tools
         return tools
