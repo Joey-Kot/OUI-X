@@ -1580,8 +1580,8 @@ async def chat_completion(
                 "function_calling": (
                     "native"
                     if (
-                        form_data.get("params", {}).get("function_calling") == "native"
-                        or model_info_params.get("function_calling") == "native"
+                        form_data.get("params", {}).get("function_calling") is not None
+                        or model_info_params.get("function_calling") is not None
                     )
                     else "default"
                 ),

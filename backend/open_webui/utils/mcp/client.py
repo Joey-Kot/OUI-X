@@ -1,4 +1,5 @@
 import logging
+import json
 from typing import Any, Literal, Optional
 from urllib.parse import urlparse, urlunparse
 
@@ -91,6 +92,48 @@ class MCPClient:
             return value.model_dump(mode="json")
         return value
 
+    def _normalize_parameters_schema(self, schema: Any) -> dict:
+        if not isinstance(schema, dict):
+            return {"type": "object", "properties": {}, "required": []}
+
+        normalized = dict(schema)
+        if normalized.get("type") != "object":
+            normalized["type"] = "object"
+
+        properties = normalized.get("properties")
+        if not isinstance(properties, dict):
+            properties = {}
+        normalized["properties"] = properties
+
+        required = normalized.get("required")
+        if not isinstance(required, list):
+            required = []
+        normalized["required"] = [key for key in required if isinstance(key, str)]
+
+        if "additionalProperties" in normalized and not isinstance(
+            normalized["additionalProperties"], (bool, dict)
+        ):
+            normalized["additionalProperties"] = False
+
+        for key, value in list(properties.items()):
+            if not isinstance(value, dict):
+                properties[key] = {"type": "string"}
+                continue
+            if value.get("type") == "str":
+                value["type"] = "string"
+
+        return normalized
+
+    def _serialize_tool_content_block(self, content: Any) -> dict:
+        payload = self._serialize(content)
+        if isinstance(payload, dict) and isinstance(payload.get("type"), str):
+            return payload
+
+        return {
+            "type": "text",
+            "text": json.dumps(payload, ensure_ascii=False),
+        }
+
     async def list_tool_specs(self) -> list[dict]:
         if not self.client or not self._connected:
             raise MCPClientError("MCP client is not connected.")
@@ -103,9 +146,11 @@ class MCPClient:
                     {
                         "name": tool.name,
                         "description": getattr(tool, "description", None),
-                        "parameters": self._serialize(
+                        "parameters": self._normalize_parameters_schema(
+                            self._serialize(
                             getattr(tool, "inputSchema", None)
                             or getattr(tool, "input_schema", None)
+                            )
                         ),
                     }
                 )
@@ -126,7 +171,10 @@ class MCPClient:
             if result.is_error:
                 raise MCPClientError(str(result.content))
 
-            return [self._serialize(content) for content in (result.content or [])]
+            return [
+                self._serialize_tool_content_block(content)
+                for content in (result.content or [])
+            ]
         except MCPClientError:
             raise
         except Exception as exc:
