@@ -1,4 +1,5 @@
 from typing import List, Optional
+import copy
 import time
 import uuid
 from pydantic import BaseModel
@@ -29,7 +30,11 @@ from open_webui.utils.auth import get_verified_user
 from open_webui.utils.access_control import has_access, has_permission
 
 
-from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL
+from open_webui.config import (
+    BYPASS_ADMIN_ACCESS_CONTROL,
+    VECTOR_DB,
+    ENABLE_QDRANT_MULTITENANCY_MODE,
+)
 from open_webui.models.models import Models, ModelForm
 from open_webui.utils.knowledge import (
     get_active_vector_collection_name,
@@ -121,6 +126,230 @@ def _validate_collection_rag_overrides(overrides: dict):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="RELEVANCE_THRESHOLD must be between 0.0 and 1.0",
         )
+
+
+def _ensure_knowledge_create_permission(request: Request, user):
+    if user.role != "admin" and not has_permission(
+        user.id, "workspace.knowledge", request.app.state.config.USER_PERMISSIONS
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.UNAUTHORIZED,
+        )
+
+
+def _build_cloned_knowledge_meta(meta: Optional[dict]) -> dict:
+    # Clone functional metadata but never carry source vector-state pointers.
+    next_meta = copy.deepcopy(meta or {})
+    next_meta.pop("collection_vector", None)
+    return next_meta
+
+
+def _extract_qdrant_vector(point_vector):
+    if isinstance(point_vector, dict):
+        for value in point_vector.values():
+            if value is not None:
+                return value
+        return None
+    return point_vector
+
+
+def _chunk_vector_items(items: list, chunk_size: int = 256):
+    for i in range(0, len(items), chunk_size):
+        yield items[i : i + chunk_size]
+
+
+def _clone_qdrant_collection_vectors(
+    source_collection_name: str,
+    target_collection_name: str,
+) -> tuple[bool, Optional[str]]:
+    if VECTOR_DB != "qdrant":
+        return False, "vector backend is not qdrant"
+
+    if ENABLE_QDRANT_MULTITENANCY_MODE:
+        return False, "qdrant multitenancy direct clone is not supported"
+
+    client = getattr(VECTOR_DB_CLIENT, "client", None)
+    collection_prefix = getattr(VECTOR_DB_CLIENT, "collection_prefix", None)
+
+    if client is None or not collection_prefix:
+        return False, "qdrant client is unavailable"
+
+    source_collection = f"{collection_prefix}_{source_collection_name}"
+    if not client.collection_exists(collection_name=source_collection):
+        return False, "source vector collection does not exist"
+
+    points = []
+    offset = None
+
+    while True:
+        batch, offset = client.scroll(
+            collection_name=source_collection,
+            limit=256,
+            offset=offset,
+            with_payload=True,
+            with_vectors=True,
+        )
+
+        points.extend(batch)
+
+        if offset is None:
+            break
+
+    if not points:
+        return True, None
+
+    items = []
+    for point in points:
+        vector = _extract_qdrant_vector(point.vector)
+        if vector is None:
+            return False, "source qdrant point is missing vector"
+
+        payload = point.payload or {}
+        metadata = payload.get("metadata") or {}
+        items.append(
+            {
+                "id": point.id,
+                "text": payload.get("text") or metadata.get("text") or "",
+                "vector": vector,
+                "metadata": metadata,
+            }
+        )
+
+    for batch in _chunk_vector_items(items):
+        VECTOR_DB_CLIENT.upsert(collection_name=target_collection_name, items=batch)
+
+    return True, None
+
+
+def _clone_chroma_collection_vectors(
+    source_collection_name: str,
+    target_collection_name: str,
+) -> tuple[bool, Optional[str]]:
+    if VECTOR_DB != "chroma":
+        return False, "vector backend is not chroma"
+
+    client = getattr(VECTOR_DB_CLIENT, "client", None)
+    if client is None:
+        return False, "chroma client is unavailable"
+
+    try:
+        source = client.get_collection(name=source_collection_name)
+    except Exception:
+        return False, "source vector collection does not exist"
+
+    result = source.get(include=["embeddings", "documents", "metadatas"])
+
+    ids = result.get("ids") or []
+    embeddings = result.get("embeddings") or []
+    documents = result.get("documents") or []
+    metadatas = result.get("metadatas") or []
+
+    if not ids:
+        return True, None
+
+    if len(embeddings) != len(ids):
+        return False, "source chroma collection has incomplete embeddings"
+
+    target = client.get_or_create_collection(
+        name=target_collection_name,
+        metadata={"hnsw:space": "cosine"},
+    )
+
+    for i in range(0, len(ids), 256):
+        target.upsert(
+            ids=ids[i : i + 256],
+            embeddings=embeddings[i : i + 256],
+            documents=documents[i : i + 256],
+            metadatas=metadatas[i : i + 256],
+        )
+
+    return True, None
+
+
+async def _clone_collection_vectors(
+    request: Request,
+    source_knowledge,
+    target_knowledge,
+    files: List[FileModel],
+    user,
+) -> dict:
+    source_collection_name = get_active_vector_collection_name(
+        source_knowledge.id, source_knowledge.meta
+    )
+    target_collection_name = get_active_vector_collection_name(
+        target_knowledge.id, target_knowledge.meta
+    )
+
+    fallback_reason = "source vector collection does not exist"
+    direct_clone_success = False
+
+    if VECTOR_DB_CLIENT.has_collection(collection_name=source_collection_name):
+        try:
+            if VECTOR_DB == "qdrant":
+                direct_clone_success, fallback_reason = _clone_qdrant_collection_vectors(
+                    source_collection_name=source_collection_name,
+                    target_collection_name=target_collection_name,
+                )
+            elif VECTOR_DB == "chroma":
+                direct_clone_success, fallback_reason = _clone_chroma_collection_vectors(
+                    source_collection_name=source_collection_name,
+                    target_collection_name=target_collection_name,
+                )
+            else:
+                fallback_reason = (
+                    f"vector direct clone is not implemented for backend {VECTOR_DB}"
+                )
+        except Exception as e:
+            log.exception(f"Direct vector clone failed for knowledge {source_knowledge.id}: {e}")
+            fallback_reason = str(e)
+
+    if direct_clone_success:
+        return {
+            "successful_file_ids": [file.id for file in files],
+            "warnings": None,
+        }
+
+    try:
+        if VECTOR_DB_CLIENT.has_collection(collection_name=target_collection_name):
+            VECTOR_DB_CLIENT.delete_collection(collection_name=target_collection_name)
+    except Exception:
+        pass
+
+    successful_file_ids = []
+    fallback_errors = []
+
+    if files:
+        fallback_result = await process_files_batch(
+            request=request,
+            form_data=BatchProcessFilesForm(
+                files=files,
+                collection_name=target_collection_name,
+            ),
+            user=user,
+        )
+
+        successful_file_ids = [
+            result.file_id
+            for result in fallback_result.results
+            if result.status == "completed"
+        ]
+        fallback_errors = [
+            {"file_id": error.file_id, "error": error.error}
+            for error in fallback_result.errors
+        ]
+
+    warnings = {
+        "message": "vector direct clone unavailable, fallback to re-embed",
+        "reason": fallback_reason,
+    }
+    if fallback_errors:
+        warnings["errors"] = fallback_errors
+
+    return {
+        "successful_file_ids": successful_file_ids,
+        "warnings": warnings,
+    }
 
 
 async def _reindex_collection_internal(request: Request, knowledge, user):
@@ -330,13 +559,7 @@ async def search_knowledge_files(
 async def create_new_knowledge(
     request: Request, form_data: KnowledgeForm, user=Depends(get_verified_user)
 ):
-    if user.role != "admin" and not has_permission(
-        user.id, "workspace.knowledge", request.app.state.config.USER_PERMISSIONS
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.UNAUTHORIZED,
-        )
+    _ensure_knowledge_create_permission(request, user)
 
     # Check if user can share publicly
     if (
@@ -866,6 +1089,82 @@ def remove_file_from_knowledge_by_id(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
+
+
+############################
+# CloneKnowledgeById
+############################
+
+
+@router.post("/{id}/clone", response_model=Optional[KnowledgeFilesResponse])
+async def clone_knowledge_by_id(
+    request: Request,
+    id: str,
+    user=Depends(get_verified_user),
+):
+    knowledge = Knowledges.get_knowledge_by_id(id=id)
+    if not knowledge:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    _ensure_write_access(knowledge, user)
+    _ensure_knowledge_create_permission(request, user)
+
+    cloned_access_control = copy.deepcopy(knowledge.access_control)
+    if (
+        user.role != "admin"
+        and cloned_access_control is None
+        and not has_permission(
+            user.id,
+            "sharing.public_knowledge",
+            request.app.state.config.USER_PERMISSIONS,
+        )
+    ):
+        cloned_access_control = {}
+
+    cloned_knowledge = Knowledges.insert_new_knowledge(
+        user.id,
+        KnowledgeForm(
+            name=f"{knowledge.name}_Clone",
+            description=knowledge.description,
+            meta=_build_cloned_knowledge_meta(knowledge.meta),
+            access_control=cloned_access_control,
+        ),
+    )
+
+    if not cloned_knowledge:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ERROR_MESSAGES.DEFAULT("Failed to clone knowledge base"),
+        )
+
+    files = Knowledges.get_files_by_id(knowledge.id)
+    clone_result = await _clone_collection_vectors(
+        request=request,
+        source_knowledge=knowledge,
+        target_knowledge=cloned_knowledge,
+        files=files,
+        user=user,
+    )
+
+    successful_file_ids = set(clone_result["successful_file_ids"])
+    for file in files:
+        if file.id not in successful_file_ids:
+            continue
+
+        Knowledges.add_file_to_knowledge_by_id(
+            knowledge_id=cloned_knowledge.id,
+            file_id=file.id,
+            user_id=user.id,
+        )
+
+    return KnowledgeFilesResponse(
+        **cloned_knowledge.model_dump(),
+        files=Knowledges.get_file_metadatas_by_id(cloned_knowledge.id),
+        warnings=clone_result["warnings"],
+    )
 
 
 ############################
