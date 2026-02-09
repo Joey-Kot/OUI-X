@@ -87,22 +87,18 @@
 		let prompt = selectedAction?.prompt ?? '';
 		let toolIds = [];
 
-		// Handle: {{variableId|tool:id="toolId"}} pattern
-		// This regex captures variableId and toolId from {{variableId|tool:id="toolId"}}
 		const varToolPattern = /\{\{(.*?)\|tool:id="([^"]+)"\}\}/g;
 		prompt = prompt.replace(varToolPattern, (match, variableId, toolId) => {
 			toolIds.push(toolId);
-			return variableId; // Replace with just variableId
+			return variableId;
 		});
 
-		// legacy {{TOOL:toolId}} pattern (for backward compatibility)
 		let toolIdPattern = /\{\{TOOL:([^\}]+)\}\}/g;
 		let match;
 		while ((match = toolIdPattern.exec(prompt)) !== null) {
 			toolIds.push(match[1]);
 		}
 
-		// Remove all TOOL placeholders from the prompt
 		prompt = prompt.replace(toolIdPattern, '');
 
 		if (prompt.includes('{{INPUT_CONTENT}}') && floatingInput) {
@@ -115,91 +111,88 @@
 
 		content = prompt;
 		responseContent = '';
+		responseDone = false;
 
-		let res;
-		[res, controller] = await chatCompletion(localStorage.token, {
+		const requestBody = {
 			model: model,
 			model_item: $models.find((m) => m.id === model),
 			session_id: $socket?.id,
 			chat_id: $chatId,
+			parent_message: {},
 			messages: [
-				...messages,
 				{
 					role: 'user',
 					content: content
 				}
-			].map((message) => ({
-				role: message.role,
-				content: message.content
-			})),
-			...(toolIds.length > 0
-				? {
-						tool_ids: toolIds
-						// params: {
-						// 	function_calling: 'native'
-						// }
-					}
-				: {}),
+			],
+			...(toolIds.length > 0 ? { tool_ids: toolIds } : {}),
+			stream: true
+		};
 
-			stream: true // Enable streaming
-		});
+		const endpointType = 'chat_completions(proxy)';
+		const [res, requestController] = await chatCompletion(localStorage.token, requestBody);
+		controller = requestController;
+
+		const handleLine = (line: string) => {
+			if (!line.startsWith('data: ')) {
+				return;
+			}
+
+			if (line.startsWith('data: [DONE]')) {
+				responseDone = true;
+				tick().then(() => autoScroll());
+				return;
+			}
+
+			try {
+				const data = JSON.parse(line.slice(6));
+				if (data.choices && data.choices[0]?.delta?.content) {
+					responseContent += data.choices[0].delta.content;
+					autoScroll();
+				}
+			} catch (e) {
+				console.error(e);
+			}
+		};
 
 		if (res && res.ok) {
-			const reader = res.body.getReader();
-			const decoder = new TextDecoder();
+			try {
+				const reader = res.body.getReader();
+				const decoder = new TextDecoder();
 
-			const processStream = async () => {
 				while (true) {
-					// Read data chunks from the response stream
 					const { done, value } = await reader.read();
 					if (done) {
 						break;
 					}
 
-					// Decode the received chunk
 					const chunk = decoder.decode(value, { stream: true });
-
-					// Process lines within the chunk
 					const lines = chunk.split('\n').filter((line) => line.trim() !== '');
-
 					for (const line of lines) {
-						if (line.startsWith('data: ')) {
-							if (line.startsWith('data: [DONE]')) {
-								responseDone = true;
-
-								await tick();
-								autoScroll();
-								continue;
-							} else {
-								// Parse the JSON chunk
-								try {
-									const data = JSON.parse(line.slice(6));
-
-									// Append the `content` field from the "choices" object
-									if (data.choices && data.choices[0]?.delta?.content) {
-										responseContent += data.choices[0].delta.content;
-
-										autoScroll();
-									}
-								} catch (e) {
-									console.error(e);
-								}
-							}
-						}
+						handleLine(line);
 					}
 				}
-			};
-
-			// Process the stream in the background
-			try {
-				await processStream();
 			} catch (e) {
 				if (e.name !== 'AbortError') {
 					console.error(e);
 				}
 			}
 		} else {
-			toast.error($i18n.t('An error occurred while fetching the explanation'));
+			let errorMessage = $i18n.t('An error occurred while fetching the explanation');
+			if (res) {
+				console.error('Floating action request failed', {
+					status: res.status,
+					endpointType
+				});
+				try {
+					const errorBody = await res.json();
+					errorMessage =
+						errorBody?.error?.message ?? errorBody?.message ?? errorBody?.detail ?? errorMessage;
+				} catch {
+					// keep default message
+				}
+			}
+			toast.error(errorMessage);
 		}
 	};
 
