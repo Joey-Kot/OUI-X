@@ -140,6 +140,40 @@ DEFAULT_REASONING_TAGS = [
     ("<|begin_of_thought|>", "<|end_of_thought|>"),
     ("◁think▷", "◁/think▷"),
 ]
+
+
+def _is_non_empty_text_block(block: dict) -> bool:
+    if not isinstance(block, dict) or block.get("type") != "text":
+        return False
+    return bool(str(block.get("content", "")).strip())
+
+
+def reorder_content_blocks_for_display(content_blocks: list[dict]) -> list[dict]:
+    """
+    Reorder content blocks for UI rendering only.
+
+    If a non-empty text block is immediately followed by a reasoning block,
+    swap them so the reasoning details appear before the answer text.
+    The operation is local (adjacent swap only), preserving boundaries around
+    tool_calls/code_interpreter and other block types.
+    """
+    reordered: list[dict] = []
+    i = 0
+
+    while i < len(content_blocks):
+        current = content_blocks[i]
+        nxt = content_blocks[i + 1] if i + 1 < len(content_blocks) else None
+
+        if _is_non_empty_text_block(current) and isinstance(nxt, dict) and nxt.get("type") == "reasoning":
+            reordered.append(nxt)
+            reordered.append(current)
+            i += 2
+            continue
+
+        reordered.append(current)
+        i += 1
+
+    return reordered
 DEFAULT_SOLUTION_TAGS = [("<|begin_of_solution|>", "<|end_of_solution|>")]
 DEFAULT_CODE_INTERPRETER_TAGS = [("<code_interpreter>", "</code_interpreter>")]
 MAX_CODE_INTERPRETER_ATTEMPTS = 2
@@ -2006,7 +2040,13 @@ async def process_chat_response(
             def serialize_content_blocks(content_blocks, raw=False):
                 content = ""
 
-                for block in content_blocks:
+                blocks_to_render = (
+                    content_blocks
+                    if raw
+                    else reorder_content_blocks_for_display(content_blocks)
+                )
+
+                for block in blocks_to_render:
                     if block["type"] == "text":
                         block_content = block["content"].strip()
                         if block_content:
