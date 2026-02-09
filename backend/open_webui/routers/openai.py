@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import aiohttp
 from aiocache import cached
@@ -113,6 +113,698 @@ def openai_reasoning_model_handler(payload):
             payload["messages"][0]["role"] = "developer"
 
     return payload
+
+
+def get_provider_type(api_config: Optional[dict]) -> str:
+    if not isinstance(api_config, dict):
+        return "openai"
+
+    provider_type = api_config.get("provider_type")
+    if provider_type in {"openai", "azure_openai", "openai_responses"}:
+        return provider_type
+
+    if api_config.get("azure", False):
+        return "azure_openai"
+
+    return "openai"
+
+
+def is_responses_provider(api_config: Optional[dict]) -> bool:
+    return get_provider_type(api_config) == "openai_responses"
+
+
+def _normalize_tool_choice_for_responses(tool_choice):
+    if isinstance(tool_choice, dict):
+        if tool_choice.get("type") == "function" and isinstance(
+            tool_choice.get("function"), dict
+        ):
+            return {
+                "type": "function",
+                "name": tool_choice.get("function", {}).get("name"),
+            }
+        return tool_choice
+
+    if isinstance(tool_choice, str):
+        return tool_choice
+
+    return None
+
+
+ALLOWED_REASONING_SUMMARY_VALUES = {"auto", "concise", "detailed"}
+
+
+def normalize_reasoning_summary(
+    value: Any,
+    default: str = "auto",
+    source: str = "reasoning.summary",
+) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ALLOWED_REASONING_SUMMARY_VALUES:
+            return normalized
+        if normalized:
+            log.debug(
+                "Invalid Responses %s value %s. Falling back to %s.",
+                source,
+                value,
+                default,
+            )
+        return default
+
+    if value is not None:
+        log.debug(
+            "Invalid Responses %s type %s. Falling back to %s.",
+            source,
+            type(value).__name__,
+            default,
+        )
+
+    return default
+
+
+def _normalize_tools_for_responses(tools: list) -> list:
+    normalized_tools = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+
+        if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+            function = tool.get("function")
+            normalized_tools.append(
+                {
+                    "type": "function",
+                    "name": function.get("name", ""),
+                    "description": function.get("description", ""),
+                    "parameters": function.get(
+                        "parameters",
+                        {
+                            "type": "object",
+                            "properties": {},
+                        },
+                    ),
+                }
+            )
+            continue
+
+        normalized_tools.append(tool)
+
+    return normalized_tools
+
+
+def to_responses_content_part(role: str, part: dict) -> dict | None:
+    if not isinstance(part, dict):
+        return None
+
+    part_type = part.get("type")
+    user_like_roles = {"user", "system", "developer"}
+
+    if part_type == "text":
+        target_type = "output_text" if role == "assistant" else "input_text"
+        text_value = part.get("text") or part.get("content", "")
+        return {"type": target_type, "text": text_value}
+
+    if part_type == "image_url":
+        image_url = part.get("image_url", {})
+        return {
+            "type": "input_image",
+            "image_url": image_url.get("url", "")
+            if isinstance(image_url, dict)
+            else image_url,
+        }
+
+    if part_type == "refusal":
+        # Assistant-only content block in responses API.
+        return part if role == "assistant" else None
+
+    if part_type in {"input_image", "input_file"}:
+        return part if role in user_like_roles else None
+
+    if part_type == "input_text":
+        if role == "assistant":
+            return {"type": "output_text", "text": part.get("text", "")}
+        return part
+
+    if part_type == "output_text":
+        if role == "assistant":
+            return part
+        return {"type": "input_text", "text": part.get("text", "")}
+
+    return None
+
+
+def chat_messages_to_responses_input(messages: list[dict]) -> list:
+    input_items = []
+
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+
+        role = message.get("role", "user")
+
+        if role == "tool":
+            input_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": message.get("tool_call_id", ""),
+                    "output": message.get("content", ""),
+                }
+            )
+            continue
+
+        tool_calls = message.get("tool_calls")
+        if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
+            for tool_call in tool_calls:
+                function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+                arguments = function.get("arguments", "{}")
+                if not isinstance(arguments, str):
+                    arguments = json.dumps(arguments)
+
+                input_items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": tool_call.get("id", ""),
+                        "name": function.get("name", ""),
+                        "arguments": arguments,
+                    }
+                )
+
+            if message.get("content"):
+                input_items.append(
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": message.get("content", ""),
+                            }
+                        ],
+                    }
+                )
+            continue
+
+        content = message.get("content", "")
+        if isinstance(content, str):
+            input_items.append({"role": role, "content": content})
+            continue
+
+        if isinstance(content, list):
+            converted_content = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+
+                normalized_part = to_responses_content_part(role=role, part=part)
+                if normalized_part:
+                    converted_content.append(normalized_part)
+
+            if converted_content:
+                input_items.append({"role": role, "content": converted_content})
+
+    return input_items
+
+
+def responses_input_from_tool_followups(messages: list[dict]) -> list:
+    return chat_messages_to_responses_input(messages)
+
+
+def _extract_reasoning_summary(reasoning: dict | None) -> str:
+    if not isinstance(reasoning, dict):
+        return ""
+
+    summary = reasoning.get("summary")
+    if isinstance(summary, str):
+        normalized = summary.strip().lower()
+        # Some providers return the summary mode here (auto/concise/detailed)
+        # rather than the actual reasoning text; don't surface these in UI.
+        if normalized in ALLOWED_REASONING_SUMMARY_VALUES:
+            return ""
+        return summary
+
+    if isinstance(summary, list):
+        texts = []
+        for item in summary:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                text = item.get("text", "")
+                if text.strip().lower() in ALLOWED_REASONING_SUMMARY_VALUES:
+                    continue
+                texts.append(text)
+        return "\n".join(texts)
+
+    return ""
+
+
+def extract_reasoning_text_from_output(output_items: list[dict] | None) -> str:
+    if not isinstance(output_items, list):
+        return ""
+
+    texts: list[str] = []
+    for item in output_items:
+        if not isinstance(item, dict) or item.get("type") != "reasoning":
+            continue
+
+        summary = item.get("summary")
+        if isinstance(summary, list):
+            for summary_item in summary:
+                if isinstance(summary_item, dict) and isinstance(
+                    summary_item.get("text"), str
+                ):
+                    text = summary_item.get("text", "").strip()
+                    if not text:
+                        continue
+                    if text.lower() in ALLOWED_REASONING_SUMMARY_VALUES:
+                        continue
+                    texts.append(text)
+
+    return "\n".join(texts)
+
+
+def extract_reasoning_content(resp: dict | None) -> str:
+    if not isinstance(resp, dict):
+        return ""
+
+    reasoning_from_output = extract_reasoning_text_from_output(resp.get("output"))
+    if reasoning_from_output:
+        return reasoning_from_output
+
+    return _extract_reasoning_summary(resp.get("reasoning"))
+
+
+def _normalize_responses_usage(usage: dict | None) -> dict | None:
+    if not isinstance(usage, dict):
+        return None
+
+    return {
+        "prompt_tokens": usage.get("input_tokens", 0),
+        "completion_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
+
+
+def _responses_event_to_chat_chunks(
+    event_type: str,
+    payload: dict | None,
+    state: dict,
+) -> list[str]:
+    chunks: list[str] = []
+    payload = payload if isinstance(payload, dict) else {}
+
+    def emit(data: dict):
+        chunks.append(f"data: {json.dumps(data)}\n\n")
+
+    if event_type == "response.output_text.delta":
+        delta = payload.get("delta", "")
+        if delta:
+            state["text_emitted"] = True
+            emit({"choices": [{"delta": {"content": delta}}]})
+
+    elif event_type in {
+        "response.function_call_arguments.delta",
+        "response.function_call.delta",
+    }:
+        call_id = payload.get("call_id") or payload.get("item_id")
+        if call_id:
+            function_state = state["function_calls"].setdefault(
+                call_id, {"name": payload.get("name", ""), "arguments": ""}
+            )
+
+            if payload.get("name"):
+                function_state["name"] = payload.get("name")
+
+            arguments_delta = payload.get("delta", "")
+            if isinstance(arguments_delta, str) and arguments_delta:
+                function_state["arguments"] += arguments_delta
+
+    elif event_type == "response.output_item.done":
+        item = payload.get("item", {})
+        if isinstance(item, dict) and item.get("type") == "function_call":
+            call_id = item.get("call_id") or item.get("id", "")
+            if call_id and call_id not in state["emitted_call_ids"]:
+                function_state = state["function_calls"].setdefault(
+                    call_id,
+                    {
+                        "name": item.get("name", ""),
+                        "arguments": "",
+                    },
+                )
+
+                if item.get("name"):
+                    function_state["name"] = item.get("name")
+
+                arguments = item.get("arguments", "")
+                if isinstance(arguments, str):
+                    function_state["arguments"] = arguments
+
+                index = state["call_indexes"].setdefault(
+                    call_id, len(state["call_indexes"])
+                )
+
+                emit(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": index,
+                                            "id": call_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": function_state.get("name", ""),
+                                                "arguments": function_state.get(
+                                                    "arguments", "{}"
+                                                ),
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                )
+                state["emitted_call_ids"].add(call_id)
+
+    elif event_type == "response.completed":
+        response = payload.get("response", {})
+        if not isinstance(response, dict):
+            response = {}
+
+        reasoning_summary = extract_reasoning_content(response)
+        if reasoning_summary:
+            emit(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "reasoning_content": reasoning_summary,
+                            }
+                        }
+                    ]
+                }
+            )
+
+        output_items = response.get("output", []) if isinstance(response, dict) else []
+
+        if isinstance(output_items, list):
+            for item in output_items:
+                if not isinstance(item, dict) or item.get("type") != "function_call":
+                    continue
+
+                call_id = item.get("call_id") or item.get("id", "")
+                if not call_id or call_id in state["emitted_call_ids"]:
+                    continue
+
+                function_state = state["function_calls"].setdefault(
+                    call_id,
+                    {
+                        "name": item.get("name", ""),
+                        "arguments": item.get("arguments", "{}")
+                        if isinstance(item.get("arguments"), str)
+                        else json.dumps(item.get("arguments", {})),
+                    },
+                )
+
+                if item.get("name"):
+                    function_state["name"] = item.get("name")
+
+                arguments = item.get("arguments", "")
+                if isinstance(arguments, str) and arguments:
+                    function_state["arguments"] = arguments
+
+                index = state["call_indexes"].setdefault(
+                    call_id, len(state["call_indexes"])
+                )
+
+                emit(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": index,
+                                            "id": call_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": function_state.get("name", ""),
+                                                "arguments": function_state.get(
+                                                    "arguments", "{}"
+                                                ),
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                )
+                state["emitted_call_ids"].add(call_id)
+
+        if not state.get("text_emitted", False):
+            text_parts = []
+            for item in output_items if isinstance(output_items, list) else []:
+                if not isinstance(item, dict) or item.get("type") != "message":
+                    continue
+                for part in item.get("content", []) or []:
+                    if isinstance(part, dict) and part.get("type") == "output_text":
+                        text_parts.append(part.get("text", ""))
+
+            fallback_text = "".join(text_parts)
+            if fallback_text:
+                emit({"choices": [{"delta": {"content": fallback_text}}]})
+
+        usage = _normalize_responses_usage(response.get("usage"))
+        if usage:
+            emit({"usage": usage})
+
+        chunks.append("data: [DONE]\n\n")
+
+    return chunks
+
+
+def responses_output_to_chat_tool_calls(output_items: list[dict]) -> list[dict]:
+    tool_calls = []
+
+    for item in output_items or []:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+
+        arguments = item.get("arguments", "{}")
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments)
+
+        call_id = item.get("call_id") or item.get("id", "")
+        tool_calls.append(
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": item.get("name", ""),
+                    "arguments": arguments,
+                },
+            }
+        )
+
+    return tool_calls
+
+
+def sanitize_responses_metadata(metadata: dict | None) -> dict:
+    if not isinstance(metadata, dict):
+        return {}
+
+    def _sanitize(value):
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, dict):
+            sanitized = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    continue
+                sanitized_item = _sanitize(item)
+                if sanitized_item is not None or item is None:
+                    sanitized[key] = sanitized_item
+            return sanitized
+        if isinstance(value, list):
+            sanitized = []
+            for item in value:
+                sanitized_item = _sanitize(item)
+                if sanitized_item is not None or item is None:
+                    sanitized.append(sanitized_item)
+            return sanitized
+        return None
+
+    return _sanitize(metadata) or {}
+
+
+def responses_to_chat_compatible(resp_json: dict) -> dict:
+    output = resp_json.get("output", []) if isinstance(resp_json, dict) else []
+    content_parts = []
+
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for part in item.get("content", []) or []:
+            if isinstance(part, dict) and part.get("type") == "output_text":
+                content_parts.append(part.get("text", ""))
+
+    content = "".join(content_parts)
+    tool_calls = responses_output_to_chat_tool_calls(output)
+
+    message = {
+        "role": "assistant",
+        "content": content,
+    }
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+
+    reasoning_summary = extract_reasoning_content(resp_json)
+    if reasoning_summary:
+        message["reasoning_content"] = reasoning_summary
+
+    usage = resp_json.get("usage") if isinstance(resp_json, dict) else None
+    normalized_usage = None
+    if isinstance(usage, dict):
+        normalized_usage = {
+            "prompt_tokens": usage.get("input_tokens", 0),
+            "completion_tokens": usage.get("output_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        }
+
+    return {
+        "id": resp_json.get("id"),
+        "object": "chat.completion",
+        "created": resp_json.get("created_at"),
+        "model": resp_json.get("model"),
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": "tool_calls" if tool_calls else "stop",
+            }
+        ],
+        **({"usage": normalized_usage} if normalized_usage else {}),
+    }
+
+
+def chat_to_responses_payload(payload: dict, metadata: Optional[dict], api_config: dict) -> dict:
+    responses_payload = {
+        "model": payload.get("model"),
+        "input": responses_input_from_tool_followups(payload.get("messages", [])),
+    }
+
+    if "stream" in payload:
+        responses_payload["stream"] = bool(payload.get("stream"))
+
+    tools = payload.get("tools")
+    if isinstance(tools, list) and tools:
+        responses_payload["tools"] = _normalize_tools_for_responses(tools)
+
+    tool_choice = _normalize_tool_choice_for_responses(payload.get("tool_choice"))
+    if tool_choice is not None:
+        responses_payload["tool_choice"] = tool_choice
+
+    if "parallel_tool_calls" in payload:
+        responses_payload["parallel_tool_calls"] = payload.get("parallel_tool_calls")
+
+    max_output_tokens = payload.get("max_completion_tokens", payload.get("max_tokens"))
+    if max_output_tokens is not None:
+        responses_payload["max_output_tokens"] = max_output_tokens
+
+    reasoning = payload.get("reasoning", {})
+    if not isinstance(reasoning, dict):
+        reasoning = {}
+
+    explicit_reasoning_summary = None
+    if "summary" in reasoning:
+        explicit_reasoning_summary = reasoning.get("summary")
+    elif payload.get("summary") is not None:
+        # support custom_params.summary -> reasoning.summary mapping
+        explicit_reasoning_summary = payload.get("summary")
+
+    if payload.get("reasoning_effort"):
+        reasoning["effort"] = payload.get("reasoning_effort")
+
+    if is_responses_provider(api_config):
+        reasoning["summary"] = normalize_reasoning_summary(
+            explicit_reasoning_summary if explicit_reasoning_summary is not None else "auto",
+            default="auto",
+            source="summary" if explicit_reasoning_summary is not None else "default",
+        )
+
+    if reasoning:
+        responses_payload["reasoning"] = reasoning
+
+    for key in [
+        "temperature",
+        "top_p",
+        "stop",
+        "store",
+        "truncation",
+        "text",
+        "user",
+    ]:
+        if key in payload:
+            responses_payload[key] = payload[key]
+
+    # Only forward explicitly provided request metadata and drop non-JSON values.
+    if "metadata" in payload:
+        sanitized_metadata = sanitize_responses_metadata(payload.get("metadata"))
+        if sanitized_metadata:
+            responses_payload["metadata"] = sanitized_metadata
+
+    return responses_payload
+
+
+def responses_stream_to_chat_streaming_response(stream: aiohttp.StreamReader) -> StreamingResponse:
+    async def event_stream():
+        buffer = ""
+        state = {
+            "function_calls": {},
+            "call_indexes": {},
+            "emitted_call_ids": set(),
+            "text_emitted": False,
+        }
+
+        async for chunk in stream_chunks_handler(stream):
+            if isinstance(chunk, bytes):
+                buffer += chunk.decode("utf-8", "replace")
+            else:
+                buffer += str(chunk)
+
+            while "\n\n" in buffer:
+                raw_event, buffer = buffer.split("\n\n", 1)
+                if not raw_event.strip():
+                    continue
+
+                event_name = None
+                data_lines = []
+                for line in raw_event.split("\n"):
+                    if line.startswith("event:"):
+                        event_name = line[len("event:") :].strip()
+                    elif line.startswith("data:"):
+                        data_lines.append(line[len("data:") :].strip())
+
+                if not data_lines:
+                    continue
+
+                data_str = "\n".join(data_lines)
+                if data_str == "[DONE]":
+                    yield "data: [DONE]\n\n"
+                    return
+
+                try:
+                    payload = json.loads(data_str)
+                except Exception:
+                    continue
+
+                event_type = event_name or payload.get("type")
+                for mapped_chunk in _responses_event_to_chat_chunks(
+                    event_type=event_type,
+                    payload=payload,
+                    state=state,
+                ):
+                    yield mapped_chunk
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 async def get_headers_and_cookies(
@@ -566,7 +1258,7 @@ async def get_models(
                     request, url, key, api_config, user=user
                 )
 
-                if api_config.get("azure", False):
+                if get_provider_type(api_config) == "azure_openai":
                     models = {
                         "data": api_config.get("model_ids", []) or [],
                         "object": "list",
@@ -652,7 +1344,7 @@ async def verify_connection(
                 request, url, key, api_config, user=user
             )
 
-            if api_config.get("azure", False):
+            if get_provider_type(api_config) == "azure_openai":
                 # Only set api-key header if not using Azure Entra ID authentication
                 auth_type = api_config.get("auth_type", "bearer")
                 if auth_type not in ("azure_ad", "microsoft_entra_id"):
@@ -881,10 +1573,12 @@ async def generate_chat_completion(
     url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
     key = request.app.state.config.OPENAI_API_KEYS[idx]
 
+    provider_type = get_provider_type(api_config)
+
     # Check if model is a reasoning model that needs special handling
-    if is_openai_reasoning_model(payload["model"]):
+    if is_openai_reasoning_model(payload["model"]) and not is_responses_provider(api_config):
         payload = openai_reasoning_model_handler(payload)
-    elif "api.openai.com" not in url:
+    elif "api.openai.com" not in url and not is_responses_provider(api_config):
         # Remove "max_completion_tokens" from the payload for backward compatibility
         if "max_completion_tokens" in payload:
             payload["max_tokens"] = payload["max_completion_tokens"]
@@ -904,7 +1598,7 @@ async def generate_chat_completion(
         request, url, key, api_config, metadata, user=user
     )
 
-    if api_config.get("azure", False):
+    if provider_type == "azure_openai":
         api_version = api_config.get("api_version", "2023-03-15-preview")
         request_url, payload = convert_to_azure_payload(url, payload, api_version)
 
@@ -915,6 +1609,9 @@ async def generate_chat_completion(
 
         headers["api-version"] = api_version
         request_url = f"{request_url}/chat/completions?api-version={api_version}"
+    elif provider_type == "openai_responses":
+        payload = chat_to_responses_payload(payload, metadata, api_config)
+        request_url = f"{url}/responses"
     else:
         request_url = f"{url}/chat/completions"
 
@@ -942,6 +1639,9 @@ async def generate_chat_completion(
         # Check if response is SSE
         if "text/event-stream" in r.headers.get("Content-Type", ""):
             streaming = True
+            if provider_type == "openai_responses":
+                return responses_stream_to_chat_streaming_response(r.content)
+
             return StreamingResponse(
                 stream_chunks_handler(r.content),
                 status_code=r.status,
@@ -962,6 +1662,9 @@ async def generate_chat_completion(
                     return JSONResponse(status_code=r.status, content=response)
                 else:
                     return PlainTextResponse(status_code=r.status, content=response)
+
+            if provider_type == "openai_responses" and isinstance(response, dict):
+                return responses_to_chat_compatible(response)
 
             return response
     except Exception as e:
@@ -1085,7 +1788,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             request, url, key, api_config, user=user
         )
 
-        if api_config.get("azure", False):
+        if get_provider_type(api_config) == "azure_openai":
             api_version = api_config.get("api_version", "2023-03-15-preview")
 
             # Only set api-key header if not using Azure Entra ID authentication

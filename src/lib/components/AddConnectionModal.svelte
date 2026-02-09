@@ -31,11 +31,11 @@
 	let url = '';
 	let key = '';
 	let auth_type = 'bearer';
+	let providerType = 'openai';
 
 	let connectionType = 'external';
 	let azure = false;
-	$: azure =
-		(url.includes('azure.') || url.includes('cognitive.microsoft.com')) && !direct ? true : false;
+	$: azure = providerType === 'azure_openai';
 
 	let prefixId = '';
 	let enable = true;
@@ -76,6 +76,7 @@
 				url,
 				key,
 				config: {
+					provider_type: providerType,
 					auth_type,
 					azure: azure,
 					api_version: apiVersion,
@@ -159,6 +160,7 @@
 				prefix_id: prefixId,
 				model_ids: modelIds,
 				connection_type: connectionType,
+				provider_type: providerType,
 				auth_type,
 				headers: headers ? JSON.parse(headers) : undefined,
 				...(azure ? { azure: true, api_version: apiVersion } : {})
@@ -173,6 +175,7 @@
 		url = '';
 		key = '';
 		auth_type = 'bearer';
+		providerType = 'openai';
 		prefixId = '';
 		tags = [];
 		modelIds = [];
@@ -182,6 +185,12 @@
 		if (connection) {
 			url = connection.url;
 			key = connection.key;
+
+			providerType = connection.config?.provider_type
+				? connection.config.provider_type
+				: connection.config?.azure
+					? 'azure_openai'
+					: 'openai';
 
 			auth_type = connection.config.auth_type ?? 'bearer';
 			headers = connection.config?.headers
@@ -194,8 +203,9 @@
 			modelIds = connection.config?.model_ids ?? [];
 
 			connectionType = connection.config?.connection_type ?? 'external';
-			azure = connection.config?.azure ?? false;
 			apiVersion = connection.config?.api_version ?? '';
+		} else {
+			providerType = 'openai';
 		}
 	};
 
@@ -441,28 +451,26 @@
 							</div>
 						</div>
 
-						{#if !direct}
-							<div class="flex flex-row justify-between items-center w-full mt-2">
-								<label
-									for="prefix-id-input"
-									class={`mb-0.5 text-xs text-gray-500
+						<div class="flex flex-row justify-between items-center w-full mt-2">
+							<label
+								for="provider-type-select"
+								class={`mb-0.5 text-xs text-gray-500
 								${($settings?.highContrastMode ?? false) ? 'text-gray-800 dark:text-gray-100' : ''}`}
-									>{$i18n.t('Provider Type')}</label
-								>
+								>{$i18n.t('Provider Type')}</label
+							>
 
-								<div>
-									<button
-										on:click={() => {
-											azure = !azure;
-										}}
-										type="button"
-										class=" text-xs text-gray-700 dark:text-gray-300"
-									>
-										{azure ? $i18n.t('Azure OpenAI') : $i18n.t('OpenAI')}
-									</button>
-								</div>
+							<div>
+								<select
+									id="provider-type-select"
+									class={`dark:bg-gray-900 text-xs bg-transparent pr-5 ${($settings?.highContrastMode ?? false) ? 'placeholder:text-gray-700 dark:placeholder:text-gray-100' : 'outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700'}`}
+									bind:value={providerType}
+								>
+									<option value="openai">{$i18n.t('OpenAI')}</option>
+									<option value="azure_openai">{$i18n.t('Azure OpenAI')}</option>
+									<option value="openai_responses">{$i18n.t('OpenAI Responses')}</option>
+								</select>
 							</div>
-						{/if}
+						</div>
 
 						{#if azure}
 							<div class="flex gap-2 mt-2">
