@@ -149,9 +149,12 @@ RUN uv pip install --system \
     authlib==1.6.6 \
     python-mimeparse==2.0.0 \
     tiktoken \
-    anthropic \
-    google-genai==1.56.0 \
-    google-generativeai==0.8.6 \
+    # disabled-unused-2026-02-09: anthropic (no backend import/path) \
+    # anthropic \
+    # disabled-unused-2026-02-09: google-genai (no backend import/path) \
+    # google-genai==1.56.0 \
+    # disabled-unused-2026-02-09: google-generativeai (no backend import/path) \
+    # google-generativeai==0.8.6 \
     langchain==1.2.0 \
     langchain-community==0.4.1 \
     langchain-classic==1.0.0 \
@@ -161,7 +164,8 @@ RUN uv pip install --system \
     transformers==4.57.3 \
     # sentence-transformers==5.2.0 \
     # accelerate \
-    pyarrow==20.0.0 \
+    # disabled-unused-2026-02-09: pyarrow (no backend import/path) \
+    # pyarrow==20.0.0 \
     # einops==0.8.1  \
     ftfy==6.3.1 \
     chardet==5.2.0 \
@@ -174,8 +178,10 @@ RUN uv pip install --system \
     msoffcrypto-tool==5.4.2 \
     nltk==3.9.2 \
     Markdown==3.10 \
-    pypandoc==1.16.2 \
+    # disabled-unused-2026-02-09: pypandoc (no backend import/path) \
+    # pypandoc==1.16.2 \
     pandas==2.3.3 \
+    # kept-optional: preserve document parsing chain dependencies \
     openpyxl==3.1.5 \
     pyxlsb==1.0.10 \
     xlrd==2.0.2 \
@@ -190,18 +196,24 @@ RUN uv pip install --system \
     # onnxruntime==1.23.2 \
     # faster-whisper==1.2.1 \
     youtube-transcript-api==1.2.3 \
-    pytube==15.0.0 \
+    # disabled-unused-2026-02-09: pytube (no backend import/path) \
+    # pytube==15.0.0 \
     ddgs==9.10.0 \
     azure-ai-documentintelligence==1.0.2 \
     azure-identity==1.25.1 \
     azure-storage-blob==12.27.1 \
     azure-search-documents==11.6.0 \
-    google-api-python-client \
-    google-auth-httplib2 \
-    google-auth-oauthlib \
+    # disabled-unused-2026-02-09: google-api-python-client (no backend import/path) \
+    # google-api-python-client \
+    # disabled-unused-2026-02-09: google-auth-httplib2 (no backend import/path) \
+    # google-auth-httplib2 \
+    # disabled-unused-2026-02-09: google-auth-oauthlib (no backend import/path) \
+    # google-auth-oauthlib \
     googleapis-common-protos==1.72.0 \
     google-cloud-storage==3.7.0 \
-    pymongo \
+    # disabled-unused-2026-02-09: pymongo (no backend import/path) \
+    # pymongo \
+    # kept-optional: preserve runtime-selectable DB drivers (DATABASE_URL) \
     psycopg2-binary==2.9.11 \
     pgvector==0.4.2 \
     PyMySQL==1.1.2 \
@@ -216,6 +228,7 @@ RUN uv pip install --system \
     colbert-ai==0.2.22 \
     docker~=7.1.0 \
     pytest~=8.4.1 \
+    # kept-optional: keep in-image test tooling by request \
     pytest-docker~=3.2.5 \
     ldap3==2.9.1 \
     firecrawl-py==4.12.0 \
