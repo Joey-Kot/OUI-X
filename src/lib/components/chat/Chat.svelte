@@ -38,7 +38,6 @@
 		showArtifacts,
 		artifactContents,
 		tools,
-		toolServers,
 		functions,
 		selectedFolder,
 		pinnedChats,
@@ -1913,22 +1912,7 @@
 			})
 			.filter((message) => message?.role === 'user' || message?.content?.trim());
 
-		const toolIds = [];
-		const toolServerIds = [];
-
-		for (const toolId of selectedToolIds) {
-			if (toolId.startsWith('direct_server:')) {
-				let serverId = toolId.replace('direct_server:', '');
-				// Check if serverId is a number
-				if (!isNaN(parseInt(serverId))) {
-					toolServerIds.push(parseInt(serverId));
-				} else {
-					toolServerIds.push(serverId);
-				}
-			} else {
-				toolIds.push(toolId);
-			}
-		}
+		const toolIds = [...selectedToolIds];
 
 		const res = await generateOpenAIChatCompletion(
 			localStorage.token,
@@ -1951,9 +1935,6 @@
 
 				filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
 				tool_ids: toolIds.length > 0 ? toolIds : undefined,
-				tool_servers: ($toolServers ?? []).filter(
-					(server, idx) => toolServerIds.includes(idx) || toolServerIds.includes(server?.id)
-				),
 				features: getFeatures(),
 				variables: {
 					...getPromptVariables($user?.name, $settings?.userLocation ? userLocation : undefined)
@@ -2528,7 +2509,6 @@
 									bind:disableRagEnabled
 									bind:atSelectedModel
 									bind:showCommands
-									toolServers={$toolServers}
 									{generating}
 									{stopResponse}
 									{createMessagePair}
@@ -2571,7 +2551,6 @@
 									bind:disableRagEnabled
 									bind:atSelectedModel
 									bind:showCommands
-									toolServers={$toolServers}
 									{stopResponse}
 									{createMessagePair}
 									{onSelect}

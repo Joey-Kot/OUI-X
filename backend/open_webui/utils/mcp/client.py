@@ -1,115 +1,221 @@
-import asyncio
-from typing import Optional
-from contextlib import AsyncExitStack
+import logging
+import json
+from typing import Any, Literal, Optional
+from urllib.parse import urlparse, urlunparse
 
-import anyio
+from fastmcp import Client
+from fastmcp.client.transports import SSETransport, StreamableHttpTransport
 
-from mcp import ClientSession
-from mcp.client.auth import OAuthClientProvider, TokenStorage
-from mcp.client.streamable_http import streamablehttp_client
-from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+MCPTransport = Literal["streamable_http", "sse"]
+
+log = logging.getLogger(__name__)
+
+
+class MCPClientError(Exception):
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class MCPClient:
     def __init__(self):
-        self.session: Optional[ClientSession] = None
-        self.exit_stack = None
+        self.client: Optional[Client] = None
+        self._connected = False
 
-    async def connect(self, url: str, headers: Optional[dict] = None):
-        async with AsyncExitStack() as exit_stack:
-            try:
-                self._streams_context = streamablehttp_client(url, headers=headers)
+    async def connect(
+        self,
+        url: str,
+        headers: Optional[dict] = None,
+        transport: MCPTransport = "streamable_http",
+        connect_timeout: int = 15,
+        initialize_timeout: int = 15,
+    ):
+        if transport not in ("streamable_http", "sse"):
+            raise MCPClientError(f"Invalid MCP transport: {transport}", status_code=400)
 
-                transport = await exit_stack.enter_async_context(self._streams_context)
-                read_stream, write_stream, _ = transport
+        if self._connected:
+            return
 
-                self._session_context = ClientSession(
-                    read_stream, write_stream
-                )  # pylint: disable=W0201
+        try:
+            transport_client = self._build_transport(
+                url=url,
+                transport=transport,
+                headers=headers,
+            )
+            self.client = Client(
+                transport_client,
+                timeout=connect_timeout,
+                init_timeout=initialize_timeout,
+            )
+            await self.client.__aenter__()
+            self._connected = True
+        except Exception as exc:
+            self.client = None
+            self._connected = False
+            raise MCPClientError(f"Failed to connect to MCP server: {exc}") from exc
 
-                self.session = await exit_stack.enter_async_context(
-                    self._session_context
-                )
-                with anyio.fail_after(10):
-                    await self.session.initialize()
-                self.exit_stack = exit_stack.pop_all()
-            except Exception as e:
-                await asyncio.shield(self.disconnect())
-                raise e
+    def _build_transport(
+        self,
+        url: str,
+        transport: MCPTransport,
+        headers: Optional[dict],
+    ) -> StreamableHttpTransport | SSETransport:
+        transport_url = self._resolve_transport_url(url=url, transport=transport)
 
-    async def list_tool_specs(self) -> Optional[dict]:
-        if not self.session:
-            raise RuntimeError("MCP client is not connected.")
+        if transport == "streamable_http":
+            return StreamableHttpTransport(url=transport_url, headers=headers)
 
-        result = await self.session.list_tools()
-        tools = result.tools
+        return SSETransport(url=transport_url, headers=headers)
 
-        tool_specs = []
-        for tool in tools:
-            name = tool.name
-            description = tool.description
+    def _resolve_transport_url(self, url: str, transport: MCPTransport) -> str:
+        if not url:
+            raise MCPClientError("MCP server URL is required.")
 
-            inputSchema = tool.inputSchema
-
-            # TODO: handle outputSchema if needed
-            outputSchema = getattr(tool, "outputSchema", None)
-
-            tool_specs.append(
-                {"name": name, "description": description, "parameters": inputSchema}
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise MCPClientError(
+                "MCP server URL must be an absolute HTTP(S) URL.",
+                status_code=400,
             )
 
-        return tool_specs
+        endpoint_path = "/mcp" if transport == "streamable_http" else "/sse"
 
-    async def call_tool(
-        self, function_name: str, function_args: dict
-    ) -> Optional[dict]:
-        if not self.session:
-            raise RuntimeError("MCP client is not connected.")
+        # Keep explicit endpoint URLs unchanged and only map root URLs to defaults.
+        if parsed.path in ("", "/"):
+            parsed = parsed._replace(path=endpoint_path)
+            return urlunparse(parsed)
 
-        result = await self.session.call_tool(function_name, function_args)
-        if not result:
-            raise Exception("No result returned from MCP tool call.")
+        return url
 
-        result_dict = result.model_dump(mode="json")
-        result_content = result_dict.get("content", {})
+    def _serialize(self, value: Any) -> Any:
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json")
+        return value
 
-        if result.isError:
-            raise Exception(result_content)
-        else:
-            return result_content
+    def _normalize_parameters_schema(self, schema: Any) -> dict:
+        if not isinstance(schema, dict):
+            return {"type": "object", "properties": {}, "required": []}
 
-    async def list_resources(self, cursor: Optional[str] = None) -> Optional[dict]:
-        if not self.session:
-            raise RuntimeError("MCP client is not connected.")
+        normalized = dict(schema)
+        if normalized.get("type") != "object":
+            normalized["type"] = "object"
 
-        result = await self.session.list_resources(cursor=cursor)
-        if not result:
-            raise Exception("No result returned from MCP list_resources call.")
+        properties = normalized.get("properties")
+        if not isinstance(properties, dict):
+            properties = {}
+        normalized["properties"] = properties
 
-        result_dict = result.model_dump()
-        resources = result_dict.get("resources", [])
+        required = normalized.get("required")
+        if not isinstance(required, list):
+            required = []
+        normalized["required"] = [key for key in required if isinstance(key, str)]
 
-        return resources
+        if "additionalProperties" in normalized and not isinstance(
+            normalized["additionalProperties"], (bool, dict)
+        ):
+            normalized["additionalProperties"] = False
 
-    async def read_resource(self, uri: str) -> Optional[dict]:
-        if not self.session:
-            raise RuntimeError("MCP client is not connected.")
+        for key, value in list(properties.items()):
+            if not isinstance(value, dict):
+                properties[key] = {"type": "string"}
+                continue
+            if value.get("type") == "str":
+                value["type"] = "string"
 
-        result = await self.session.read_resource(uri)
-        if not result:
-            raise Exception("No result returned from MCP read_resource call.")
-        result_dict = result.model_dump()
+        return normalized
 
-        return result_dict
+    def _serialize_tool_content_block(self, content: Any) -> dict:
+        payload = self._serialize(content)
+        if isinstance(payload, dict) and isinstance(payload.get("type"), str):
+            return payload
+
+        return {
+            "type": "text",
+            "text": json.dumps(payload, ensure_ascii=False),
+        }
+
+    async def list_tool_specs(self) -> list[dict]:
+        if not self.client or not self._connected:
+            raise MCPClientError("MCP client is not connected.")
+
+        try:
+            tools = await self.client.list_tools()
+            tool_specs = []
+            for tool in tools:
+                tool_specs.append(
+                    {
+                        "name": tool.name,
+                        "description": getattr(tool, "description", None),
+                        "parameters": self._normalize_parameters_schema(
+                            self._serialize(
+                            getattr(tool, "inputSchema", None)
+                            or getattr(tool, "input_schema", None)
+                            )
+                        ),
+                    }
+                )
+            return tool_specs
+        except Exception as exc:
+            raise MCPClientError(f"Failed to list MCP tools: {exc}") from exc
+
+    async def call_tool(self, function_name: str, function_args: dict) -> list[dict]:
+        if not self.client or not self._connected:
+            raise MCPClientError("MCP client is not connected.")
+
+        try:
+            result = await self.client.call_tool(
+                function_name,
+                arguments=function_args,
+                raise_on_error=False,
+            )
+            if result.is_error:
+                raise MCPClientError(str(result.content))
+
+            return [
+                self._serialize_tool_content_block(content)
+                for content in (result.content or [])
+            ]
+        except MCPClientError:
+            raise
+        except Exception as exc:
+            raise MCPClientError(f"Failed to call MCP tool: {exc}") from exc
+
+    async def list_resources(self, cursor: Optional[str] = None) -> list[dict]:
+        if not self.client or not self._connected:
+            raise MCPClientError("MCP client is not connected.")
+
+        try:
+            if cursor is None:
+                resources = await self.client.list_resources()
+            else:
+                result = await self.client.list_resources_mcp(cursor=cursor)
+                resources = result.resources
+
+            return [self._serialize(resource) for resource in resources]
+        except Exception as exc:
+            raise MCPClientError(f"Failed to list MCP resources: {exc}") from exc
+
+    async def read_resource(self, uri: str) -> dict:
+        if not self.client or not self._connected:
+            raise MCPClientError("MCP client is not connected.")
+
+        try:
+            contents = await self.client.read_resource(uri)
+            return {
+                "contents": [self._serialize(content) for content in contents],
+            }
+        except Exception as exc:
+            raise MCPClientError(f"Failed to read MCP resource: {exc}") from exc
 
     async def disconnect(self):
-        # Clean up and close the session
-        await self.exit_stack.aclose()
+        if self.client is None:
+            return
 
-    async def __aenter__(self):
-        await self.exit_stack.__aenter__()
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.exit_stack.__aexit__(exc_type, exc_value, traceback)
-        await self.disconnect()
+        try:
+            if self._connected:
+                await self.client.__aexit__(None, None, None)
+        except Exception as exc:
+            log.debug(f"Failed to disconnect MCP client cleanly: {exc}")
+        finally:
+            self.client = None
+            self._connected = False

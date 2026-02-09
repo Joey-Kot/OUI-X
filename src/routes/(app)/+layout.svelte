@@ -9,7 +9,7 @@
 	import { page } from '$app/stores';
 	import { fade } from 'svelte/transition';
 
-	import { getModels, getToolServersData, getVersionUpdates } from '$lib/apis';
+	import { getModels, getVersionUpdates } from '$lib/apis';
 	import { getTools } from '$lib/apis/tools';
 	import { getBanners } from '$lib/apis/configs';
 	import { getUserSettings } from '$lib/apis/users';
@@ -32,7 +32,6 @@
 		showShortcuts,
 		showChangelog,
 		temporaryChatEnabled,
-		toolServers,
 		showSearch,
 		showSidebar
 	} from '$lib/stores';
@@ -115,21 +114,6 @@
 		);
 	};
 
-	const setToolServers = async () => {
-		let toolServersData = await getToolServersData($settings?.toolServers ?? []);
-		toolServersData = toolServersData.filter((data) => {
-			if (!data || data.error) {
-				toast.error(
-					$i18n.t(`Failed to connect to {{URL}} OpenAPI tool server`, {
-						URL: data?.url
-					})
-				);
-				return false;
-			}
-			return true;
-		});
-		toolServers.set(toolServersData);
-	};
 
 	const setBanners = async () => {
 		const bannersData = await getBanners(localStorage.token);
@@ -156,7 +140,7 @@
 			setBanners(),
 			setTools(),
 			setUserSettings(async () => {
-				await Promise.all([setModels(), setToolServers()]);
+				await setModels();
 			})
 		]);
 

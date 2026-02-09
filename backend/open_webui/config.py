@@ -1044,22 +1044,34 @@ ENABLE_BASE_MODELS_CACHE = PersistentConfig(
 
 
 ####################################
-# TOOL_SERVERS
+# MCP_TOOL_SERVERS
 ####################################
 
 try:
-    tool_server_connections = json.loads(
-        os.environ.get("TOOL_SERVER_CONNECTIONS", "[]")
+    mcp_tool_server_connections = json.loads(
+        os.environ.get("MCP_TOOL_SERVER_CONNECTIONS", "[]")
     )
 except Exception as e:
-    log.exception(f"Error loading TOOL_SERVER_CONNECTIONS: {e}")
-    tool_server_connections = []
+    log.exception(f"Error loading MCP_TOOL_SERVER_CONNECTIONS: {e}")
+    mcp_tool_server_connections = []
 
 
-TOOL_SERVER_CONNECTIONS = PersistentConfig(
-    "TOOL_SERVER_CONNECTIONS",
-    "tool_server.connections",
-    tool_server_connections,
+MCP_TOOL_SERVER_CONNECTIONS = PersistentConfig(
+    "MCP_TOOL_SERVER_CONNECTIONS",
+    "mcp_tool_server.connections",
+    mcp_tool_server_connections,
+)
+
+TOOL_CALL_TIMEOUT_SECONDS = PersistentConfig(
+    "TOOL_CALL_TIMEOUT_SECONDS",
+    "tool_calling.timeout_seconds",
+    os.environ.get("TOOL_CALL_TIMEOUT_SECONDS", "60"),
+)
+
+MAX_TOOL_CALLS_PER_ROUND = PersistentConfig(
+    "MAX_TOOL_CALLS_PER_ROUND",
+    "tool_calling.max_calls_per_round",
+    os.environ.get("MAX_TOOL_CALLS_PER_ROUND", "20"),
 )
 
 ####################################
@@ -2052,13 +2064,12 @@ DEFAULT_CODE_INTERPRETER_PROMPT = """
 #### Tools Available
 
 1. **Code Interpreter**: `<code_interpreter type="code" lang="python"></code_interpreter>`
-   - You have access to a Python shell that runs directly in the user's browser, enabling fast execution of code for analysis, calculations, or problem-solving.  Use it in this response.
-   - The Python code you write can incorporate a wide array of libraries, handle data manipulation or visualization, perform API calls for web-related tasks, or tackle virtually any computational challenge. Use this flexibility to **think outside the box, craft elegant solutions, and harness Python's full potential**.
-   - To use it, **you must enclose your code within `<code_interpreter type="code" lang="python">` XML tags** and stop right away. If you don't, the code won't execute. 
-   - When writing code in the code_interpreter XML tag, Do NOT use the triple backticks code block for markdown formatting, example: ```py # python code ``` will cause an error because it is markdown formatting, it is not python code.
-   - When coding, **always aim to print meaningful outputs** (e.g., results, tables, summaries, or visuals) to better interpret and verify the findings. Avoid relying on implicit outputs; prioritize explicit and clear print statements so the results are effectively communicated to the user.  
-   - After obtaining the printed output, **always provide a concise analysis, interpretation, or next steps to help the user understand the findings or refine the outcome further.**  
-   - If the results are unclear, unexpected, or require validation, refine the code and execute it again as needed. Always aim to deliver meaningful insights from the results, iterating if necessary.  
+   - You have access to a Python shell that runs directly in the user's browser for calculations, analysis, and data processing.
+   - Use Code Interpreter only when it materially improves the answer (e.g., computation, data transformation, validation, visualization). If it is not needed, answer normally without tool calls.
+   - To execute code, **enclose code within `<code_interpreter type="code" lang="python">` XML tags and stop immediately after the closing tag** so execution can begin.
+   - When writing code in the code_interpreter XML tag, do NOT use markdown code fences like ```py ... ``` because that is markdown formatting, not executable Python.
+   - Prefer clear, explicit printed output (results, summaries, tables, charts) so findings are easy to interpret.
+   - After receiving execution output, provide a concise interpretation and practical next step when helpful.
    - **If a link to an image, audio, or any file is provided in markdown format in the output, ALWAYS regurgitate word for word, explicitly display it as part of the response to ensure the user can access it easily, do NOT change the link.**
    - All responses should be communicated in the chat's primary language, ensuring seamless understanding. If the chat is multilingual, default to English for clarity.
 

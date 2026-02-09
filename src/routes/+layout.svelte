@@ -27,7 +27,6 @@
 		isLastActiveTab,
 		isApp,
 		appInfo,
-		toolServers,
 		playingNotificationSound,
 		channels,
 		channelId
@@ -43,10 +42,10 @@
 	import '../app.css';
 	import 'tippy.js/dist/tippy.css';
 
-	import { executeToolServer, getBackendConfig, getVersion } from '$lib/apis';
+	import { getBackendConfig, getVersion } from '$lib/apis';
 	import { getSessionUser, userSignOut } from '$lib/apis/auths';
 	import { getAllTags, getChatList } from '$lib/apis/chats';
-	import { chatCompletion } from '$lib/apis/openai';
+	import { chatCompletion, responsesCompletion } from '$lib/apis/openai';
 
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL, WEBUI_HOSTNAME } from '$lib/constants';
 	import { bestMatchingLanguage } from '$lib/utils';
@@ -278,49 +277,453 @@
 		};
 	};
 
-	const executeTool = async (data, cb) => {
-		const toolServer = $settings?.toolServers?.find((server) => server.url === data.server?.url);
-		const toolServerData = $toolServers?.find((server) => server.url === data.server?.url);
+	const toResponsesInput = (messages = []) => {
+		const normalizeResponsesPart = (role, part) => {
+			if (!part || typeof part !== 'object') return null;
+			const partType = part.type;
 
-		console.log('executeTool', data, toolServer);
-
-		if (toolServer) {
-			console.log(toolServer);
-
-			let toolServerToken = null;
-			const auth_type = toolServer?.auth_type ?? 'bearer';
-			if (auth_type === 'bearer') {
-				toolServerToken = toolServer?.key;
-			} else if (auth_type === 'none') {
-				// No authentication
-			} else if (auth_type === 'session') {
-				toolServerToken = localStorage.token;
+			if (partType === 'text') {
+				return {
+					type: role === 'assistant' ? 'output_text' : 'input_text',
+					text: part.text ?? part.content ?? ''
+				};
 			}
 
-			const res = await executeToolServer(
-				toolServerToken,
-				toolServer.url,
-				data?.name,
-				data?.params,
-				toolServerData
-			);
-
-			console.log('executeToolServer', res);
-			if (cb) {
-				cb(JSON.parse(JSON.stringify(res)));
+			if (partType === 'image_url') {
+				return {
+					type: 'input_image',
+					image_url: part.image_url?.url ?? part.image_url
+				};
 			}
-		} else {
-			if (cb) {
-				cb(
-					JSON.parse(
-						JSON.stringify({
-							error: 'Tool Server Not Found'
-						})
-					)
-				);
+
+			if (partType === 'refusal') {
+				return role === 'assistant' ? part : null;
+			}
+
+			if (partType === 'input_text') {
+				return role === 'assistant'
+					? { type: 'output_text', text: part.text ?? '' }
+					: part;
+			}
+
+			if (partType === 'output_text') {
+				return role === 'assistant'
+					? part
+					: { type: 'input_text', text: part.text ?? '' };
+			}
+
+			if (['input_image', 'input_file'].includes(partType)) {
+				return ['user', 'system', 'developer'].includes(role) ? part : null;
+			}
+
+			return null;
+		};
+
+		return (messages || [])
+			.map((message) => {
+				if (!message || typeof message !== 'object') return null;
+
+				if (message.role === 'tool') {
+					return {
+						type: 'function_call_output',
+						call_id: message.tool_call_id,
+						output: message.content ?? ''
+					};
+				}
+
+				if (message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length) {
+					const calls = message.tool_calls.map((toolCall) => ({
+						type: 'function_call',
+						call_id: toolCall.id,
+						name: toolCall.function?.name,
+						arguments:
+							typeof toolCall.function?.arguments === 'string'
+								? toolCall.function.arguments
+								: JSON.stringify(toolCall.function?.arguments ?? {})
+					}));
+
+					if (message.content) {
+						calls.push({
+							role: 'assistant',
+							content: [{ type: 'output_text', text: message.content }]
+						});
+					}
+
+					return calls;
+				}
+
+				if (typeof message.content === 'string') {
+					return { role: message.role, content: message.content };
+				}
+
+				if (Array.isArray(message.content)) {
+					return {
+						role: message.role,
+						content: message.content
+							.map((part) => {
+								return normalizeResponsesPart(message.role, part);
+							})
+							.filter(Boolean)
+					};
+				}
+
+				return null;
+			})
+			.flat()
+			.filter(Boolean);
+	};
+
+	const toResponsesTools = (tools = []) =>
+		(tools || []).map((tool) => {
+			if (tool?.type === 'function' && tool.function) {
+				return {
+					type: 'function',
+					name: tool.function.name,
+					description: tool.function.description,
+					parameters: tool.function.parameters
+				};
+			}
+			return tool;
+		});
+
+	const toResponsesPayload = (formData = {}) => {
+		const normalizeReasoningSummary = (value, fallback = 'auto') => {
+			if (typeof value !== 'string') return fallback;
+			const normalized = value.trim().toLowerCase();
+			return ['auto', 'concise', 'detailed'].includes(normalized) ? normalized : fallback;
+		};
+
+		const payload = {
+			model: formData.model,
+			input: toResponsesInput(formData.messages ?? []),
+			stream: Boolean(formData.stream),
+			metadata: formData.metadata
+		};
+
+		if (Array.isArray(formData.tools) && formData.tools.length) {
+			payload.tools = toResponsesTools(formData.tools);
+		}
+
+		if (formData.tool_choice) {
+			if (typeof formData.tool_choice === 'object' && formData.tool_choice?.function?.name) {
+				payload.tool_choice = {
+					type: 'function',
+					name: formData.tool_choice.function.name
+				};
+			} else {
+				payload.tool_choice = formData.tool_choice;
 			}
 		}
+
+		if (formData.parallel_tool_calls !== undefined) {
+			payload.parallel_tool_calls = formData.parallel_tool_calls;
+		}
+
+		const params = formData.params ?? {};
+		const summaryCandidate =
+			formData?.reasoning?.summary ?? params?.summary ?? formData?.summary ?? 'auto';
+		const effortCandidate = formData?.reasoning?.effort ?? params?.reasoning_effort;
+		payload.reasoning = {
+			summary: normalizeReasoningSummary(summaryCandidate, 'auto'),
+			...(effortCandidate ? { effort: effortCandidate } : {})
+		};
+
+		for (const key of ['temperature', 'top_p', 'stop', 'store', 'truncation', 'text', 'user']) {
+			if (params[key] !== undefined) {
+				payload[key] = params[key];
+			}
+		}
+
+		const maxOutputTokens = params.max_completion_tokens ?? params.max_tokens;
+		if (maxOutputTokens !== undefined) {
+			payload.max_output_tokens = maxOutputTokens;
+		}
+
+		return payload;
 	};
+
+	const responsesToChatCompletion = (response = {}) => {
+		const output = response.output ?? [];
+		const extractReasoningSummaryFromOutput = (items = []) =>
+			(items ?? [])
+				.filter((item) => item?.type === 'reasoning')
+				.flatMap((item) => item?.summary ?? [])
+				.map((summaryItem) => summaryItem?.text ?? '')
+				.filter((text) => typeof text === 'string' && text.trim() !== '')
+				.join('\n');
+
+		const extractReasoningSummaryFromRoot = (reasoning = null) => {
+			const value = Array.isArray(reasoning?.summary)
+				? reasoning.summary.map((s) => s?.text ?? '').join('\n')
+				: reasoning?.summary ?? '';
+
+			const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+			// Avoid showing config-like summary values as reasoning content.
+			if (['auto', 'concise', 'detailed'].includes(normalized)) {
+				return '';
+			}
+
+			return typeof value === 'string' ? value : '';
+		};
+		const tool_calls = output
+			.filter((item) => item?.type === 'function_call')
+			.map((item) => ({
+				id: item.call_id ?? item.id,
+				type: 'function',
+				function: {
+					name: item.name,
+					arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments ?? {})
+				}
+			}));
+
+		const text = output
+			.filter((item) => item?.type === 'message')
+			.flatMap((item) => item.content ?? [])
+			.filter((part) => part?.type === 'output_text')
+			.map((part) => part.text ?? '')
+			.join('');
+
+		const reasoningSummary =
+			extractReasoningSummaryFromOutput(output) ||
+			extractReasoningSummaryFromRoot(response.reasoning);
+
+		return {
+			id: response.id,
+			model: response.model,
+			choices: [
+				{
+					index: 0,
+					message: {
+						role: 'assistant',
+						content: text,
+						...(tool_calls.length ? { tool_calls } : {}),
+						...(reasoningSummary ? { reasoning_content: reasoningSummary } : {})
+					}
+				}
+			],
+			usage: response.usage
+				? {
+						prompt_tokens: response.usage.input_tokens ?? 0,
+						completion_tokens: response.usage.output_tokens ?? 0,
+						total_tokens: response.usage.total_tokens ?? 0
+					}
+				: undefined
+		};
+	};
+
+	const emitChatStreamFromResponses = async (channel, response) => {
+		const chatLike = responsesToChatCompletion(response);
+		const message = chatLike.choices?.[0]?.message ?? {};
+
+		if (message.reasoning_content) {
+			$socket?.emit(channel, `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: message.reasoning_content } }] })}`);
+		}
+
+		(message.tool_calls ?? []).forEach((toolCall, index) => {
+			$socket?.emit(
+				channel,
+				`data: ${JSON.stringify({
+					choices: [
+						{
+							delta: {
+								tool_calls: [
+									{
+										index,
+										id: toolCall.id,
+										type: 'function',
+										function: toolCall.function
+									}
+								]
+							}
+						}
+					]
+				})}`
+			);
+		});
+
+		if (message.content) {
+			$socket?.emit(channel, `data: ${JSON.stringify({ choices: [{ delta: { content: message.content } }] })}`);
+		}
+
+		if (chatLike.usage) {
+			$socket?.emit(channel, `data: ${JSON.stringify({ usage: chatLike.usage })}`);
+		}
+
+		$socket?.emit(channel, 'data: [DONE]');
+	};
+
+	const emitChatStreamFromResponsesSSE = async (channel, responseBody) => {
+		const extractReasoningSummaryFromOutput = (items = []) =>
+			(items ?? [])
+				.filter((item) => item?.type === 'reasoning')
+				.flatMap((item) => item?.summary ?? [])
+				.map((summaryItem) => summaryItem?.text ?? '')
+				.filter((text) => typeof text === 'string' && text.trim() !== '')
+				.join('\n');
+
+		const extractReasoningSummaryFromRoot = (reasoning = null) => {
+			const value = Array.isArray(reasoning?.summary)
+				? reasoning.summary.map((s) => s?.text ?? '').join('\n')
+				: reasoning?.summary ?? '';
+
+			const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+			if (['auto', 'concise', 'detailed'].includes(normalized)) {
+				return '';
+			}
+
+			return typeof value === 'string' ? value : '';
+		};
+
+		const reader = responseBody.getReader();
+		const decoder = new TextDecoder();
+		let buffer = '';
+		const state = {
+			functionCalls: {},
+			callIndexes: {},
+			emittedCallIds: new Set(),
+			textEmitted: false
+		};
+
+		const emitDelta = (delta) => {
+			$socket?.emit(channel, `data: ${JSON.stringify({ choices: [{ delta }] })}`);
+		};
+
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) {
+				break;
+			}
+
+			buffer += decoder.decode(value, { stream: true });
+
+			while (buffer.includes('\n\n')) {
+				const splitIdx = buffer.indexOf('\n\n');
+				const eventBlock = buffer.slice(0, splitIdx);
+				buffer = buffer.slice(splitIdx + 2);
+
+				if (!eventBlock.trim()) continue;
+
+				let eventType = null;
+				const dataLines = [];
+				for (const line of eventBlock.split('\n')) {
+					if (line.startsWith('event:')) {
+						eventType = line.slice('event:'.length).trim();
+					} else if (line.startsWith('data:')) {
+						dataLines.push(line.slice('data:'.length).trim());
+					}
+				}
+
+				if (!dataLines.length) continue;
+				const dataStr = dataLines.join('\n');
+				if (dataStr === '[DONE]') {
+					$socket?.emit(channel, 'data: [DONE]');
+					return;
+				}
+
+				let payload = null;
+				try {
+					payload = JSON.parse(dataStr);
+				} catch {
+					continue;
+				}
+
+				const type = eventType ?? payload?.type;
+				if (type === 'response.output_text.delta') {
+					const delta = payload?.delta ?? '';
+					if (delta) {
+						state.textEmitted = true;
+						emitDelta({ content: delta });
+					}
+				}
+
+				if (['response.function_call_arguments.delta', 'response.function_call.delta'].includes(type)) {
+					const callId = payload?.call_id ?? payload?.item_id;
+					if (callId) {
+						const callState = state.functionCalls[callId] ?? {
+							name: payload?.name ?? '',
+							arguments: ''
+						};
+						if (payload?.name) callState.name = payload.name;
+						if (typeof payload?.delta === 'string') callState.arguments += payload.delta;
+						state.functionCalls[callId] = callState;
+					}
+				}
+
+				if (type === 'response.output_item.done') {
+					const item = payload?.item ?? {};
+					if (item?.type === 'function_call') {
+						const callId = item.call_id ?? item.id;
+						if (callId && !state.emittedCallIds.has(callId)) {
+							const callState = state.functionCalls[callId] ?? {
+								name: item.name ?? '',
+								arguments: ''
+							};
+							if (item.name) callState.name = item.name;
+							if (typeof item.arguments === 'string') callState.arguments = item.arguments;
+							state.functionCalls[callId] = callState;
+
+							const index =
+								state.callIndexes[callId] ?? Object.keys(state.callIndexes).length;
+							state.callIndexes[callId] = index;
+							emitDelta({
+								tool_calls: [
+									{
+										index,
+										id: callId,
+										type: 'function',
+										function: {
+											name: callState.name,
+											arguments: callState.arguments || '{}'
+										}
+									}
+								]
+							});
+							state.emittedCallIds.add(callId);
+						}
+					}
+				}
+
+				if (type === 'response.completed') {
+					const response = payload?.response ?? {};
+					const summary =
+						extractReasoningSummaryFromOutput(response?.output ?? []) ||
+						extractReasoningSummaryFromRoot(response?.reasoning ?? null);
+					if (summary) {
+						emitDelta({ reasoning_content: summary });
+					}
+
+					if (!state.textEmitted) {
+						const text = (response?.output ?? [])
+							.filter((item) => item?.type === 'message')
+							.flatMap((item) => item?.content ?? [])
+							.filter((part) => part?.type === 'output_text')
+							.map((part) => part?.text ?? '')
+							.join('');
+						if (text) emitDelta({ content: text });
+					}
+
+					if (response?.usage) {
+						$socket?.emit(
+							channel,
+							`data: ${JSON.stringify({
+								usage: {
+									prompt_tokens: response.usage.input_tokens ?? 0,
+									completion_tokens: response.usage.output_tokens ?? 0,
+									total_tokens: response.usage.total_tokens ?? 0
+								}
+							})}`
+						);
+					}
+
+					$socket?.emit(channel, 'data: [DONE]');
+					return;
+				}
+			}
+		}
+
+		$socket?.emit(channel, 'data: [DONE]');
+	};
+
 
 	const chatEventHandler = async (event, cb) => {
 		const chat = $page.url.pathname.includes(`/c/${event.chat_id}`);
@@ -385,9 +788,6 @@
 			if (type === 'execute:python') {
 				console.log('execute:python', data);
 				executePythonAsWorker(data.id, data.code, cb);
-			} else if (type === 'execute:tool') {
-				console.log('execute:tool', data);
-				executeTool(data, cb);
 			} else if (type === 'request:chat:completion') {
 				console.log(data, $socket.id);
 				const { session_id, channel, form_data, model } = data;
@@ -400,7 +800,9 @@
 
 						const OPENAI_API_URL = directConnections.OPENAI_API_BASE_URLS[urlIdx];
 						const OPENAI_API_KEY = directConnections.OPENAI_API_KEYS[urlIdx];
-						const API_CONFIG = directConnections.OPENAI_API_CONFIGS[urlIdx];
+						const API_CONFIG = directConnections.OPENAI_API_CONFIGS[urlIdx] ?? {};
+						const providerType =
+							API_CONFIG.provider_type ?? (API_CONFIG.azure ? 'azure_openai' : 'openai');
 
 						try {
 							if (API_CONFIG?.prefix_id) {
@@ -408,11 +810,15 @@
 								form_data['model'] = form_data['model'].replace(`${prefixId}.`, ``);
 							}
 
-							const [res, controller] = await chatCompletion(
-								OPENAI_API_KEY,
-								form_data,
-								OPENAI_API_URL
-							);
+							const requestBody =
+								providerType === 'openai_responses'
+									? toResponsesPayload(form_data)
+									: form_data;
+
+							const [res, controller] =
+								providerType === 'openai_responses'
+									? await responsesCompletion(OPENAI_API_KEY, requestBody, OPENAI_API_URL)
+									: await chatCompletion(OPENAI_API_KEY, requestBody, OPENAI_API_URL);
 
 							if (res) {
 								// raise if the response is not ok
@@ -426,36 +832,40 @@
 									});
 									console.log({ status: true });
 
-									// res will either be SSE or JSON
-									const reader = res.body.getReader();
-									const decoder = new TextDecoder();
+									if (providerType === 'openai_responses') {
+										await emitChatStreamFromResponsesSSE(channel, res.body);
+									} else {
+										// res will either be SSE or JSON
+										const reader = res.body.getReader();
+										const decoder = new TextDecoder();
 
-									const processStream = async () => {
-										while (true) {
-											// Read data chunks from the response stream
-											const { done, value } = await reader.read();
-											if (done) {
-												break;
+										const processStream = async () => {
+											while (true) {
+												// Read data chunks from the response stream
+												const { done, value } = await reader.read();
+												if (done) {
+													break;
+												}
+
+												// Decode the received chunk
+												const chunk = decoder.decode(value, { stream: true });
+
+												// Process lines within the chunk
+												const lines = chunk.split('\n').filter((line) => line.trim() !== '');
+
+												for (const line of lines) {
+													console.log(line);
+													$socket?.emit(channel, line);
+												}
 											}
+										};
 
-											// Decode the received chunk
-											const chunk = decoder.decode(value, { stream: true });
-
-											// Process lines within the chunk
-											const lines = chunk.split('\n').filter((line) => line.trim() !== '');
-
-											for (const line of lines) {
-												console.log(line);
-												$socket?.emit(channel, line);
-											}
-										}
-									};
-
-									// Process the stream in the background
-									await processStream();
+										// Process the stream in the background
+										await processStream();
+									}
 								} else {
 									const data = await res.json();
-									cb(data);
+									cb(providerType === 'openai_responses' ? responsesToChatCompletion(data) : data);
 								}
 							} else {
 								throw new Error('An error occurred while fetching the completion');

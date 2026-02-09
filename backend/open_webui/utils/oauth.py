@@ -452,20 +452,20 @@ class OAuthClientManager:
 
     def ensure_client_from_config(self, client_id):
         """
-        Lazy-load an OAuth client from the current TOOL_SERVER_CONNECTIONS
+        Lazy-load an OAuth client from the current MCP_TOOL_SERVER_CONNECTIONS
         config if it hasn't been registered on this node yet.
         """
         if client_id in self.clients:
             return self.clients[client_id]["client"]
 
         try:
-            connections = getattr(self.app.state.config, "TOOL_SERVER_CONNECTIONS", [])
+            connections = getattr(
+                self.app.state.config, "MCP_TOOL_SERVER_CONNECTIONS", []
+            )
         except Exception:
             connections = []
 
         for connection in connections or []:
-            if connection.get("type", "openapi") != "mcp":
-                continue
             if connection.get("auth_type", "none") != "oauth_2.1":
                 continue
 
@@ -491,6 +491,57 @@ class OAuthClientManager:
                     f"Failed to lazily add OAuth client {expected_client_id} from config: {e}"
                 )
                 continue
+
+        return None
+
+    def ensure_client_from_user_settings(self, client_id, user_id: str):
+        """
+        Lazy-load an OAuth client from user settings for user-scoped MCP servers.
+        Expected client id format: mcp:user:{user_id}:{server_id}
+        """
+        if client_id in self.clients:
+            return self.clients[client_id]["client"]
+
+        if not client_id.startswith("mcp:user:"):
+            return None
+
+        prefix = f"mcp:user:{user_id}:"
+        if not client_id.startswith(prefix):
+            return None
+
+        server_id = client_id[len(prefix) :]
+        if not server_id:
+            return None
+
+        try:
+            user = Users.get_user_by_id(user_id)
+            user_settings = user.settings if user else {}
+            if hasattr(user_settings, "model_dump"):
+                user_settings = user_settings.model_dump()
+        except Exception:
+            user_settings = {}
+
+        connections = user_settings.get("ui", {}).get("mcpToolServers", [])
+        for connection in connections:
+            if connection.get("auth_type", "none") != "oauth_2.1":
+                continue
+
+            if connection.get("info", {}).get("id") != server_id:
+                continue
+
+            oauth_client_info = connection.get("info", {}).get("oauth_client_info", "")
+            if not oauth_client_info:
+                continue
+
+            try:
+                oauth_client_info = decrypt_data(oauth_client_info)
+                return self.add_client(
+                    client_id, OAuthClientInformationFull(**oauth_client_info)
+                )["client"]
+            except Exception as e:
+                log.error(
+                    f"Failed to lazily add OAuth client {client_id} from user settings: {e}"
+                )
 
         return None
 
@@ -576,15 +627,19 @@ class OAuthClientManager:
 
         return True
 
-    def get_client(self, client_id):
+    def get_client(self, client_id, user_id: str | None = None):
         if client_id not in self.clients:
             self.ensure_client_from_config(client_id)
+            if user_id:
+                self.ensure_client_from_user_settings(client_id, user_id)
         client = self.clients.get(client_id)
         return client["client"] if client else None
 
-    def get_client_info(self, client_id):
+    def get_client_info(self, client_id, user_id: str | None = None):
         if client_id not in self.clients:
             self.ensure_client_from_config(client_id)
+            if user_id:
+                self.ensure_client_from_user_settings(client_id, user_id)
         client = self.clients.get(client_id)
         return client["client_info"] if client else None
 
@@ -612,6 +667,10 @@ class OAuthClientManager:
         Returns:
             dict: OAuth token data with access_token, or None if no valid token available
         """
+        if client_id not in self.clients:
+            self.ensure_client_from_config(client_id)
+            self.ensure_client_from_user_settings(client_id, user_id)
+
         try:
             # Get the OAuth session
             session = OAuthSessions.get_session_by_provider_and_user_id(

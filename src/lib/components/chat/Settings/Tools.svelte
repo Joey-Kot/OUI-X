@@ -1,127 +1,150 @@
 <script lang="ts">
-	import { toast } from 'svelte-sonner';
-	import { createEventDispatcher, onMount, getContext, tick } from 'svelte';
-	import { getModels as _getModels, getToolServersData } from '$lib/apis';
+	import { onMount, getContext } from 'svelte';
+	import { getTools } from '$lib/apis/tools';
 
-	const dispatch = createEventDispatcher();
 	const i18n = getContext('i18n');
 
-	import { models, settings, toolServers, user } from '$lib/stores';
+	import { settings, tools as toolsStore } from '$lib/stores';
 
-	import Switch from '$lib/components/common/Switch.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
-	import Connection from './Tools/Connection.svelte';
+	import MCPConnection from '$lib/components/admin/Settings/MCPConnection.svelte';
 
-	import AddToolServerModal from '$lib/components/AddToolServerModal.svelte';
+	import AddMCPToolServerModal from '$lib/components/AddMCPToolServerModal.svelte';
 
 	export let saveSettings: Function;
 
-	let servers = null;
-	let showConnectionModal = false;
+	let mcpServers = null;
+	let mcpToolCallingConfig = {
+		toolCallingTimeoutSeconds: 60,
+		maxToolCallsPerRound: 20
+	};
+	let showMCPConnectionModal = false;
 
-	const addConnectionHandler = async (server) => {
-		servers = [...servers, server];
-		await updateHandler();
+	const getDescriptionClass = () =>
+		($settings?.highContrastMode ?? false)
+			? 'text-xs text-gray-800 dark:text-gray-100'
+			: 'text-xs text-gray-500';
+
+	const updateMCPHandler = async () => {
+		await saveSettings({
+			mcpToolServers: mcpServers
+		});
+
+		const updatedTools = await getTools(localStorage.token).catch(() => null);
+		if (updatedTools) {
+			toolsStore.set(updatedTools);
+		}
 	};
 
-	const updateHandler = async () => {
+	const updateMCPToolCallingConfigHandler = async () => {
 		await saveSettings({
-			toolServers: servers
-		});
-
-		let toolServersData = await getToolServersData($settings?.toolServers ?? []);
-		toolServersData = toolServersData.filter((data) => {
-			if (data.error) {
-				toast.error(
-					$i18n.t(`Failed to connect to {{URL}} OpenAPI tool server`, {
-						URL: data?.url
-					})
-				);
-				return false;
+			mcpToolCallingConfig: {
+				toolCallingTimeoutSeconds: Number(mcpToolCallingConfig.toolCallingTimeoutSeconds),
+				maxToolCallsPerRound: Number(mcpToolCallingConfig.maxToolCallsPerRound)
 			}
-
-			return true;
 		});
-		toolServers.set(toolServersData);
 	};
 
 	onMount(async () => {
-		servers = $settings?.toolServers ?? [];
+		mcpServers = $settings?.mcpToolServers ?? [];
+		mcpToolCallingConfig = {
+			toolCallingTimeoutSeconds: $settings?.mcpToolCallingConfig?.toolCallingTimeoutSeconds ?? 60,
+			maxToolCallsPerRound: $settings?.mcpToolCallingConfig?.maxToolCallsPerRound ?? 20
+		};
 	});
 </script>
 
-<AddToolServerModal bind:show={showConnectionModal} onSubmit={addConnectionHandler} direct />
+<AddMCPToolServerModal
+	bind:show={showMCPConnectionModal}
+	userScoped
+	onSubmit={async (server) => {
+		mcpServers = [...mcpServers, server];
+		await updateMCPHandler();
+	}}
+/>
 
 <form
 	id="tab-tools"
 	class="flex flex-col h-full justify-between text-sm"
-	on:submit|preventDefault={() => {
-		updateHandler();
+	on:submit|preventDefault={async () => {
+		await updateMCPHandler();
+		await updateMCPToolCallingConfigHandler();
 	}}
 >
-	<div class=" overflow-y-scroll scrollbar-hidden h-full">
-		{#if servers !== null}
-			<div class="">
-				<div class="pr-1.5">
-					<!-- {$i18n.t(`Failed to connect to {{URL}} OpenAPI tool server`, {
-						URL: 'server?.url'
-					})} -->
-					<div class="">
-						<div class="flex justify-between items-center mb-0.5">
-							<div class="font-medium">{$i18n.t('Manage Tool Servers')}</div>
+	<div class="overflow-y-scroll scrollbar-hidden h-full">
+		{#if mcpServers !== null}
+			<div class="pr-1.5">
+				<div class="mt-4">
+					<div class="flex justify-between items-center mb-0.5">
+						<div class="font-medium">{$i18n.t('Manage MCP Tools')}</div>
 
-							<Tooltip content={$i18n.t(`Add Connection`)}>
-								<button
-									aria-label={$i18n.t(`Add Connection`)}
-									class="px-1"
-									on:click={() => {
-										showConnectionModal = true;
-									}}
-									type="button"
-								>
-									<Plus />
-								</button>
-							</Tooltip>
-						</div>
+						<Tooltip content={$i18n.t('Add Connection')}>
+							<button
+								aria-label={$i18n.t('Add Connection')}
+								class="px-1"
+								on:click={() => {
+									showMCPConnectionModal = true;
+								}}
+								type="button"
+							>
+								<Plus />
+							</button>
+						</Tooltip>
+					</div>
 
-						<div class="flex flex-col gap-1.5">
-							{#each servers as server, idx}
-								<Connection
-									bind:connection={server}
-									direct
-									onSubmit={() => {
-										updateHandler();
-									}}
-									onDelete={() => {
-										servers = servers.filter((_, i) => i !== idx);
-										updateHandler();
-									}}
-								/>
-							{/each}
-						</div>
+					<div class="flex flex-col gap-1.5">
+						{#each mcpServers as server, idx}
+							<MCPConnection
+								bind:connection={server}
+								userScoped
+								onSubmit={() => {
+									updateMCPHandler();
+								}}
+								onDelete={() => {
+									mcpServers = mcpServers.filter((_, i) => i !== idx);
+									updateMCPHandler();
+								}}
+							/>
+						{/each}
 					</div>
 
 					<div class="my-1.5">
-						<div
-							class={`text-xs 
-								${($settings?.highContrastMode ?? false) ? 'text-gray-800 dark:text-gray-100' : 'text-gray-500'}`}
-						>
-							{$i18n.t('Connect to your own OpenAPI compatible external tool servers.')}
-							<br />
-							{$i18n.t(
-								'CORS must be properly configured by the provider to allow requests from Open WebUI.'
-							)}
+						<div class={getDescriptionClass()}>
+							{$i18n.t('Manage MCP Streamable HTTP and SSE tool servers.')}
 						</div>
 					</div>
+				</div>
 
-					<div class=" text-xs text-gray-600 dark:text-gray-300 mb-2">
-						<a
-							class="underline"
-							href="https://github.com/open-webui/openapi-servers"
-							target="_blank">{$i18n.t('Learn more about OpenAPI tool servers.')}</a
-						>
+				<div class="mt-4">
+					<div class="font-medium mb-0.5">{$i18n.t('Tool Calling Config')}</div>
+					<div class="flex flex-col gap-2 rounded-sm border border-gray-100/40 dark:border-gray-850/40 px-3 py-2">
+						<div class="mb-2.5 flex w-full flex-col">
+							<div class="self-start text-xs font-medium mb-1">
+								{$i18n.t('Tool Calling Timeout')} ({$i18n.t('seconds')})
+							</div>
+							<input
+								class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+								type="number"
+								min="1"
+								max="600"
+								bind:value={mcpToolCallingConfig.toolCallingTimeoutSeconds}
+							/>
+						</div>
+
+						<div class="mb-2.5 flex w-full flex-col">
+							<div class="self-start text-xs font-medium mb-1">
+								{$i18n.t('Maximum Number of Tool Calling')} ({$i18n.t('Maximum number of calls per round for a single tool')})
+							</div>
+							<input
+								class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+								type="number"
+								min="1"
+								max="100"
+								bind:value={mcpToolCallingConfig.maxToolCallsPerRound}
+							/>
+						</div>
 					</div>
 				</div>
 			</div>

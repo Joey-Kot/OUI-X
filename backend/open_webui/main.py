@@ -121,7 +121,9 @@ from open_webui.config import (
     # Thread pool size for FastAPI/AnyIO
     THREAD_POOL_SIZE,
     # Tool Server Configs
-    TOOL_SERVER_CONNECTIONS,
+    MCP_TOOL_SERVER_CONNECTIONS,
+    TOOL_CALL_TIMEOUT_SECONDS,
+    MAX_TOOL_CALLS_PER_ROUND,
     # Code Execution
     ENABLE_CODE_EXECUTION,
     CODE_EXECUTION_ENGINE,
@@ -681,8 +683,9 @@ app.state.OPENAI_MODELS = {}
 #
 ########################################
 
-app.state.config.TOOL_SERVER_CONNECTIONS = TOOL_SERVER_CONNECTIONS
-app.state.TOOL_SERVERS = []
+app.state.config.MCP_TOOL_SERVER_CONNECTIONS = MCP_TOOL_SERVER_CONNECTIONS
+app.state.config.TOOL_CALL_TIMEOUT_SECONDS = TOOL_CALL_TIMEOUT_SECONDS
+app.state.config.MAX_TOOL_CALLS_PER_ROUND = MAX_TOOL_CALLS_PER_ROUND
 
 ########################################
 #
@@ -1566,7 +1569,6 @@ async def chat_completion(
             "session_id": form_data.pop("session_id", None),
             "filter_ids": form_data.pop("filter_ids", []),
             "tool_ids": form_data.get("tool_ids", None),
-            "tool_servers": form_data.pop("tool_servers", None),
             "files": form_data.get("files", None),
             "features": form_data.get("features", {}),
             "variables": form_data.get("variables", {}),
@@ -1578,8 +1580,8 @@ async def chat_completion(
                 "function_calling": (
                     "native"
                     if (
-                        form_data.get("params", {}).get("function_calling") == "native"
-                        or model_info_params.get("function_calling") == "native"
+                        form_data.get("params", {}).get("function_calling") is not None
+                        or model_info_params.get("function_calling") is not None
                     )
                     else "default"
                 ),
@@ -2052,28 +2054,27 @@ async def get_current_usage(user=Depends(get_verified_user)):
 
 
 # Initialize OAuth client manager with any MCP tool servers using OAuth 2.1
-if len(app.state.config.TOOL_SERVER_CONNECTIONS) > 0:
-    for tool_server_connection in app.state.config.TOOL_SERVER_CONNECTIONS:
-        if tool_server_connection.get("type", "openapi") == "mcp":
-            server_id = tool_server_connection.get("info", {}).get("id")
-            auth_type = tool_server_connection.get("auth_type", "none")
+if len(app.state.config.MCP_TOOL_SERVER_CONNECTIONS) > 0:
+    for tool_server_connection in app.state.config.MCP_TOOL_SERVER_CONNECTIONS:
+        server_id = tool_server_connection.get("info", {}).get("id")
+        auth_type = tool_server_connection.get("auth_type", "none")
 
-            if server_id and auth_type == "oauth_2.1":
-                oauth_client_info = tool_server_connection.get("info", {}).get(
-                    "oauth_client_info", ""
+        if server_id and auth_type == "oauth_2.1":
+            oauth_client_info = tool_server_connection.get("info", {}).get(
+                "oauth_client_info", ""
+            )
+
+            try:
+                oauth_client_info = decrypt_data(oauth_client_info)
+                app.state.oauth_client_manager.add_client(
+                    f"mcp:{server_id}",
+                    OAuthClientInformationFull(**oauth_client_info),
                 )
-
-                try:
-                    oauth_client_info = decrypt_data(oauth_client_info)
-                    app.state.oauth_client_manager.add_client(
-                        f"mcp:{server_id}",
-                        OAuthClientInformationFull(**oauth_client_info),
-                    )
-                except Exception as e:
-                    log.error(
-                        f"Error adding OAuth client for MCP tool server {server_id}: {e}"
-                    )
-                    pass
+            except Exception as e:
+                log.error(
+                    f"Error adding OAuth client for MCP tool server {server_id}: {e}"
+                )
+                pass
 
 try:
     if ENABLE_STAR_SESSIONS_MIDDLEWARE:
@@ -2106,16 +2107,21 @@ except Exception as e:
 async def register_client(request, client_id: str) -> bool:
     server_type, server_id = client_id.split(":", 1)
 
+    if server_type != "mcp":
+        log.warning(f"Unsupported OAuth client type for re-registration: {client_id}")
+        return False
+
     connection = None
     connection_idx = None
 
-    for idx, conn in enumerate(request.app.state.config.TOOL_SERVER_CONNECTIONS or []):
-        if conn.get("type", "openapi") == server_type:
-            info = conn.get("info", {})
-            if info.get("id") == server_id:
-                connection = conn
-                connection_idx = idx
-                break
+    for idx, conn in enumerate(
+        request.app.state.config.MCP_TOOL_SERVER_CONNECTIONS or []
+    ):
+        info = conn.get("info", {})
+        if info.get("id") == server_id:
+            connection = conn
+            connection_idx = idx
+            break
 
     if connection is None or connection_idx is None:
         log.warning(
@@ -2140,7 +2146,7 @@ async def register_client(request, client_id: str) -> bool:
         return False
 
     try:
-        request.app.state.config.TOOL_SERVER_CONNECTIONS[connection_idx] = {
+        request.app.state.config.MCP_TOOL_SERVER_CONNECTIONS[connection_idx] = {
             **connection,
             "info": {
                 **connection.get("info", {}),
@@ -2171,6 +2177,11 @@ async def oauth_client_authorize(
     # ensure_valid_client_registration
     client = oauth_client_manager.get_client(client_id)
     client_info = oauth_client_manager.get_client_info(client_id)
+    if client is None or client_info is None:
+        oauth_client_manager.ensure_client_from_user_settings(client_id, user.id)
+        client = oauth_client_manager.get_client(client_id)
+        client_info = oauth_client_manager.get_client_info(client_id)
+
     if client is None or client_info is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
@@ -2213,6 +2224,7 @@ async def oauth_client_callback(
     response: Response,
     user=Depends(get_verified_user),
 ):
+    oauth_client_manager.ensure_client_from_user_settings(client_id, user.id)
     return await oauth_client_manager.handle_callback(
         request,
         client_id=client_id,

@@ -1,7 +1,8 @@
 import logging
-from typing import Optional
+from typing import Optional, Literal, Any
 import base64
 import io
+import aiohttp
 
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -38,6 +39,13 @@ from open_webui.utils.auth import (
     validate_password,
 )
 from open_webui.utils.access_control import get_permissions, has_permission
+from open_webui.utils.mcp.client import MCPClient, MCPClientError
+from open_webui.utils.oauth import (
+    encrypt_data,
+    get_discovery_urls,
+    get_oauth_client_info_with_dynamic_client_registration,
+)
+from mcp.shared.auth import OAuthMetadata
 
 
 log = logging.getLogger(__name__)
@@ -266,6 +274,82 @@ async def get_user_settings_by_session_user(user=Depends(get_verified_user)):
         )
 
 
+class OAuthClientRegistrationForm(BaseModel):
+    url: str
+    client_id: str
+
+
+class MCPToolServerVerifyCache(BaseModel):
+    verified: bool
+    verified_at: Optional[int] = None
+    tools: Optional[list[dict[str, Any]]] = None
+
+
+class MCPToolServerConnection(BaseModel):
+    url: str
+    transport: Literal["streamable_http", "sse"] = "streamable_http"
+    auth_type: Optional[
+        Literal["none", "bearer", "session", "system_oauth", "oauth_2.1"]
+    ] = "none"
+    headers: Optional[dict | str] = None
+    key: Optional[str] = None
+    info: dict[str, Any]
+    config: Optional[dict[str, Any]] = None
+    verify_cache: Optional[MCPToolServerVerifyCache] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+def _enforce_direct_tool_servers_permission(request: Request, user):
+    if user.role == "admin":
+        return
+
+    if has_permission(
+        user.id,
+        "features.direct_tool_servers",
+        request.app.state.config.USER_PERMISSIONS,
+    ):
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=ERROR_MESSAGES.UNAUTHORIZED,
+    )
+
+
+async def _get_connection_headers(
+    request: Request,
+    user,
+    auth_type: Optional[str],
+    key: Optional[str],
+    headers: Optional[dict | str],
+) -> Optional[dict]:
+    token = None
+    if auth_type == "bearer":
+        token = key
+    elif auth_type == "session":
+        token = request.state.token.credentials
+    elif auth_type == "system_oauth":
+        try:
+            if request.cookies.get("oauth_session_id", None):
+                oauth_token = await request.app.state.oauth_manager.get_oauth_token(
+                    user.id,
+                    request.cookies.get("oauth_session_id", None),
+                )
+
+                if oauth_token:
+                    token = oauth_token.get("access_token", "")
+        except Exception:
+            pass
+
+    request_headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    if headers and isinstance(headers, dict):
+        request_headers.update(headers)
+
+    return request_headers if request_headers else None
+
+
 ############################
 # UpdateUserSettingsBySessionUser
 ############################
@@ -276,9 +360,13 @@ async def update_user_settings_by_session_user(
     request: Request, form_data: UserSettings, user=Depends(get_verified_user)
 ):
     updated_user_settings = form_data.model_dump()
+    ui_settings = updated_user_settings.get("ui") or {}
     if (
         user.role != "admin"
-        and "toolServers" in updated_user_settings.get("ui").keys()
+        and (
+            "mcpToolServers" in ui_settings
+            or "mcpToolCallingConfig" in ui_settings
+        )
         and not has_permission(
             user.id,
             "features.direct_tool_servers",
@@ -286,7 +374,8 @@ async def update_user_settings_by_session_user(
         )
     ):
         # If the user is not an admin and does not have permission to use tool servers, remove the key
-        updated_user_settings["ui"].pop("toolServers", None)
+        updated_user_settings["ui"].pop("mcpToolServers", None)
+        updated_user_settings["ui"].pop("mcpToolCallingConfig", None)
 
     user = Users.update_user_settings_by_id(user.id, updated_user_settings)
     if user:
@@ -296,6 +385,113 @@ async def update_user_settings_by_session_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.USER_NOT_FOUND,
         )
+
+
+@router.post("/user/mcp/oauth/clients/register")
+async def register_user_mcp_oauth_client(
+    request: Request,
+    form_data: OAuthClientRegistrationForm,
+    user=Depends(get_verified_user),
+):
+    _enforce_direct_tool_servers_permission(request, user)
+
+    try:
+        oauth_client_info = (
+            await get_oauth_client_info_with_dynamic_client_registration(
+                request,
+                f"mcp:user:{user.id}:{form_data.client_id}",
+                form_data.url,
+            )
+        )
+        return {
+            "status": True,
+            "oauth_client_info": encrypt_data(
+                oauth_client_info.model_dump(mode="json")
+            ),
+        }
+    except Exception as e:
+        log.debug(f"Failed to register user MCP OAuth client: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to register OAuth client",
+        )
+
+
+@router.post("/user/mcp/tool_servers/verify")
+async def verify_user_mcp_tool_server(
+    request: Request,
+    form_data: MCPToolServerConnection,
+    user=Depends(get_verified_user),
+):
+    _enforce_direct_tool_servers_permission(request, user)
+
+    if form_data.auth_type == "oauth_2.1":
+        discovery_urls = get_discovery_urls(form_data.url)
+        for discovery_url in discovery_urls:
+            log.debug(
+                f"Trying to fetch OAuth 2.1 discovery document from {discovery_url}"
+            )
+            async with aiohttp.ClientSession(trust_env=True) as session:
+                async with session.get(discovery_url) as oauth_server_metadata_response:
+                    if oauth_server_metadata_response.status == 200:
+                        try:
+                            oauth_server_metadata = OAuthMetadata.model_validate(
+                                await oauth_server_metadata_response.json()
+                            )
+                            return {
+                                "status": True,
+                                "oauth_server_metadata": oauth_server_metadata.model_dump(
+                                    mode="json"
+                                ),
+                            }
+                        except Exception as e:
+                            log.info(
+                                f"Failed to parse OAuth 2.1 discovery document: {e}"
+                            )
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Failed to parse OAuth 2.1 discovery document from {discovery_url}",
+                            )
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to fetch OAuth 2.1 discovery document from {discovery_urls}",
+        )
+
+    client = MCPClient()
+    try:
+        headers = await _get_connection_headers(
+            request,
+            user,
+            form_data.auth_type,
+            form_data.key,
+            form_data.headers,
+        )
+
+        await client.connect(
+            form_data.url,
+            headers=headers,
+            transport=form_data.transport,
+        )
+        specs = await client.list_tool_specs()
+
+        return {
+            "status": True,
+            "specs": specs,
+        }
+    except MCPClientError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail=str(e),
+        )
+    except Exception:
+        log.exception("Failed to verify user MCP tool server")
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to create MCP client",
+        )
+    finally:
+        await client.disconnect()
 
 
 ############################

@@ -12,11 +12,17 @@
 	export let onDelete = () => {};
 	export let onSubmit = () => {};
 
-	export let pipeline = false;
+export let pipeline = false;
 
-	export let url = '';
-	export let key = '';
-	export let config = {};
+export let url = '';
+export let key = '';
+export let config = {};
+
+let providerType = 'openai';
+let endpointPath = '/chat/completions';
+
+$: providerType = config?.provider_type ?? (config?.azure ? 'azure_openai' : 'openai');
+$: endpointPath = providerType === 'openai_responses' ? '/responses' : '/chat/completions';
 
 	let showConfigModal = false;
 	let showDeleteConfirmDialog = false;
@@ -53,8 +59,9 @@
 <div class="flex w-full gap-2 items-center">
 	<Tooltip
 		className="w-full relative"
-		content={$i18n.t(`WebUI will make requests to "{{url}}/chat/completions"`, {
-			url
+		content={$i18n.t(`WebUI will make requests to "{{url}}{{endpoint}}"`, {
+			url,
+			endpoint: endpointPath
 		})}
 		placement="top-start"
 	>

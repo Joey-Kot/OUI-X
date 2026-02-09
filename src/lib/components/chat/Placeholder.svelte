@@ -59,7 +59,6 @@
 	export let onSelect = (e) => {};
 	export let onChange = (e) => {};
 
-	export let toolServers = [];
 
 	let models = [];
 	let selectedModelIdx = 0;
@@ -214,7 +213,6 @@
 					bind:disableRagEnabled
 					bind:atSelectedModel
 					bind:showCommands
-					{toolServers}
 					{stopResponse}
 					{createMessagePair}
 					placeholder={$i18n.t('How can I help you today?')}

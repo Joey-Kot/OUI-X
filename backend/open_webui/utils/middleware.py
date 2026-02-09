@@ -3,6 +3,7 @@ import logging
 import sys
 import os
 import base64
+import hashlib
 import textwrap
 
 import asyncio
@@ -13,7 +14,6 @@ import json
 import html
 import inspect
 import re
-import ast
 
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
@@ -24,7 +24,6 @@ from fastapi.responses import HTMLResponse
 from starlette.responses import Response, StreamingResponse, JSONResponse
 
 
-from open_webui.utils.misc import is_string_allowed
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.models.chats import Chats
 from open_webui.models.folders import Folders
@@ -92,7 +91,6 @@ from open_webui.utils.misc import (
     convert_logit_bias_input_to_json,
     get_content_from_message,
 )
-from open_webui.utils.tools import get_tools, get_updated_tool_function
 from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.filter import (
     get_sorted_filter_ids,
@@ -100,7 +98,12 @@ from open_webui.utils.filter import (
 )
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.payload import apply_system_prompt_to_body
-from open_webui.utils.mcp.client import MCPClient
+from open_webui.utils.tool_orchestrator import (
+    execute_tool_calls_parallel,
+    clamp_tool_timeout_seconds,
+    clamp_max_tool_calls_per_round,
+)
+from open_webui.utils.tools_runtime import build_tool_registry, registry_to_legacy_tools
 
 
 from open_webui.config import (
@@ -115,6 +118,7 @@ from open_webui.env import (
     ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION,
     CHAT_RESPONSE_STREAM_DELTA_CHUNK_SIZE,
     CHAT_RESPONSE_MAX_TOOL_CALL_RETRIES,
+    TOOL_CALL_MAX_CONCURRENCY,
     BYPASS_MODEL_ACCESS_CONTROL,
     ENABLE_REALTIME_CHAT_SAVE,
     ENABLE_QUERIES_CACHE,
@@ -136,8 +140,54 @@ DEFAULT_REASONING_TAGS = [
     ("<|begin_of_thought|>", "<|end_of_thought|>"),
     ("◁think▷", "◁/think▷"),
 ]
+
+
+def _is_non_empty_text_block(block: dict) -> bool:
+    if not isinstance(block, dict) or block.get("type") != "text":
+        return False
+    return bool(str(block.get("content", "")).strip())
+
+
+def reorder_content_blocks_for_display(content_blocks: list[dict]) -> list[dict]:
+    """
+    Reorder content blocks for UI rendering only.
+
+    If a non-empty text block is immediately followed by a reasoning block,
+    swap them so the reasoning details appear before the answer text.
+    The operation is local (adjacent swap only), preserving boundaries around
+    tool_calls/code_interpreter and other block types.
+    """
+    reordered: list[dict] = []
+    i = 0
+
+    while i < len(content_blocks):
+        current = content_blocks[i]
+        nxt = content_blocks[i + 1] if i + 1 < len(content_blocks) else None
+
+        if _is_non_empty_text_block(current) and isinstance(nxt, dict) and nxt.get("type") == "reasoning":
+            reordered.append(nxt)
+            reordered.append(current)
+            i += 2
+            continue
+
+        reordered.append(current)
+        i += 1
+
+    return reordered
 DEFAULT_SOLUTION_TAGS = [("<|begin_of_solution|>", "<|end_of_solution|>")]
 DEFAULT_CODE_INTERPRETER_TAGS = [("<code_interpreter>", "</code_interpreter>")]
+MAX_CODE_INTERPRETER_ATTEMPTS = 2
+
+
+def normalize_code_interpreter_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    return str(content).strip()
+
+
+def hash_code_interpreter_content(content: Any) -> str:
+    normalized = normalize_code_interpreter_content(content)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def process_tool_result(
@@ -262,6 +312,8 @@ def process_tool_result(
                                 "url": file_url,
                             }
                         )
+                    else:
+                        tool_response.append(item)
             tool_result = tool_response[0] if len(tool_response) == 1 else tool_response
         else:  # OpenAPI
             for item in tool_result:
@@ -1340,13 +1392,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             )
 
         if "code_interpreter" in features and features["code_interpreter"]:
-            form_data["messages"] = add_or_update_user_message(
+            form_data["messages"] = add_or_update_system_message(
                 (
                     request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE
                     if request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE != ""
                     else DEFAULT_CODE_INTERPRETER_PROMPT
                 ),
                 form_data["messages"],
+                append=True,
             )
 
     tool_ids = form_data.pop("tool_ids", None)
@@ -1381,181 +1434,80 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         "tool_ids": tool_ids,
         "files": files,
     }
+
+    user_tool_calling_config = {}
+    if user and metadata.get("params", {}).get("function_calling") == "native":
+        try:
+            user_record = Users.get_user_by_id(user.id)
+            user_settings = user_record.settings if user_record else {}
+            if hasattr(user_settings, "model_dump"):
+                user_settings = user_settings.model_dump()
+
+            user_tool_calling_config = (
+                user_settings.get("ui", {}).get("mcpToolCallingConfig", {})
+                if isinstance(user_settings, dict)
+                else {}
+            )
+        except Exception as e:
+            log.debug(e)
+
+    metadata["tool_calling_config"] = {
+        "global": {
+            "tool_call_timeout_seconds": clamp_tool_timeout_seconds(
+                getattr(request.app.state.config, "TOOL_CALL_TIMEOUT_SECONDS", 60)
+            ),
+            "max_tool_calls_per_round": clamp_max_tool_calls_per_round(
+                getattr(request.app.state.config, "MAX_TOOL_CALLS_PER_ROUND", 20)
+            ),
+        },
+        "user": {
+            "tool_call_timeout_seconds": clamp_tool_timeout_seconds(
+                user_tool_calling_config.get("toolCallingTimeoutSeconds", 60)
+            ),
+            "max_tool_calls_per_round": clamp_max_tool_calls_per_round(
+                user_tool_calling_config.get("maxToolCallsPerRound", 20)
+            ),
+        }
+        if isinstance(user_tool_calling_config, dict) and user_tool_calling_config
+        else {},
+    }
+
     form_data["metadata"] = metadata
 
     # Server side tools
     tool_ids = metadata.get("tool_ids", None)
-    # Client side tools
-    direct_tool_servers = metadata.get("tool_servers", None)
-
     log.debug(f"{tool_ids=}")
-    log.debug(f"{direct_tool_servers=}")
 
     tools_dict = {}
 
     mcp_clients = {}
-    mcp_tools_dict = {}
 
     if tool_ids:
-        for tool_id in tool_ids:
-            if tool_id.startswith("server:mcp:"):
-                try:
-                    server_id = tool_id[len("server:mcp:") :]
-
-                    mcp_server_connection = None
-                    for (
-                        server_connection
-                    ) in request.app.state.config.TOOL_SERVER_CONNECTIONS:
-                        if (
-                            server_connection.get("type", "") == "mcp"
-                            and server_connection.get("info", {}).get("id") == server_id
-                        ):
-                            mcp_server_connection = server_connection
-                            break
-
-                    if not mcp_server_connection:
-                        log.error(f"MCP server with id {server_id} not found")
-                        continue
-
-                    auth_type = mcp_server_connection.get("auth_type", "")
-                    headers = {}
-                    if auth_type == "bearer":
-                        headers["Authorization"] = (
-                            f"Bearer {mcp_server_connection.get('key', '')}"
-                        )
-                    elif auth_type == "none":
-                        # No authentication
-                        pass
-                    elif auth_type == "session":
-                        headers["Authorization"] = (
-                            f"Bearer {request.state.token.credentials}"
-                        )
-                    elif auth_type == "system_oauth":
-                        oauth_token = extra_params.get("__oauth_token__", None)
-                        if oauth_token:
-                            headers["Authorization"] = (
-                                f"Bearer {oauth_token.get('access_token', '')}"
-                            )
-                    elif auth_type == "oauth_2.1":
-                        try:
-                            splits = server_id.split(":")
-                            server_id = splits[-1] if len(splits) > 1 else server_id
-
-                            oauth_token = await request.app.state.oauth_client_manager.get_oauth_token(
-                                user.id, f"mcp:{server_id}"
-                            )
-
-                            if oauth_token:
-                                headers["Authorization"] = (
-                                    f"Bearer {oauth_token.get('access_token', '')}"
-                                )
-                        except Exception as e:
-                            log.error(f"Error getting OAuth token: {e}")
-                            oauth_token = None
-
-                    connection_headers = mcp_server_connection.get("headers", None)
-                    if connection_headers and isinstance(connection_headers, dict):
-                        for key, value in connection_headers.items():
-                            headers[key] = value
-
-                    mcp_clients[server_id] = MCPClient()
-                    await mcp_clients[server_id].connect(
-                        url=mcp_server_connection.get("url", ""),
-                        headers=headers if headers else None,
-                    )
-
-                    function_name_filter_list = mcp_server_connection.get(
-                        "config", {}
-                    ).get("function_name_filter_list", "")
-
-                    if isinstance(function_name_filter_list, str):
-                        function_name_filter_list = function_name_filter_list.split(",")
-
-                    tool_specs = await mcp_clients[server_id].list_tool_specs()
-                    for tool_spec in tool_specs:
-
-                        def make_tool_function(client, function_name):
-                            async def tool_function(**kwargs):
-                                return await client.call_tool(
-                                    function_name,
-                                    function_args=kwargs,
-                                )
-
-                            return tool_function
-
-                        if function_name_filter_list:
-                            if not is_string_allowed(
-                                tool_spec["name"], function_name_filter_list
-                            ):
-                                # Skip this function
-                                continue
-
-                        tool_function = make_tool_function(
-                            mcp_clients[server_id], tool_spec["name"]
-                        )
-
-                        mcp_tools_dict[f"{server_id}_{tool_spec['name']}"] = {
-                            "spec": {
-                                **tool_spec,
-                                "name": f"{server_id}_{tool_spec['name']}",
-                            },
-                            "callable": tool_function,
-                            "type": "mcp",
-                            "client": mcp_clients[server_id],
-                            "direct": False,
-                        }
-                except Exception as e:
-                    log.debug(e)
-                    if event_emitter:
-                        await event_emitter(
-                            {
-                                "type": "chat:message:error",
-                                "data": {
-                                    "error": {
-                                        "content": f"Failed to connect to MCP server '{server_id}'"
-                                    }
-                                },
-                            }
-                        )
-                    continue
-
-        tools_dict = await get_tools(
-            request,
-            tool_ids,
-            user,
-            {
-                **extra_params,
-                "__model__": models[task_model_id],
-                "__messages__": form_data["messages"],
-                "__files__": metadata.get("files", []),
-            },
+        registry, mcp_clients, _warnings = await build_tool_registry(
+            request=request,
+            tool_ids=tool_ids,
+            user=user,
+            extra_params=extra_params,
+            model=models[task_model_id],
+            messages=form_data["messages"],
+            files=metadata.get("files", []),
+            event_emitter=event_emitter,
         )
+        tools_dict = registry_to_legacy_tools(registry)
 
-        if mcp_tools_dict:
-            tools_dict = {**tools_dict, **mcp_tools_dict}
-
-    if direct_tool_servers:
-        for tool_server in direct_tool_servers:
-            tool_specs = tool_server.pop("specs", [])
-
-            for tool in tool_specs:
-                tools_dict[tool["name"]] = {
-                    "spec": tool,
-                    "direct": True,
-                    "server": tool_server,
-                }
 
     if mcp_clients:
         metadata["mcp_clients"] = mcp_clients
 
     if tools_dict:
         if metadata.get("params", {}).get("function_calling") == "native":
-            # If the function calling is native, then call the tools function calling handler
+            # Native function calling uses model tool_calls and backend execution loop.
             metadata["tools"] = tools_dict
             form_data["tools"] = [
                 {"type": "function", "function": tool.get("spec", {})}
                 for tool in tools_dict.values()
             ]
+            form_data.setdefault("parallel_tool_calls", True)
         else:
             # If the function calling is not native, then call the tools function calling handler
             try:
@@ -2088,7 +2040,13 @@ async def process_chat_response(
             def serialize_content_blocks(content_blocks, raw=False):
                 content = ""
 
-                for block in content_blocks:
+                blocks_to_render = (
+                    content_blocks
+                    if raw
+                    else reorder_content_blocks_for_display(content_blocks)
+                )
+
+                for block in blocks_to_render:
                     if block["type"] == "text":
                         block_content = block["content"].strip()
                         if block_content:
@@ -2893,6 +2851,12 @@ async def process_chat_response(
                     tool_call_retries += 1
 
                     response_tool_calls = tool_calls.pop(0)
+                    log.info(
+                        "round_index=%s tool_calls_count=%s model=%s",
+                        tool_call_retries,
+                        len(response_tool_calls),
+                        model_id,
+                    )
 
                     content_blocks.append(
                         {
@@ -2912,128 +2876,34 @@ async def process_chat_response(
 
                     tools = metadata.get("tools", {})
 
-                    results = []
+                    outcomes = await execute_tool_calls_parallel(
+                        tool_calls=response_tool_calls,
+                        tools=tools,
+                        max_concurrency=TOOL_CALL_MAX_CONCURRENCY,
+                        event_caller=event_caller,
+                        form_data=form_data,
+                        metadata=metadata,
+                        request=request,
+                        user=user,
+                        process_tool_result=process_tool_result,
+                        tool_timeout_seconds=metadata.get("tool_calling_config", {})
+                        .get("global", {})
+                        .get("tool_call_timeout_seconds", 60),
+                        max_tool_calls_per_round=metadata.get("tool_calling_config", {})
+                        .get("global", {})
+                        .get("max_tool_calls_per_round", 20),
+                        user_override_policy="whole_round",
+                    )
 
-                    for tool_call in response_tool_calls:
-                        tool_call_id = tool_call.get("id", "")
-                        tool_function_name = tool_call.get("function", {}).get(
-                            "name", ""
-                        )
-                        tool_args = tool_call.get("function", {}).get("arguments", "{}")
-
-                        tool_function_params = {}
-                        try:
-                            # json.loads cannot be used because some models do not produce valid JSON
-                            tool_function_params = ast.literal_eval(tool_args)
-                        except Exception as e:
-                            log.debug(e)
-                            # Fallback to JSON parsing
-                            try:
-                                tool_function_params = json.loads(tool_args)
-                            except Exception as e:
-                                log.error(
-                                    f"Error parsing tool call arguments: {tool_args}"
-                                )
-
-                        # Mutate the original tool call response params as they are passed back to the passed
-                        # back to the LLM via the content blocks. If they are in a json block and are invalid json,
-                        # this can cause downstream LLM integrations to fail (e.g. bedrock gateway) where response
-                        # params are not valid json.
-                        # Main case so far is no args = "" = invalid json.
-                        log.debug(
-                            f"Parsed args from {tool_args} to {tool_function_params}"
-                        )
-                        tool_call.setdefault("function", {})["arguments"] = json.dumps(
-                            tool_function_params
-                        )
-
-                        tool_result = None
-                        tool = None
-                        tool_type = None
-                        direct_tool = False
-
-                        if tool_function_name in tools:
-                            tool = tools[tool_function_name]
-                            spec = tool.get("spec", {})
-
-                            tool_type = tool.get("type", "")
-                            direct_tool = tool.get("direct", False)
-
-                            try:
-                                allowed_params = (
-                                    spec.get("parameters", {})
-                                    .get("properties", {})
-                                    .keys()
-                                )
-
-                                tool_function_params = {
-                                    k: v
-                                    for k, v in tool_function_params.items()
-                                    if k in allowed_params
-                                }
-
-                                if direct_tool:
-                                    tool_result = await event_caller(
-                                        {
-                                            "type": "execute:tool",
-                                            "data": {
-                                                "id": str(uuid4()),
-                                                "name": tool_function_name,
-                                                "params": tool_function_params,
-                                                "server": tool.get("server", {}),
-                                                "session_id": metadata.get(
-                                                    "session_id", None
-                                                ),
-                                            },
-                                        }
-                                    )
-
-                                else:
-                                    tool_function = get_updated_tool_function(
-                                        function=tool["callable"],
-                                        extra_params={
-                                            "__messages__": form_data.get(
-                                                "messages", []
-                                            ),
-                                            "__files__": metadata.get("files", []),
-                                        },
-                                    )
-
-                                    tool_result = await tool_function(
-                                        **tool_function_params
-                                    )
-
-                            except Exception as e:
-                                tool_result = str(e)
-
-                        tool_result, tool_result_files, tool_result_embeds = (
-                            process_tool_result(
-                                request,
-                                tool_function_name,
-                                tool_result,
-                                tool_type,
-                                direct_tool,
-                                metadata,
-                                user,
-                            )
-                        )
-
-                        results.append(
-                            {
-                                "tool_call_id": tool_call_id,
-                                "content": tool_result or "",
-                                **(
-                                    {"files": tool_result_files}
-                                    if tool_result_files
-                                    else {}
-                                ),
-                                **(
-                                    {"embeds": tool_result_embeds}
-                                    if tool_result_embeds
-                                    else {}
-                                ),
-                            }
-                        )
+                    results = [
+                        {
+                            "tool_call_id": outcome.tool_call_id,
+                            "content": outcome.content,
+                            **({"files": outcome.files} if outcome.files else {}),
+                            **({"embeds": outcome.embeds} if outcome.embeds else {}),
+                        }
+                        for outcome in outcomes
+                    ]
 
                     content_blocks[-1]["results"] = results
                     content_blocks.append(
@@ -3079,14 +2949,31 @@ async def process_chat_response(
                         log.debug(e)
                         break
 
-                if DETECT_CODE_INTERPRETER:
-                    MAX_RETRIES = 5
-                    retries = 0
+                if len(tool_calls) > 0:
+                    log.info("native_tool_loop_end reason=retry_limit")
+                else:
+                    log.info("native_tool_loop_end reason=no_tool_calls")
 
-                    while (
-                        content_blocks[-1]["type"] == "code_interpreter"
-                        and retries < MAX_RETRIES
-                    ):
+                if DETECT_CODE_INTERPRETER:
+                    retries = 0
+                    ci_loop_end_reason = "no_new_ci_block"
+                    previous_code_hash = None
+
+                    while content_blocks and content_blocks[-1]["type"] == "code_interpreter":
+                        if retries >= MAX_CODE_INTERPRETER_ATTEMPTS:
+                            ci_loop_end_reason = "max_retries"
+                            break
+
+                        current_code = normalize_code_interpreter_content(
+                            content_blocks[-1].get("content", "")
+                        )
+                        current_code_hash = hash_code_interpreter_content(current_code)
+                        if (
+                            previous_code_hash is not None
+                            and current_code_hash == previous_code_hash
+                        ):
+                            ci_loop_end_reason = "duplicate_code_block"
+                            break
 
                         await event_emitter(
                             {
@@ -3098,9 +2985,9 @@ async def process_chat_response(
                         )
 
                         retries += 1
-                        log.debug(f"Attempt count: {retries}")
-
                         output = ""
+                        engine = request.app.state.config.CODE_INTERPRETER_ENGINE
+
                         try:
                             if content_blocks[-1]["attributes"].get("type") == "code":
                                 code = content_blocks[-1]["content"]
@@ -3126,10 +3013,7 @@ async def process_chat_response(
                                     )
                                     code = blocking_code + "\n" + code
 
-                                if (
-                                    request.app.state.config.CODE_INTERPRETER_ENGINE
-                                    == "pyodide"
-                                ):
+                                if engine == "pyodide":
                                     output = await event_caller(
                                         {
                                             "type": "execute:python",
@@ -3142,10 +3026,7 @@ async def process_chat_response(
                                             },
                                         }
                                     )
-                                elif (
-                                    request.app.state.config.CODE_INTERPRETER_ENGINE
-                                    == "jupyter"
-                                ):
+                                elif engine == "jupyter":
                                     output = await execute_code_jupyter(
                                         request.app.state.config.CODE_INTERPRETER_JUPYTER_URL,
                                         code,
@@ -3210,6 +3091,16 @@ async def process_chat_response(
                         except Exception as e:
                             output = str(e)
 
+                        has_output = bool(output)
+                        log.info(
+                            "ci_attempt attempt_index=%s code_hash=%s engine=%s has_output=%s",
+                            retries,
+                            current_code_hash,
+                            engine,
+                            has_output,
+                        )
+                        previous_code_hash = current_code_hash
+
                         content_blocks[-1]["output"] = output
 
                         content_blocks.append(
@@ -3257,6 +3148,16 @@ async def process_chat_response(
                         except Exception as e:
                             log.debug(e)
                             break
+
+                    if ci_loop_end_reason == "no_new_ci_block":
+                        if content_blocks and content_blocks[-1]["type"] == "code_interpreter":
+                            ci_loop_end_reason = "max_retries"
+
+                    log.info(
+                        "ci_loop_end reason=%s attempts=%s",
+                        ci_loop_end_reason,
+                        retries,
+                    )
 
                 title = Chats.get_chat_title_by_id(metadata["chat_id"])
                 data = {
