@@ -46,6 +46,12 @@
 	import { getSessionUser, userSignOut } from '$lib/apis/auths';
 	import { getAllTags, getChatList } from '$lib/apis/chats';
 	import { chatCompletion, responsesCompletion } from '$lib/apis/openai';
+	import { getEndpointTypeFromProvider, getProviderTypeFromModel } from '$lib/utils/provider-routing';
+	import {
+		responsesToChatCompletion as responsesToChatCompletionUtil,
+		streamResponsesSSEToChatLines as streamResponsesSSEToChatLinesUtil,
+		toResponsesPayload as toResponsesPayloadUtil
+	} from '$lib/utils/openai-responses';
 
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL, WEBUI_HOSTNAME } from '$lib/constants';
 	import { bestMatchingLanguage } from '$lib/utils';
@@ -801,8 +807,8 @@
 						const OPENAI_API_URL = directConnections.OPENAI_API_BASE_URLS[urlIdx];
 						const OPENAI_API_KEY = directConnections.OPENAI_API_KEYS[urlIdx];
 						const API_CONFIG = directConnections.OPENAI_API_CONFIGS[urlIdx] ?? {};
-						const providerType =
-							API_CONFIG.provider_type ?? (API_CONFIG.azure ? 'azure_openai' : 'openai');
+						const providerType = getProviderTypeFromModel(model, directConnections);
+						const endpointType = getEndpointTypeFromProvider(providerType);
 
 						try {
 							if (API_CONFIG?.prefix_id) {
@@ -811,12 +817,12 @@
 							}
 
 							const requestBody =
-								providerType === 'openai_responses'
-									? toResponsesPayload(form_data)
+								endpointType === 'responses'
+									? toResponsesPayloadUtil(form_data)
 									: form_data;
 
 							const [res, controller] =
-								providerType === 'openai_responses'
+								endpointType === 'responses'
 									? await responsesCompletion(OPENAI_API_KEY, requestBody, OPENAI_API_URL)
 									: await chatCompletion(OPENAI_API_KEY, requestBody, OPENAI_API_URL);
 
@@ -832,8 +838,10 @@
 									});
 									console.log({ status: true });
 
-									if (providerType === 'openai_responses') {
-										await emitChatStreamFromResponsesSSE(channel, res.body);
+									if (endpointType === 'responses') {
+										await streamResponsesSSEToChatLinesUtil(res.body, (line) => {
+												$socket?.emit(channel, line);
+											});
 									} else {
 										// res will either be SSE or JSON
 										const reader = res.body.getReader();
@@ -865,7 +873,7 @@
 									}
 								} else {
 									const data = await res.json();
-									cb(providerType === 'openai_responses' ? responsesToChatCompletion(data) : data);
+									cb(endpointType === 'responses' ? responsesToChatCompletionUtil(data) : data);
 								}
 							} else {
 								throw new Error('An error occurred while fetching the completion');

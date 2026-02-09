@@ -49,6 +49,11 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
+CHROMA_CLONE_PAGE_SIZE = 200
+FILE_ID_RETRY_ATTEMPTS = 5
+FILE_ID_RETRY_BACKOFF_BASE = 0.2
+FILE_ID_RETRY_BACKOFF_CAP = 2.0
+
 
 SUPPORTED_EMBEDDING_ENGINES = {"openai", "azure_openai"}
 SUPPORTED_TEXT_SPLITTERS = {"", "character", "token", "token_voyage"}
@@ -159,6 +164,30 @@ def _chunk_vector_items(items: list, chunk_size: int = 256):
         yield items[i : i + chunk_size]
 
 
+def _normalize_chroma_sequence(value) -> list:
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        return value
+
+    if isinstance(value, tuple):
+        return list(value)
+
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        try:
+            normalized = tolist()
+            return normalized if isinstance(normalized, list) else list(normalized)
+        except Exception:
+            return []
+
+    try:
+        return list(value)
+    except Exception:
+        return []
+
+
 def _clone_qdrant_collection_vectors(
     source_collection_name: str,
     target_collection_name: str,
@@ -222,49 +251,323 @@ def _clone_qdrant_collection_vectors(
     return True, None
 
 
+def _clone_chroma_by_file_id(source, target, file_ids: list[str]) -> dict:
+    copied_count = 0
+    missing_file_ids: list[str] = []
+    failed_file_ids: list[str] = []
+    missing_chunks = 0
+    retry_success = 0
+    retry_failed = 0
+
+    for file_id in file_ids:
+        result = None
+        for attempt in range(1, FILE_ID_RETRY_ATTEMPTS + 1):
+            try:
+                result = source.get(
+                    where={"file_id": file_id},
+                    include=["embeddings", "documents", "metadatas"],
+                )
+                break
+            except Exception as e:
+                if attempt == FILE_ID_RETRY_ATTEMPTS:
+                    result = None
+                else:
+                    delay = min(
+                        FILE_ID_RETRY_BACKOFF_CAP,
+                        FILE_ID_RETRY_BACKOFF_BASE * (2 ** (attempt - 1)),
+                    )
+                    time.sleep(delay)
+
+        if result is None:
+            failed_file_ids.append(file_id)
+            retry_failed += 1
+            continue
+
+        retry_success += 1
+        ids = _normalize_chroma_sequence(result.get("ids"))
+        embeddings = _normalize_chroma_sequence(result.get("embeddings"))
+        documents = _normalize_chroma_sequence(result.get("documents"))
+        metadatas = _normalize_chroma_sequence(result.get("metadatas"))
+
+        if len(ids) == 0:
+            missing_file_ids.append(file_id)
+            continue
+
+        copy_ids = []
+        copy_embeddings = []
+        copy_documents = []
+        copy_metadatas = []
+
+        for i, item_id in enumerate(ids):
+            embedding = embeddings[i] if i < len(embeddings) else None
+            document = documents[i] if i < len(documents) else ""
+            metadata = metadatas[i] if i < len(metadatas) else {}
+
+            if embedding is None:
+                missing_chunks += 1
+                continue
+
+            copy_ids.append(item_id)
+            copy_embeddings.append(embedding)
+            copy_documents.append("" if document is None else document)
+            copy_metadatas.append(metadata if isinstance(metadata, dict) else {})
+
+        if not copy_ids:
+            missing_file_ids.append(file_id)
+            continue
+
+        for i in range(0, len(copy_ids), 256):
+            target.upsert(
+                ids=copy_ids[i : i + 256],
+                embeddings=copy_embeddings[i : i + 256],
+                documents=copy_documents[i : i + 256],
+                metadatas=copy_metadatas[i : i + 256],
+            )
+
+        copied_count += len(copy_ids)
+
+    return {
+        "copied_count": copied_count,
+        "missing_file_ids": missing_file_ids,
+        "failed_file_ids": failed_file_ids,
+        "missing_chunks": missing_chunks,
+        "status_detail": "retry_by_file_id",
+        "file_id_retry_attempts": FILE_ID_RETRY_ATTEMPTS,
+        "file_id_retry_success_count": retry_success,
+        "file_id_retry_failed_count": retry_failed,
+    }
+
+
 def _clone_chroma_collection_vectors(
     source_collection_name: str,
     target_collection_name: str,
-) -> tuple[bool, Optional[str]]:
+    file_ids: Optional[list[str]] = None,
+) -> dict:
+    defaults = {
+        "copied_count": 0,
+        "missing_file_ids": [],
+        "failed_file_ids": [],
+        "file_id_retry_attempts": None,
+        "file_id_success_count": None,
+        "file_id_failed_count": None,
+        "has_unknown_missing": False,
+        "total_items": 0,
+        "page_size": CHROMA_CLONE_PAGE_SIZE,
+        "pages_scanned": 0,
+        "failed_offset": None,
+        "failed_stage": None,
+        "missing_chunks": 0,
+        "status_detail": None,
+        "retry_mode": None,
+    }
+
     if VECTOR_DB != "chroma":
-        return False, "vector backend is not chroma"
+        return {
+            **defaults,
+            "status": "failed",
+            "reason": "vector backend is not chroma",
+            "failed_stage": "backend",
+            "status_detail": "wrong_backend",
+        }
 
     client = getattr(VECTOR_DB_CLIENT, "client", None)
     if client is None:
-        return False, "chroma client is unavailable"
+        return {
+            **defaults,
+            "status": "failed",
+            "reason": "chroma client is unavailable",
+            "failed_stage": "client",
+            "status_detail": "client_unavailable",
+        }
 
     try:
         source = client.get_collection(name=source_collection_name)
     except Exception:
-        return False, "source vector collection does not exist"
+        return {
+            **defaults,
+            "status": "failed",
+            "reason": "source vector collection does not exist",
+            "failed_stage": "collection",
+            "status_detail": "collection_not_found",
+        }
 
-    result = source.get(include=["embeddings", "documents", "metadatas"])
+    try:
+        total_items = int(source.count())
+    except Exception as e:
+        return {
+            **defaults,
+            "status": "failed",
+            "reason": f"failed to count source chroma collection: {e}",
+            "total_items": 0,
+            "failed_stage": "count",
+            "status_detail": "count_failed",
+        }
 
-    ids = result.get("ids") or []
-    embeddings = result.get("embeddings") or []
-    documents = result.get("documents") or []
-    metadatas = result.get("metadatas") or []
+    if total_items == 0:
+        return {
+            **defaults,
+            "status": "success",
+            "reason": None,
+            "total_items": 0,
+            "status_detail": "empty_collection",
+        }
 
-    if not ids:
-        return True, None
-
-    if len(embeddings) != len(ids):
-        return False, "source chroma collection has incomplete embeddings"
+    copied_count = 0
+    missing_file_ids = set()
+    has_unknown_missing = False
+    missing_chunks = 0
+    pages_scanned = 0
 
     target = client.get_or_create_collection(
         name=target_collection_name,
         metadata={"hnsw:space": "cosine"},
     )
 
-    for i in range(0, len(ids), 256):
-        target.upsert(
-            ids=ids[i : i + 256],
-            embeddings=embeddings[i : i + 256],
-            documents=documents[i : i + 256],
-            metadatas=metadatas[i : i + 256],
+    offset = 0
+    while offset < total_items:
+        try:
+            result = source.get(
+                limit=CHROMA_CLONE_PAGE_SIZE,
+                offset=offset,
+                include=["embeddings", "documents", "metadatas"],
+            )
+        except Exception as e:
+            if file_ids:
+                retry_result = _clone_chroma_by_file_id(source, target, file_ids)
+                failed_file_ids = retry_result["failed_file_ids"]
+                missing_file_ids = set(retry_result["missing_file_ids"])
+                missing_chunks = retry_result["missing_chunks"]
+                copied_count = retry_result["copied_count"]
+
+                failed_preview = failed_file_ids[:20]
+                return {
+                    "status": "partial" if copied_count > 0 else "failed",
+                    "reason": f"file_id retry after paged get failed at offset {offset}: {e}",
+                    "copied_count": copied_count,
+                    "missing_file_ids": list(missing_file_ids),
+                    "failed_file_ids": failed_file_ids,
+                    "has_unknown_missing": False,
+                    "total_items": total_items,
+                    "page_size": CHROMA_CLONE_PAGE_SIZE,
+                    "pages_scanned": pages_scanned,
+                    "failed_offset": offset,
+                    "failed_stage": "get_page",
+                    "missing_chunks": missing_chunks,
+                    "status_detail": retry_result["status_detail"],
+                    "retry_mode": "file_id",
+                    "file_id_retry_attempts": retry_result.get("file_id_retry_attempts"),
+                    "file_id_success_count": retry_result.get("file_id_retry_success_count"),
+                    "file_id_failed_count": retry_result.get("file_id_retry_failed_count"),
+                    "failed_file_ids": failed_preview,
+                }
+
+            return {
+                "status": "partial" if copied_count > 0 else "failed",
+                "reason": f"failed to read source chroma collection at offset {offset}: {e}",
+                "copied_count": copied_count,
+                "missing_file_ids": list(missing_file_ids),
+                "failed_file_ids": [],
+                "has_unknown_missing": True,
+                "total_items": total_items,
+                "page_size": CHROMA_CLONE_PAGE_SIZE,
+                "pages_scanned": pages_scanned,
+                "failed_offset": offset,
+                "failed_stage": "get_page",
+                "missing_chunks": missing_chunks,
+                "status_detail": "paged_get_failed",
+                "retry_mode": None,
+            }
+
+        pages_scanned += 1
+
+        ids = _normalize_chroma_sequence(result.get("ids"))
+        embeddings = _normalize_chroma_sequence(result.get("embeddings"))
+        documents = _normalize_chroma_sequence(result.get("documents"))
+        metadatas = _normalize_chroma_sequence(result.get("metadatas"))
+
+        copy_ids = []
+        copy_embeddings = []
+        copy_documents = []
+        copy_metadatas = []
+
+        for i, item_id in enumerate(ids):
+            embedding = embeddings[i] if i < len(embeddings) else None
+            document = documents[i] if i < len(documents) else ""
+            metadata = metadatas[i] if i < len(metadatas) else {}
+
+            if embedding is None:
+                missing_chunks += 1
+                if isinstance(metadata, dict) and metadata.get("file_id"):
+                    missing_file_ids.add(metadata["file_id"])
+                else:
+                    has_unknown_missing = True
+                continue
+
+            copy_ids.append(item_id)
+            copy_embeddings.append(embedding)
+            copy_documents.append("" if document is None else document)
+            copy_metadatas.append(metadata if isinstance(metadata, dict) else {})
+
+        for i in range(0, len(copy_ids), 256):
+            try:
+                target.upsert(
+                    ids=copy_ids[i : i + 256],
+                    embeddings=copy_embeddings[i : i + 256],
+                    documents=copy_documents[i : i + 256],
+                    metadatas=copy_metadatas[i : i + 256],
+                )
+            except Exception as e:
+                return {
+                    "status": "partial" if copied_count > 0 else "failed",
+                    "reason": f"failed to upsert target chroma collection at offset {offset}: {e}",
+                    "copied_count": copied_count,
+                    "missing_file_ids": list(missing_file_ids),
+                    "has_unknown_missing": True,
+                    "total_items": total_items,
+                    "page_size": CHROMA_CLONE_PAGE_SIZE,
+                    "pages_scanned": pages_scanned,
+                    "failed_offset": offset,
+                    "failed_stage": "upsert",
+                    "missing_chunks": missing_chunks,
+                    "status_detail": "upsert_failed",
+                }
+
+        copied_count += len(copy_ids)
+
+        # Defensive progress step to avoid infinite loops on unexpected empty pages.
+        if len(ids) == 0:
+            offset += CHROMA_CLONE_PAGE_SIZE
+        else:
+            offset += len(ids)
+
+    if copied_count == total_items and not has_unknown_missing and len(missing_file_ids) == 0:
+        status = "success"
+        reason = None
+        status_detail = "all_chunks_copied"
+    else:
+        status = "partial"
+        status_detail = "incomplete_embeddings"
+        reason = (
+            f"incomplete embeddings during clone: missing_chunks={missing_chunks}, "
+            f"missing_file_ids={len(missing_file_ids)}"
         )
 
-    return True, None
+    return {
+        "status": status,
+        "reason": reason,
+        "copied_count": copied_count,
+        "missing_file_ids": list(missing_file_ids),
+        "failed_file_ids": [],
+        "has_unknown_missing": has_unknown_missing,
+        "total_items": total_items,
+        "page_size": CHROMA_CLONE_PAGE_SIZE,
+        "pages_scanned": pages_scanned,
+        "failed_offset": None,
+        "failed_stage": None,
+        "missing_chunks": missing_chunks,
+        "status_detail": status_detail,
+        "retry_mode": None,
+    }
 
 
 async def _clone_collection_vectors(
@@ -283,6 +586,33 @@ async def _clone_collection_vectors(
 
     fallback_reason = "source vector collection does not exist"
     direct_clone_success = False
+    copied_count = 0
+    missing_file_ids: list[str] = []
+    has_unknown_missing = False
+    chroma_observability = {
+        "total_items": None,
+        "pages_scanned": None,
+        "failed_offset": None,
+        "failed_stage": None,
+        "missing_chunks": None,
+        "status_detail": None,
+        "page_size": None,
+        "retry_mode": None,
+        "failed_file_ids": [],
+        "file_id_retry_attempts": None,
+        "file_id_success_count": None,
+        "file_id_failed_count": None,
+    }
+
+    log.info(
+        "Knowledge clone start id=%s vector_db=%s source_collection=%s target_collection=%s file_count=%d chroma_page_size=%s",
+        source_knowledge.id,
+        VECTOR_DB,
+        source_collection_name,
+        target_collection_name,
+        len(files),
+        CHROMA_CLONE_PAGE_SIZE if VECTOR_DB == "chroma" else "n/a",
+    )
 
     if VECTOR_DB_CLIENT.has_collection(collection_name=source_collection_name):
         try:
@@ -292,9 +622,48 @@ async def _clone_collection_vectors(
                     target_collection_name=target_collection_name,
                 )
             elif VECTOR_DB == "chroma":
-                direct_clone_success, fallback_reason = _clone_chroma_collection_vectors(
+                chroma_clone_result = _clone_chroma_collection_vectors(
                     source_collection_name=source_collection_name,
                     target_collection_name=target_collection_name,
+                    file_ids=[file.id for file in files],
+                )
+                chroma_observability = {
+                    "total_items": chroma_clone_result.get("total_items"),
+                    "pages_scanned": chroma_clone_result.get("pages_scanned"),
+                    "failed_offset": chroma_clone_result.get("failed_offset"),
+                    "failed_stage": chroma_clone_result.get("failed_stage"),
+                    "missing_chunks": chroma_clone_result.get("missing_chunks"),
+                    "status_detail": chroma_clone_result.get("status_detail"),
+                    "page_size": chroma_clone_result.get("page_size"),
+                    "retry_mode": chroma_clone_result.get("retry_mode"),
+                    "failed_file_ids": chroma_clone_result.get("failed_file_ids") or [],
+                    "file_id_retry_attempts": chroma_clone_result.get("file_id_retry_attempts"),
+                    "file_id_success_count": chroma_clone_result.get("file_id_retry_success_count") or chroma_clone_result.get("file_id_success_count"),
+                    "file_id_failed_count": chroma_clone_result.get("file_id_retry_failed_count") or chroma_clone_result.get("file_id_failed_count"),
+                }
+                direct_clone_success = chroma_clone_result["status"] == "success"
+                copied_count = chroma_clone_result["copied_count"]
+                missing_file_ids = chroma_clone_result["missing_file_ids"]
+                has_unknown_missing = chroma_clone_result["has_unknown_missing"]
+                fallback_reason = chroma_clone_result["reason"] or fallback_reason
+                if chroma_clone_result.get("retry_mode") == "file_id":
+                    missing_file_ids = chroma_clone_result.get("failed_file_ids") or []
+                    has_unknown_missing = False
+
+                log.info(
+                    "Knowledge direct clone result id=%s status=%s copied_count=%d total_items=%s pages_scanned=%s missing_file_ids=%d missing_chunks=%s failed_stage=%s failed_offset=%s status_detail=%s retry_mode=%s failed_file_ids=%d",
+                    source_knowledge.id,
+                    chroma_clone_result.get("status"),
+                    copied_count,
+                    chroma_observability["total_items"],
+                    chroma_observability["pages_scanned"],
+                    len(missing_file_ids),
+                    chroma_observability["missing_chunks"],
+                    chroma_observability["failed_stage"],
+                    chroma_observability["failed_offset"],
+                    chroma_observability["status_detail"],
+                    chroma_observability["retry_mode"],
+                    len(chroma_observability["failed_file_ids"]),
                 )
             else:
                 fallback_reason = (
@@ -305,25 +674,101 @@ async def _clone_collection_vectors(
             fallback_reason = str(e)
 
     if direct_clone_success:
+        log.info(
+            "Knowledge clone completed with direct copy id=%s copied_count=%d total_items=%s pages_scanned=%s",
+            source_knowledge.id,
+            copied_count,
+            chroma_observability["total_items"],
+            chroma_observability["pages_scanned"],
+        )
         return {
             "successful_file_ids": [file.id for file in files],
-            "warnings": None,
+            "warnings": {
+                "strategy": "direct_copy",
+                "copied_count": copied_count,
+                    "total_items": chroma_observability["total_items"],
+                    "pages_scanned": chroma_observability["pages_scanned"],
+                    "failed_offset": chroma_observability["failed_offset"],
+                    "failed_stage": chroma_observability["failed_stage"],
+                    "missing_chunks": chroma_observability["missing_chunks"],
+                    "retry_mode": chroma_observability["retry_mode"],
+                    "file_id_success_count": chroma_observability["file_id_success_count"],
+                    "file_id_failed_count": chroma_observability["file_id_failed_count"],
+                    "failed_file_ids": chroma_observability["failed_file_ids"],
+                },
         }
 
-    try:
-        if VECTOR_DB_CLIENT.has_collection(collection_name=target_collection_name):
-            VECTOR_DB_CLIENT.delete_collection(collection_name=target_collection_name)
-    except Exception:
-        pass
+    files_to_reembed = files
+    strategy = "full_reembed_fallback"
+
+    if VECTOR_DB == "chroma" and copied_count > 0 and not has_unknown_missing:
+        missing_file_id_set = set(missing_file_ids)
+        if missing_file_id_set:
+            files_to_reembed = [file for file in files if file.id in missing_file_id_set]
+            if files_to_reembed:
+                strategy = "partial_copy_with_reembed"
+            else:
+                strategy = "direct_copy"
+        else:
+            strategy = "direct_copy" if chroma_observability["retry_mode"] == "file_id" else "full_reembed_fallback"
+
+    if strategy == "direct_copy":
+        log.info(
+            "Knowledge clone resolved to direct copy id=%s copied_count=%d total_items=%s pages_scanned=%s",
+            source_knowledge.id,
+            copied_count,
+            chroma_observability["total_items"],
+            chroma_observability["pages_scanned"],
+        )
+        return {
+            "successful_file_ids": [file.id for file in files],
+            "warnings": {
+                "strategy": "direct_copy",
+                "copied_count": copied_count,
+                    "total_items": chroma_observability["total_items"],
+                    "pages_scanned": chroma_observability["pages_scanned"],
+                    "failed_offset": chroma_observability["failed_offset"],
+                    "failed_stage": chroma_observability["failed_stage"],
+                    "missing_chunks": chroma_observability["missing_chunks"],
+                    "retry_mode": chroma_observability["retry_mode"],
+                    "file_id_success_count": chroma_observability["file_id_success_count"],
+                    "file_id_failed_count": chroma_observability["file_id_failed_count"],
+                    "failed_file_ids": chroma_observability["failed_file_ids"],
+                },
+        }
+
+    log.warning(
+        "Knowledge clone fallback id=%s strategy=%s reason=%s copied_count=%d total_items=%s pages_scanned=%s missing_file_ids=%d unknown_missing=%s failed_stage=%s failed_offset=%s retry_mode=%s file_id_failed=%s",
+        source_knowledge.id,
+        strategy,
+        fallback_reason,
+        copied_count,
+        chroma_observability["total_items"],
+        chroma_observability["pages_scanned"],
+        len(missing_file_ids),
+        has_unknown_missing,
+        chroma_observability["failed_stage"],
+        chroma_observability["failed_offset"],
+        chroma_observability["retry_mode"],
+        chroma_observability["file_id_failed_count"],
+    )
+
+    if strategy != "partial_copy_with_reembed":
+        try:
+            if VECTOR_DB_CLIENT.has_collection(collection_name=target_collection_name):
+                VECTOR_DB_CLIENT.delete_collection(collection_name=target_collection_name)
+        except Exception:
+            pass
 
     successful_file_ids = []
     fallback_errors = []
+    reembedded_file_ids = []
 
-    if files:
+    if files_to_reembed:
         fallback_result = await process_files_batch(
             request=request,
             form_data=BatchProcessFilesForm(
-                files=files,
+                files=files_to_reembed,
                 collection_name=target_collection_name,
             ),
             user=user,
@@ -339,12 +784,47 @@ async def _clone_collection_vectors(
             for error in fallback_result.errors
         ]
 
+        reembedded_file_ids = [
+            result.file_id
+            for result in fallback_result.results
+            if result.status == "completed"
+        ]
+
+    if strategy == "partial_copy_with_reembed":
+        missing_file_id_set = set(missing_file_ids)
+        copied_file_ids = [
+            file.id for file in files if file.id not in missing_file_id_set
+        ]
+        successful_file_ids = copied_file_ids + successful_file_ids
+
     warnings = {
         "message": "vector direct clone unavailable, fallback to re-embed",
         "reason": fallback_reason,
+        "strategy": strategy,
+        "copied_count": copied_count,
+        "reembedded_file_ids": reembedded_file_ids,
+        "total_items": chroma_observability["total_items"],
+        "pages_scanned": chroma_observability["pages_scanned"],
+        "failed_offset": chroma_observability["failed_offset"],
+        "failed_stage": chroma_observability["failed_stage"],
+        "missing_chunks": chroma_observability["missing_chunks"],
+        "status_detail": chroma_observability["status_detail"],
+        "retry_mode": chroma_observability["retry_mode"],
+        "file_id_retry_attempts": chroma_observability.get("file_id_retry_attempts"),
+        "file_id_success_count": chroma_observability["file_id_success_count"],
+        "file_id_failed_count": chroma_observability["file_id_failed_count"],
+        "failed_file_ids": chroma_observability["failed_file_ids"],
     }
     if fallback_errors:
         warnings["errors"] = fallback_errors
+
+    log.info(
+        "Knowledge clone fallback completed id=%s strategy=%s reembedded_file_count=%d fallback_error_count=%d",
+        source_knowledge.id,
+        strategy,
+        len(reembedded_file_ids),
+        len(fallback_errors),
+    )
 
     return {
         "successful_file_ids": successful_file_ids,
