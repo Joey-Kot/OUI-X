@@ -1514,7 +1514,7 @@
 												class="flex self-center w-[1px] h-4 mx-1 bg-gray-200/50 dark:bg-gray-800/50"
 											/>
 
-											<div class="ml-0.5 flex items-center gap-1.5">
+											<div class="ml-0.5 flex items-center gap-1">
 												{#if showIntegrationsButton}
 													<IntegrationsMenu
 														{toggleFilters}
