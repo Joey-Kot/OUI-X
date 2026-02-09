@@ -61,8 +61,20 @@ class ChromaClient(VectorDBBase):
 
     def has_collection(self, collection_name: str) -> bool:
         # Check if the collection exists based on the collection name.
-        collection_names = self.client.list_collections()
-        return collection_name in collection_names
+        collections = self.client.list_collections()
+
+        for collection in collections:
+            if isinstance(collection, str) and collection == collection_name:
+                return True
+
+            name = getattr(collection, "name", None)
+            if name == collection_name:
+                return True
+
+            if isinstance(collection, dict) and collection.get("name") == collection_name:
+                return True
+
+        return False
 
     def delete_collection(self, collection_name: str):
         # Delete the collection based on the collection name.

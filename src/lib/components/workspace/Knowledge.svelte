@@ -121,6 +121,70 @@
 				toast.warning($i18n.t(res.warnings.message));
 			}
 
+			if (res?.warnings?.reason) {
+				toast.warning(res.warnings.reason);
+			}
+
+			if (res?.warnings?.strategy && typeof res?.warnings?.copied_count === "number") {
+				const totalItems =
+					typeof res?.warnings?.total_items === "number" ? res.warnings.total_items : null;
+				const pagesScanned =
+					typeof res?.warnings?.pages_scanned === "number" ? res.warnings.pages_scanned : null;
+				const failedOffset = res?.warnings?.failed_offset;
+				const retryMode = res?.warnings?.retry_mode;
+				const fileIdSuccessCount =
+					typeof res?.warnings?.file_id_success_count === "number"
+						? res.warnings.file_id_success_count
+						: null;
+				const fileIdFailedCount =
+					typeof res?.warnings?.file_id_failed_count === "number"
+						? res.warnings.file_id_failed_count
+						: null;
+				const fileIdRetryAttempts =
+					typeof res?.warnings?.file_id_retry_attempts === "number"
+						? res.warnings.file_id_retry_attempts
+						: null;
+
+				if (res.warnings.strategy === "direct_copy") {
+					const copiedSummary =
+						totalItems !== null
+							? `${res.warnings.copied_count}/${totalItems}`
+							: `${res.warnings.copied_count}`;
+					const pageSummary = pagesScanned !== null ? `, pages: ${pagesScanned}` : '';
+					toast.success(`Embeddings copied directly: ${copiedSummary}${pageSummary}`);
+				} else if (res.warnings.strategy === "partial_copy_with_reembed") {
+					const reembeddedCount = (res?.warnings?.reembedded_file_ids ?? []).length;
+					const copiedSummary =
+						totalItems !== null
+							? `${res.warnings.copied_count}/${totalItems}`
+							: `${res.warnings.copied_count}`;
+					const offsetSummary =
+						failedOffset !== null && failedOffset !== undefined
+							? `, failed offset: ${failedOffset}`
+							: '';
+					const retrySummary =
+						retryMode === "file_id" && fileIdSuccessCount !== null && fileIdFailedCount !== null
+							? `, file_id retry copied ${fileIdSuccessCount}, failed ${fileIdFailedCount}`
+							: '';
+					toast.warning(
+						`Embeddings partially copied: ${copiedSummary}, re-embedded files: ${reembeddedCount}${offsetSummary}${retrySummary}`
+					);
+				} else if (res.warnings.strategy === "full_reembed_fallback") {
+					const reembeddedCount = (res?.warnings?.reembedded_file_ids ?? []).length;
+					const offsetSummary =
+						failedOffset !== null && failedOffset !== undefined
+							? `, failed offset: ${failedOffset}`
+							: '';
+					const retrySummary =
+						retryMode === "file_id" && fileIdSuccessCount !== null && fileIdFailedCount !== null
+							? `, file_id retry copied ${fileIdSuccessCount}, failed ${fileIdFailedCount}`
+							: '';
+					toast.warning(
+						`Full fallback to re-embed: copied ${res.warnings.copied_count}, re-embedded files: ${reembeddedCount}${offsetSummary}${retrySummary}`
+					);
+				}
+			}
+
 			init();
 		}
 	};
