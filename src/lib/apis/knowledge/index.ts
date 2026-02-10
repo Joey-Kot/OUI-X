@@ -361,20 +361,32 @@ export const updateFileFromKnowledgeById = async (token: string, id: string, fil
 	return res;
 };
 
-export const removeFileFromKnowledgeById = async (token: string, id: string, fileId: string) => {
+export const removeFileFromKnowledgeById = async (
+	token: string,
+	id: string,
+	fileId: string,
+	force: boolean = false
+) => {
 	let error = null;
 
-	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/${id}/file/remove`, {
-		method: 'POST',
-		headers: {
-			Accept: 'application/json',
-			'Content-Type': 'application/json',
-			authorization: `Bearer ${token}`
-		},
-		body: JSON.stringify({
-			file_id: fileId
-		})
-	})
+	const searchParams = new URLSearchParams();
+	if (force) searchParams.append("force", "true");
+	const query = searchParams.toString();
+
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/knowledge/${id}/file/remove${query ? `?${query}` : ""}`,
+		{
+			method: "POST",
+			headers: {
+				Accept: "application/json",
+				"Content-Type": "application/json",
+				authorization: `Bearer ${token}`
+			},
+			body: JSON.stringify({
+				file_id: fileId
+			})
+		}
+	)
 		.then(async (res) => {
 			if (!res.ok) throw await res.json();
 			return res.json();
@@ -383,7 +395,7 @@ export const removeFileFromKnowledgeById = async (token: string, id: string, fil
 			return json;
 		})
 		.catch((err) => {
-			error = err.detail;
+			error = err;
 
 			console.error(err);
 			return null;
@@ -428,17 +440,28 @@ export const resetKnowledgeById = async (token: string, id: string) => {
 	return res;
 };
 
-export const deleteKnowledgeById = async (token: string, id: string) => {
+export const deleteKnowledgeById = async (
+	token: string,
+	id: string,
+	force: boolean = false
+) => {
 	let error = null;
 
-	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/${id}/delete`, {
-		method: 'DELETE',
-		headers: {
-			Accept: 'application/json',
-			'Content-Type': 'application/json',
-			authorization: `Bearer ${token}`
+	const searchParams = new URLSearchParams();
+	if (force) searchParams.append("force", "true");
+	const query = searchParams.toString();
+
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/knowledge/${id}/delete${query ? `?${query}` : ""}`,
+		{
+			method: "DELETE",
+			headers: {
+				Accept: "application/json",
+				"Content-Type": "application/json",
+				authorization: `Bearer ${token}`
+			}
 		}
-	})
+	)
 		.then(async (res) => {
 			if (!res.ok) throw await res.json();
 			return res.json();
@@ -447,7 +470,7 @@ export const deleteKnowledgeById = async (token: string, id: string) => {
 			return json;
 		})
 		.catch((err) => {
-			error = err.detail;
+			error = err;
 
 			console.error(err);
 			return null;

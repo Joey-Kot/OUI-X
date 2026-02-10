@@ -30,9 +30,11 @@
 
 	let loaded = false;
 	let showDeleteConfirm = false;
+	let showForceDeleteConfirm = false;
 	let tagsContainerElement: HTMLDivElement;
 
 	let selectedItem = null;
+	let deleteConflictDetail = null;
 
 	let page = 1;
 	let query = '';
@@ -97,13 +99,39 @@
 		return res;
 	};
 
-	const deleteHandler = async (item) => {
-		const res = await deleteKnowledgeById(localStorage.token, item.id).catch((e) => {
-			toast.error(`${e}`);
+	const getForceDeleteCollectionMessage = () => {
+		const conflictedCount = deleteConflictDetail?.conflicted_files_count ?? 0;
+		return $i18n.t(
+			"This collection includes {{count}} files referenced by other collections or chats. Force delete will remove all related file data globally. Continue?",
+			{ count: conflictedCount }
+		);
+	};
+
+	const deleteHandler = async (item, force = false) => {
+		const res = await deleteKnowledgeById(localStorage.token, item.id, force).catch((e) => {
+			const detail = e?.detail ?? e;
+			if (!force && detail?.code === "COLLECTION_CONTAINS_EXTERNALLY_REFERENCED_FILES") {
+				deleteConflictDetail = detail;
+				showForceDeleteConfirm = true;
+				return null;
+			}
+
+			toast.error(String(detail?.message ?? detail));
+			return null;
 		});
 
-		if (res) {
-			toast.success($i18n.t('Knowledge deleted successfully.'));
+		if (res?.warnings?.message) {
+			toast.warning($i18n.t(res.warnings.message));
+		}
+
+		if (res?.warnings?.errors?.length) {
+			toast.warning($i18n.t("Some cleanup steps failed. Please check server logs."));
+		}
+
+		if (res?.status ?? res) {
+			toast.success($i18n.t("Knowledge deleted successfully."));
+			deleteConflictDetail = null;
+			selectedItem = null;
 			init();
 		}
 	};
@@ -205,7 +233,23 @@
 	<DeleteConfirmDialog
 		bind:show={showDeleteConfirm}
 		on:confirm={() => {
-			deleteHandler(selectedItem);
+			if (selectedItem) {
+				deleteHandler(selectedItem, false);
+			}
+		}}
+	/>
+
+	<DeleteConfirmDialog
+		bind:show={showForceDeleteConfirm}
+		title={$i18n.t("Force delete collection")}
+		message={getForceDeleteCollectionMessage()}
+		on:cancel={() => {
+			deleteConflictDetail = null;
+		}}
+		on:confirm={() => {
+			if (selectedItem) {
+				deleteHandler(selectedItem, true);
+			}
 		}}
 	/>
 

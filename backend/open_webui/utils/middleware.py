@@ -28,6 +28,7 @@ from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.models.chats import Chats
 from open_webui.models.folders import Folders
 from open_webui.models.users import Users
+from open_webui.models.files import Files
 from open_webui.socket.main import (
     get_event_call,
     get_event_emitter,
@@ -1022,6 +1023,64 @@ async def chat_completion_files_handler(
         # Check if all files are in full context mode
         all_full_context = all(item.get("context") == "full" for item in files)
 
+        file_sources = []
+        remaining_files = list(files)
+        if not request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING:
+            remaining_files = []
+            for item in files:
+                item_type = item.get("type", "file")
+                content_type = (item.get("content_type") or "")
+                if item_type == "file" and not content_type.startswith("image/"):
+                    file_id = item.get("id")
+                    file_object = Files.get_file_by_id(file_id) if file_id else None
+                    content = (
+                        (file_object.data or {}).get("content")
+                        if file_object and file_object.data
+                        else ""
+                    )
+                    if content:
+                        file_meta = file_object.meta or {}
+                        file_sources.append(
+                            {
+                                "source": item,
+                                "document": [content],
+                                "metadata": [
+                                    {
+                                        **file_meta,
+                                        "file_id": file_object.id,
+                                        "name": file_object.filename,
+                                        "source": file_object.filename,
+                                    }
+                                ],
+                            }
+                        )
+                else:
+                    remaining_files.append(item)
+
+            if not remaining_files:
+                sources = file_sources
+                sources_count = len(
+                    {
+                        ((m or {}).get("source") or (s.get("source") or {}).get("id") or "N/A")
+                        for s in sources
+                        for m in (s.get("metadata") or [])
+                    }
+                )
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "sources_retrieved",
+                            "count": sources_count,
+                            "done": True,
+                        },
+                    }
+                )
+                return body, {"sources": sources}
+
+        files = remaining_files
+        all_full_context = all(item.get("context") == "full" for item in files) if files else True
+
         queries = []
         if not all_full_context:
             try:
@@ -1099,6 +1158,9 @@ async def chat_completion_files_handler(
             log.exception(e)
 
         log.debug(f"rag_contexts:sources: {sources}")
+
+        if file_sources:
+            sources = [*file_sources, *sources]
 
         unique_ids = set()
         for source in sources or []:

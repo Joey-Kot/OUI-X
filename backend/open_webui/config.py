@@ -950,6 +950,9 @@ AZURE_STORAGE_KEY = os.environ.get("AZURE_STORAGE_KEY", None)
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+KNOWLEDGE_UPLOAD_DIR = DATA_DIR / "vector_db" / "uploads"
+KNOWLEDGE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 ####################################
 # Cache DIR
@@ -2657,6 +2660,13 @@ PDF_EXTRACT_IMAGES = PersistentConfig(
     "PDF_EXTRACT_IMAGES",
     "rag.pdf_extract_images",
     os.environ.get("PDF_EXTRACT_IMAGES", "False").lower() == "true",
+)
+
+CONVERSATION_FILE_UPLOAD_EMBEDDING = PersistentConfig(
+    "CONVERSATION_FILE_UPLOAD_EMBEDDING",
+    "rag.conversation_file_upload_embedding",
+    os.environ.get("CONVERSATION_FILE_UPLOAD_EMBEDDING", "False").lower()
+    == "true",
 )
 
 RAG_EMBEDDING_MODEL = PersistentConfig(

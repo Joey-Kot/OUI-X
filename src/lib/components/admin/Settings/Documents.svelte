@@ -232,6 +232,8 @@
 
 		const config = await getRAGConfig(localStorage.token);
 		config.ALLOWED_FILE_EXTENSIONS = (config?.ALLOWED_FILE_EXTENSIONS ?? []).join(', ');
+		config.CONVERSATION_FILE_UPLOAD_EMBEDDING =
+			config?.CONVERSATION_FILE_UPLOAD_EMBEDDING ?? false;
 
 		config.DOCLING_PARAMS =
 			typeof config.DOCLING_PARAMS === 'object'
@@ -333,6 +335,24 @@
 									</div>
 									<div class="flex items-center relative">
 										<Switch bind:state={RAGConfig.PDF_EXTRACT_IMAGES} />
+									</div>
+								</div>
+							</div>
+							<div class="flex w-full mt-2">
+								<div class="flex-1 flex justify-between gap-3">
+									<Tooltip
+										content={$i18n.t(
+											'When disabled, conversation file uploads only extract text and are used only in full-context mode. When enabled, files are embedded into a user-specific conversation knowledge collection.'
+										)}
+										placement="top-start"
+										className="flex-1"
+									>
+										<div class="self-center text-xs font-medium cursor-help">
+											{$i18n.t('Conversation File Upload Embedding')}
+										</div>
+									</Tooltip>
+									<div class="flex items-center relative">
+										<Switch bind:state={RAGConfig.CONVERSATION_FILE_UPLOAD_EMBEDDING} />
 									</div>
 								</div>
 							</div>

@@ -249,6 +249,15 @@ type Config = {
 		pending_user_overlay_title?: string;
 		pending_user_overlay_description?: string;
 	};
+	file?: {
+		max_size?: number | null;
+		max_count?: number | null;
+		image_compression?: {
+			width?: number | null;
+			height?: number | null;
+		};
+		conversation_file_upload_embedding?: boolean;
+	};
 };
 
 type PromptSuggestion = {

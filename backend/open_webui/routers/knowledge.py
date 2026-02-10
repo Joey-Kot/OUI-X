@@ -36,6 +36,11 @@ from open_webui.config import (
     ENABLE_QDRANT_MULTITENANCY_MODE,
 )
 from open_webui.models.models import Models, ModelForm
+from open_webui.models.chats import Chats
+from open_webui.retrieval.utils import (
+    invalidate_bm25_collections,
+    mark_bm25_collections_dirty,
+)
 from open_webui.utils.knowledge import (
     get_active_vector_collection_name,
     resolve_collection_rag_config,
@@ -78,6 +83,11 @@ class KnowledgeAccessListResponse(BaseModel):
 class CollectionRagConfigUpdateForm(BaseModel):
     mode: str = "default"
     overrides: Optional[dict] = None
+
+
+class DeleteKnowledgeResponse(BaseModel):
+    status: bool
+    warnings: Optional[dict] = None
 
 
 def _ensure_write_access(knowledge, user):
@@ -186,6 +196,110 @@ def _normalize_chroma_sequence(value) -> list:
         return list(value)
     except Exception:
         return []
+
+
+def _format_cleanup_warnings(warnings: list[dict]) -> Optional[dict]:
+    if not warnings:
+        return None
+
+    return {
+        "message": "Some cleanup steps failed",
+        "errors": warnings,
+    }
+
+
+def _cleanup_warning(stage: str, target: str, error: Exception | str) -> dict:
+    return {
+        "stage": stage,
+        "target": target,
+        "error": str(error),
+    }
+
+
+def _collect_external_references(file_id: str, current_knowledge_id: str) -> dict:
+    linked_knowledges = Knowledges.get_knowledges_by_file_id(file_id)
+    other_knowledges = [k for k in linked_knowledges if k.id != current_knowledge_id]
+    other_chats_count = Chats.count_chat_files_by_file_id(file_id)
+
+    return {
+        "other_collections_count": len(other_knowledges),
+        "other_chats_count": other_chats_count,
+        "other_collections_sample": [
+            {"id": knowledge.id, "name": knowledge.name}
+            for knowledge in other_knowledges[:10]
+        ],
+    }
+
+
+def _hard_delete_file_everywhere(file_id: str) -> list[dict]:
+    warnings: list[dict] = []
+
+    file = Files.get_file_by_id(file_id)
+    if not file:
+        return warnings
+
+    linked_knowledges = Knowledges.get_knowledges_by_file_id(file_id)
+    touched_collections: set[str] = set()
+
+    for knowledge in linked_knowledges:
+        collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
+        if not collection_name:
+            continue
+
+        touched_collections.add(collection_name)
+
+        try:
+            VECTOR_DB_CLIENT.delete(
+                collection_name=collection_name,
+                filter={"file_id": file_id},
+            )
+        except Exception as e:
+            warnings.append(
+                _cleanup_warning("vector.delete_by_file_id", collection_name, e)
+            )
+
+        if file.hash:
+            try:
+                VECTOR_DB_CLIENT.delete(
+                    collection_name=collection_name,
+                    filter={"hash": file.hash},
+                )
+            except Exception as e:
+                warnings.append(
+                    _cleanup_warning("vector.delete_by_hash", collection_name, e)
+                )
+
+    file_collection_name = f"file-{file_id}"
+    try:
+        if VECTOR_DB_CLIENT.has_collection(collection_name=file_collection_name):
+            VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection_name)
+    except Exception as e:
+        warnings.append(
+            _cleanup_warning("vector.delete_file_collection", file_collection_name, e)
+        )
+
+    if touched_collections:
+        try:
+            collections = list(touched_collections)
+            mark_bm25_collections_dirty(collections)
+            invalidate_bm25_collections(collections)
+        except Exception as e:
+            warnings.append(_cleanup_warning("bm25.invalidate", file_id, e))
+
+    if file.path:
+        try:
+            Storage.delete_file(file.path)
+        except Exception as e:
+            warnings.append(_cleanup_warning("storage.delete_file", file.path, e))
+
+    try:
+        result = Files.delete_file_by_id(file_id)
+        if not result:
+            warnings.append(_cleanup_warning("db.delete_file", file_id, "delete failed"))
+    except Exception as e:
+        warnings.append(_cleanup_warning("db.delete_file", file_id, e))
+
+    return warnings
 
 
 def _clone_qdrant_collection_vectors(
@@ -1491,7 +1605,7 @@ def update_file_from_knowledge_by_id(
 def remove_file_from_knowledge_by_id(
     id: str,
     form_data: KnowledgeFileIdForm,
-    delete_file: bool = Query(True),
+    force: bool = Query(False),
     user=Depends(get_verified_user),
 ):
     knowledge = Knowledges.get_knowledge_by_id(id=id)
@@ -1518,43 +1632,28 @@ def remove_file_from_knowledge_by_id(
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    Knowledges.remove_file_from_knowledge_by_id(
-        knowledge_id=id, file_id=form_data.file_id
-    )
+    external_references = _collect_external_references(form_data.file_id, id)
+    if not force and (
+        external_references["other_collections_count"] > 0
+        or external_references["other_chats_count"] > 0
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "FILE_HAS_EXTERNAL_REFERENCES",
+                "file_id": form_data.file_id,
+                "external_references": external_references,
+                "message": "File has external references. Force delete to remove it globally.",
+            },
+        )
 
-    # Remove content from the vector database
-    collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
-    try:
-        VECTOR_DB_CLIENT.delete(
-            collection_name=collection_name, filter={"file_id": form_data.file_id}
-        )  # Remove by file_id first
-
-        VECTOR_DB_CLIENT.delete(
-            collection_name=collection_name, filter={"hash": file.hash}
-        )  # Remove by hash as well in case of duplicates
-    except Exception as e:
-        log.debug("This was most likely caused by bypassing embedding processing")
-        log.debug(e)
-        pass
-
-    if delete_file:
-        try:
-            # Remove the file's collection from vector database
-            file_collection = f"file-{form_data.file_id}"
-            if VECTOR_DB_CLIENT.has_collection(collection_name=file_collection):
-                VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection)
-        except Exception as e:
-            log.debug("This was most likely caused by bypassing embedding processing")
-            log.debug(e)
-            pass
-
-        # Delete file from database
-        Files.delete_file_by_id(form_data.file_id)
+    warnings = _hard_delete_file_everywhere(form_data.file_id)
 
     if knowledge:
         return KnowledgeFilesResponse(
             **knowledge.model_dump(),
             files=Knowledges.get_file_metadatas_by_id(knowledge.id),
+            warnings=_format_cleanup_warnings(warnings),
         )
     else:
         raise HTTPException(
@@ -1644,8 +1743,12 @@ async def clone_knowledge_by_id(
 ############################
 
 
-@router.delete("/{id}/delete", response_model=bool)
-async def delete_knowledge_by_id(id: str, user=Depends(get_verified_user)):
+@router.delete("/{id}/delete", response_model=DeleteKnowledgeResponse)
+async def delete_knowledge_by_id(
+    id: str,
+    force: bool = Query(False),
+    user=Depends(get_verified_user),
+):
     knowledge = Knowledges.get_knowledge_by_id(id=id)
     if not knowledge:
         raise HTTPException(
@@ -1664,6 +1767,48 @@ async def delete_knowledge_by_id(id: str, user=Depends(get_verified_user)):
         )
 
     log.info(f"Deleting knowledge base: {id} (name: {knowledge.name})")
+
+    files = Knowledges.get_files_by_id(id)
+
+    if not force:
+        conflict_entries = []
+        for file in files:
+            references = _collect_external_references(file.id, id)
+            if (
+                references["other_collections_count"] > 0
+                or references["other_chats_count"] > 0
+            ):
+                conflict_entries.append(
+                    {
+                        "file_id": file.id,
+                        "other_collections_count": references[
+                            "other_collections_count"
+                        ],
+                        "other_chats_count": references["other_chats_count"],
+                    }
+                )
+
+        if conflict_entries:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "COLLECTION_CONTAINS_EXTERNALLY_REFERENCED_FILES",
+                    "collection_id": id,
+                    "conflicted_files_count": len(conflict_entries),
+                    "conflicted_files_sample": conflict_entries[:10],
+                    "message": "Collection contains files referenced outside this collection. Force delete to remove all related data globally.",
+                },
+            )
+
+    warnings: list[dict] = []
+
+    seen_file_ids: set[str] = set()
+    for file in files:
+        if file.id in seen_file_ids:
+            continue
+
+        seen_file_ids.add(file.id)
+        warnings.extend(_hard_delete_file_everywhere(file.id))
 
     # Get all models
     models = Models.get_all_models()
@@ -1697,11 +1842,31 @@ async def delete_knowledge_by_id(id: str, user=Depends(get_verified_user)):
     try:
         if VECTOR_DB_CLIENT.has_collection(collection_name=active_collection_name):
             VECTOR_DB_CLIENT.delete_collection(collection_name=active_collection_name)
+            invalidate_bm25_collections([active_collection_name])
     except Exception as e:
-        log.debug(e)
-        pass
+        warnings.append(
+            _cleanup_warning(
+                "vector.delete_collection",
+                active_collection_name,
+                e,
+            )
+        )
+    try:
+        mark_bm25_collections_dirty([active_collection_name])
+    except Exception as e:
+        warnings.append(_cleanup_warning("bm25.mark_dirty", active_collection_name, e))
+
     result = Knowledges.delete_knowledge_by_id(id=id)
-    return result
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT("Failed to delete knowledge base"),
+        )
+
+    return DeleteKnowledgeResponse(
+        status=True,
+        warnings=_format_cleanup_warnings(warnings),
+    )
 
 
 ############################

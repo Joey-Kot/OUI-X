@@ -35,7 +35,7 @@ from langchain_text_splitters import (
 from langchain_core.documents import Document
 
 from open_webui.models.files import FileModel, FileUpdateForm, Files
-from open_webui.models.knowledge import Knowledges
+from open_webui.models.knowledge import KnowledgeForm, Knowledges
 from open_webui.storage.provider import Storage
 
 
@@ -96,6 +96,7 @@ from open_webui.config import (
     ENV,
     VOYAGE_TOKENIZER_MODEL as DEFAULT_VOYAGE_TOKENIZER_MODEL,
     UPLOAD_DIR,
+    KNOWLEDGE_UPLOAD_DIR,
     DEFAULT_LOCALE,
     RAG_EMBEDDING_CONTENT_PREFIX,
     RAG_EMBEDDING_QUERY_PREFIX,
@@ -511,6 +512,7 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         # Content extraction settings
         "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
         "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
+        "CONVERSATION_FILE_UPLOAD_EMBEDDING": request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING,
         "DATALAB_MARKER_API_KEY": request.app.state.config.DATALAB_MARKER_API_KEY,
         "DATALAB_MARKER_API_BASE_URL": request.app.state.config.DATALAB_MARKER_API_BASE_URL,
         "DATALAB_MARKER_ADDITIONAL_CONFIG": request.app.state.config.DATALAB_MARKER_ADDITIONAL_CONFIG,
@@ -697,6 +699,7 @@ class ConfigForm(BaseModel):
     # Content extraction settings
     CONTENT_EXTRACTION_ENGINE: Optional[str] = None
     PDF_EXTRACT_IMAGES: Optional[bool] = None
+    CONVERSATION_FILE_UPLOAD_EMBEDDING: Optional[bool] = None
 
     DATALAB_MARKER_API_KEY: Optional[str] = None
     DATALAB_MARKER_API_BASE_URL: Optional[str] = None
@@ -830,6 +833,11 @@ async def update_rag_config(
         form_data.PDF_EXTRACT_IMAGES
         if form_data.PDF_EXTRACT_IMAGES is not None
         else request.app.state.config.PDF_EXTRACT_IMAGES
+    )
+    request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING = (
+        form_data.CONVERSATION_FILE_UPLOAD_EMBEDDING
+        if form_data.CONVERSATION_FILE_UPLOAD_EMBEDDING is not None
+        else request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING
     )
     request.app.state.config.DATALAB_MARKER_API_KEY = (
         form_data.DATALAB_MARKER_API_KEY
@@ -1296,6 +1304,7 @@ async def update_rag_config(
         # Content extraction settings
         "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
         "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
+        "CONVERSATION_FILE_UPLOAD_EMBEDDING": request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING,
         "DATALAB_MARKER_API_KEY": request.app.state.config.DATALAB_MARKER_API_KEY,
         "DATALAB_MARKER_API_BASE_URL": request.app.state.config.DATALAB_MARKER_API_BASE_URL,
         "DATALAB_MARKER_ADDITIONAL_CONFIG": request.app.state.config.DATALAB_MARKER_ADDITIONAL_CONFIG,
@@ -1681,6 +1690,47 @@ def save_docs_to_vector_db(
         raise e
 
 
+CONVERSATION_UPLOAD_KNOWLEDGE_SYSTEM_TYPE = "conversation_upload"
+
+
+def is_conversation_upload_processing(form_data: "ProcessFileForm") -> bool:
+    # The chat upload pipeline calls /files/ -> /retrieval/process/file without
+    # explicit content or target collection.
+    return form_data.content is None and form_data.collection_name is None
+
+
+def get_or_create_user_conversation_upload_knowledge(request: Request, user):
+    knowledges = Knowledges.get_knowledge_bases_by_user_id(user.id, permission="write")
+    for knowledge in knowledges:
+        meta = knowledge.meta or {}
+        if (
+            meta.get("system_managed") is True
+            and meta.get("system_type") == CONVERSATION_UPLOAD_KNOWLEDGE_SYSTEM_TYPE
+            and meta.get("owner_user_id") == user.id
+        ):
+            return knowledge
+
+    owner_name = (getattr(user, "name", "") or "").strip() or user.id
+    collection_name = f"{owner_name} Conversation Upload File"
+    knowledge = Knowledges.insert_new_knowledge(
+        user.id,
+        KnowledgeForm(
+            name=collection_name,
+            description=collection_name,
+            access_control={},
+            meta={
+                "system_managed": True,
+                "system_type": CONVERSATION_UPLOAD_KNOWLEDGE_SYSTEM_TYPE,
+                "owner_user_id": user.id,
+            },
+        ),
+    )
+    if knowledge is None:
+        raise ValueError("Failed to create conversation upload knowledge base")
+
+    return knowledge
+
+
 class ProcessFileForm(BaseModel):
     file_id: str
     content: Optional[str] = None
@@ -1704,13 +1754,28 @@ def process_file(
 
     if file:
         try:
+            is_conversation_upload = is_conversation_upload_processing(form_data)
+            conversation_upload_knowledge = None
 
             collection_name = form_data.collection_name
             logical_collection_name = form_data.knowledge_id or form_data.collection_name
 
             if collection_name is None:
-                collection_name = f"file-{file.id}"
-                logical_collection_name = None
+                if (
+                    is_conversation_upload
+                    and request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING
+                ):
+                    conversation_upload_knowledge = (
+                        get_or_create_user_conversation_upload_knowledge(request, user)
+                    )
+                    logical_collection_name = conversation_upload_knowledge.id
+                    collection_name = get_active_vector_collection_name(
+                        conversation_upload_knowledge.id,
+                        conversation_upload_knowledge.meta,
+                    )
+                else:
+                    collection_name = f"file-{file.id}"
+                    logical_collection_name = None
             else:
                 collection_name = get_physical_collection_name(collection_name)
 
@@ -1855,6 +1920,18 @@ def process_file(
             hash = calculate_sha256_string(text_content)
             Files.update_file_hash_by_id(file.id, hash)
 
+            if (
+                is_conversation_upload
+                and not request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING
+            ):
+                Files.update_file_data_by_id(file.id, {"status": "completed"})
+                return {
+                    "status": True,
+                    "collection_name": None,
+                    "filename": file.filename,
+                    "content": text_content,
+                }
+
             if request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL:
                 Files.update_file_data_by_id(file.id, {"status": "completed"})
                 return {
@@ -1865,28 +1942,53 @@ def process_file(
                 }
             else:
                 try:
+                    if conversation_upload_knowledge:
+                        # Reprocessing the same file should overwrite file-scoped vectors.
+                        VECTOR_DB_CLIENT.delete(
+                            collection_name=collection_name,
+                            filter={"file_id": file.id},
+                        )
+                        invalidate_bm25_collections([collection_name])
+
+                    vector_metadata = {
+                        "file_id": file.id,
+                        "name": file.filename,
+                    }
+                    if conversation_upload_knowledge:
+                        vector_metadata["source_hash"] = hash
+                    else:
+                        vector_metadata["hash"] = hash
+
                     result = save_docs_to_vector_db(
                         request,
                         docs=docs,
                         collection_name=collection_name,
-                        metadata={
-                            "file_id": file.id,
-                            "name": file.filename,
-                            "hash": hash,
-                        },
-                        add=(True if form_data.collection_name else False),
+                        metadata=vector_metadata,
+                        add=(True if (form_data.collection_name or conversation_upload_knowledge) else False),
                         user=user,
                         effective_config=effective_config,
                     )
                     log.info(f"added {len(docs)} items to collection {collection_name}")
 
                     if result:
-                        Files.update_file_metadata_by_id(
-                            file.id,
-                            {
-                                "collection_name": collection_name,
-                            },
-                        )
+                        file_meta_update = {
+                            "collection_name": collection_name,
+                        }
+
+                        if conversation_upload_knowledge:
+                            Knowledges.add_file_to_knowledge_by_id(
+                                knowledge_id=conversation_upload_knowledge.id,
+                                file_id=file.id,
+                                user_id=user.id,
+                            )
+                            file_meta_update = {
+                                **file_meta_update,
+                                "collection_name": conversation_upload_knowledge.id,
+                                "active_collection_name": collection_name,
+                                "conversation_upload_knowledge_id": conversation_upload_knowledge.id,
+                            }
+
+                        Files.update_file_metadata_by_id(file.id, file_meta_update)
 
                         Files.update_file_data_by_id(
                             file.id,
@@ -2722,6 +2824,27 @@ def reset_upload_dir(user=Depends(get_admin_user)) -> bool:
                         os.unlink(file_path)  # Remove the file or link
                     elif os.path.isdir(file_path):
                         shutil.rmtree(file_path)  # Remove the directory
+                except Exception as e:
+                    log.exception(f"Failed to delete {file_path}. Reason: {e}")
+        else:
+            log.warning(f"The directory {folder} does not exist")
+    except Exception as e:
+        log.exception(f"Failed to process the directory {folder}. Reason: {e}")
+    return True
+
+
+@router.post("/reset/knowledge-uploads")
+def reset_knowledge_upload_dir(user=Depends(get_admin_user)) -> bool:
+    folder = f"{KNOWLEDGE_UPLOAD_DIR}"
+    try:
+        if os.path.exists(folder):
+            for filename in os.listdir(folder):
+                file_path = os.path.join(folder, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
                 except Exception as e:
                     log.exception(f"Failed to delete {file_path}. Reason: {e}")
         else:

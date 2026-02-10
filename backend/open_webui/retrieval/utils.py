@@ -832,6 +832,89 @@ async def query_collection_with_hybrid_search(
     )
 
 
+async def query_doc_with_file_scope(
+    collection_name: str,
+    file_id: str,
+    query: str,
+    embedding_function,
+    k: int,
+    reranking_function,
+    k_reranker: int,
+    r: float,
+    enable_reranking: bool,
+) -> Optional[dict]:
+    try:
+        scoped_result = VECTOR_DB_CLIENT.query(
+            collection_name=collection_name,
+            filter={"file_id": file_id},
+        )
+        if not has_collection_documents(scoped_result):
+            return None
+
+        scoped_docs = [
+            Document(
+                page_content=document,
+                metadata=(
+                    scoped_result.metadatas[0][idx]
+                    if scoped_result.metadatas and scoped_result.metadatas[0]
+                    else {}
+                ),
+            )
+            for idx, document in enumerate(scoped_result.documents[0])
+        ]
+        if len(scoped_docs) == 0:
+            return None
+
+        base_retriever = BM25Retriever.from_documents(scoped_docs)
+        base_retriever.k = max(k, k_reranker)
+
+        if enable_reranking:
+            compressor = RerankCompressor(
+                embedding_function=embedding_function,
+                top_n=k_reranker,
+                reranking_function=reranking_function,
+                r_score=r,
+            )
+            compression_retriever = ContextualCompressionRetriever(
+                base_compressor=compressor,
+                base_retriever=base_retriever,
+            )
+            result_docs = await compression_retriever.ainvoke(query)
+            if k < k_reranker:
+                result_docs = sorted(
+                    result_docs,
+                    key=lambda x: x.metadata.get("score", 0.0),
+                    reverse=True,
+                )[:k]
+        else:
+            result_docs = await base_retriever.ainvoke(query)
+            result_docs = result_docs[:k]
+
+        ranked = [
+            (
+                (
+                    float(doc.metadata.get("score"))
+                    if isinstance(doc.metadata.get("score"), (int, float))
+                    else float(len(result_docs) - idx)
+                ),
+                doc.page_content,
+                doc.metadata,
+            )
+            for idx, doc in enumerate(result_docs)
+        ]
+
+        return {
+            "distances": [[item[0] for item in ranked]],
+            "documents": [[item[1] for item in ranked]],
+            "metadatas": [[item[2] for item in ranked]],
+        }
+    except Exception as e:
+        log.exception(
+            f"Error querying file-scoped docs from {collection_name} with file_id={file_id}: {e}"
+        )
+        return None
+
+
 def generate_openai_batch_embeddings(
     model: str,
     texts: list[str],
@@ -1353,11 +1436,79 @@ async def get_sources_from_items(
                             ],
                         }
             else:
-                # Fallback to collection names
-                if item.get("legacy"):
-                    collection_names.append(f"{item['id']}")
+                file_meta = item.get("file", {}).get("meta", {})
+                item_id = item.get("id")
+                file_object = Files.get_file_by_id(item_id) if item_id else None
+                file_db_meta = (file_object.meta or {}) if file_object else {}
+
+                conversation_upload_knowledge_id = (
+                    item.get("conversation_upload_knowledge_id")
+                    or file_meta.get("conversation_upload_knowledge_id")
+                    or file_db_meta.get("conversation_upload_knowledge_id")
+                    or item.get("collection_name")
+                )
+                active_collection_name = (
+                    item.get("active_collection_name")
+                    or file_meta.get("active_collection_name")
+                    or file_db_meta.get("active_collection_name")
+                )
+
+                if (conversation_upload_knowledge_id or active_collection_name) and item_id:
+                    runtime = _build_collection_runtime_functions(
+                        request,
+                        conversation_upload_knowledge_id or active_collection_name,
+                    )
+                    effective_config = runtime["effective_config"]
+                    collection_name = (
+                        active_collection_name or runtime["physical_collection_name"]
+                    )
+                    collection_embedding_function = runtime["embedding_function"]
+                    collection_reranking_function = runtime.get("reranking_function")
+
+                    scoped_results = []
+                    for query in queries:
+                        scoped_result = await query_doc_with_file_scope(
+                            collection_name=collection_name,
+                            file_id=item_id,
+                            query=query,
+                            embedding_function=lambda q, prefix, ef=collection_embedding_function: ef(
+                                q,
+                                prefix=prefix,
+                                user=user,
+                            ),
+                            k=effective_config["TOP_K"],
+                            reranking_function=(
+                                (
+                                    lambda q, documents, rf=collection_reranking_function: rf(
+                                        q,
+                                        documents,
+                                        user=user,
+                                    )
+                                )
+                                if collection_reranking_function and enable_reranking
+                                else None
+                            ),
+                            k_reranker=effective_config["TOP_K_RERANKER"],
+                            r=effective_config["RELEVANCE_THRESHOLD"],
+                            enable_reranking=enable_reranking,
+                        )
+                        if scoped_result is not None:
+                            scoped_results.append(scoped_result)
+
+                    if scoped_results:
+                        query_result = merge_and_sort_query_results(
+                            scoped_results,
+                            k=effective_config["TOP_K"],
+                        )
+                elif not request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING:
+                    # When disabled, chat uploads only participate via full-context mode.
+                    continue
                 else:
-                    collection_names.append(f"file-{item['id']}")
+                    # Legacy fallback to per-file collection names.
+                    if item.get("legacy"):
+                        collection_names.append(f"{item['id']}")
+                    else:
+                        collection_names.append(f"file-{item['id']}")
 
         elif item.get("type") == "collection":
             # Manual Full Mode Toggle for Collection

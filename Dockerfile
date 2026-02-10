@@ -232,6 +232,7 @@ RUN uv pip install --system \
     pytest-docker~=3.2.5 \
     ldap3==2.9.1 \
     firecrawl-py==4.12.0 \
+    networkx==3.6.1 \
     opentelemetry-api==1.39.1 \
     opentelemetry-sdk==1.39.1 \
     opentelemetry-exporter-otlp==1.39.1 \
