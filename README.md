@@ -1,197 +1,204 @@
-# Open WebUI 👋
+# OUI-X
 
-![GitHub stars](https://img.shields.io/github/stars/open-webui/open-webui?style=social)
-![GitHub forks](https://img.shields.io/github/forks/open-webui/open-webui?style=social)
-![GitHub watchers](https://img.shields.io/github/watchers/open-webui/open-webui?style=social)
-![GitHub repo size](https://img.shields.io/github/repo-size/open-webui/open-webui)
-![GitHub language count](https://img.shields.io/github/languages/count/open-webui/open-webui)
-![GitHub top language](https://img.shields.io/github/languages/top/open-webui/open-webui)
-![GitHub last commit](https://img.shields.io/github/last-commit/open-webui/open-webui?color=red)
-[![Discord](https://img.shields.io/badge/Discord-Open_WebUI-blue?logo=discord&logoColor=white)](https://discord.gg/5rJgQTnV4s)
-[![](https://img.shields.io/static/v1?label=Sponsor&message=%E2%9D%A4&logo=GitHub&color=%23fe8e86)](https://github.com/sponsors/tjbck)
+OUI-X 是基于 **Open WebUI** 的二次开发分支，目标是：
 
-![Open WebUI Banner](./banner.png)
-
-**Open WebUI is an [extensible](https://docs.openwebui.com/features/plugin/), feature-rich, and user-friendly self-hosted AI platform designed to operate entirely offline.** It supports **OpenAI-compatible APIs**, with a **built-in inference engine** for RAG, making it a **powerful AI deployment solution**.
-
-Passionate about open-source AI? [Join our team →](https://careers.openwebui.com/)
-
-![Open WebUI Demo](./demo.png)
-
-> [!TIP]  
-> **Looking for an [Enterprise Plan](https://docs.openwebui.com/enterprise)?** – **[Speak with Our Sales Team Today!](https://docs.openwebui.com/enterprise)**
->
-> Get **enhanced capabilities**, including **custom theming and branding**, **Service Level Agreement (SLA) support**, **Long-Term Support (LTS) versions**, and **more!**
-
-For more information, be sure to check out our [Open WebUI Documentation](https://docs.openwebui.com/).
-
-## Key Features of Open WebUI ⭐
-
-- 🚀 **Effortless Setup**: Install seamlessly using Docker or Kubernetes (kubectl, kustomize or helm) for a hassle-free experience.
-
-- 🤝 **OpenAI API Integration**: Effortlessly integrate OpenAI-compatible APIs for versatile conversations. Customize the OpenAI API URL to link with **LMStudio, GroqCloud, Mistral, OpenRouter, and more**.
-
-- 🛡️ **Granular Permissions and User Groups**: By allowing administrators to create detailed user roles and permissions, we ensure a secure user environment. This granularity not only enhances security but also allows for customized user experiences, fostering a sense of ownership and responsibility amongst users.
-
-- 📱 **Responsive Design**: Enjoy a seamless experience across Desktop PC, Laptop, and Mobile devices.
-
-- 📱 **Progressive Web App (PWA) for Mobile**: Enjoy a native app-like experience on your mobile device with our PWA, providing offline access on localhost and a seamless user interface.
-
-- ✒️🔢 **Full Markdown and LaTeX Support**: Elevate your LLM experience with comprehensive Markdown and LaTeX capabilities for enriched interaction.
-
-- 🎤📹 **Hands-Free Voice/Video Call**: Experience seamless communication with integrated hands-free voice and video call features using multiple Speech-to-Text providers (OpenAI, Azure, Web API) and Text-to-Speech engines (Azure, OpenAI, WebAPI), allowing for dynamic and interactive chat environments.
-
-- 🐍 **Native Python Function Calling Tool**: Enhance your LLMs with built-in code editor support in the tools workspace. Bring Your Own Function (BYOF) by simply adding your pure Python functions, enabling seamless integration with LLMs.
-
-- 💾 **Persistent Artifact Storage**: Built-in key-value storage API for artifacts, enabling features like journals, trackers, leaderboards, and collaborative tools with both personal and shared data scopes across sessions.
-
-- 📚 **Local RAG Integration**: Dive into the future of chat interactions with groundbreaking Retrieval Augmented Generation (RAG) support using your choice of 9 vector databases and multiple content extraction engines (Tika, Docling, Document Intelligence, Mistral OCR, External loaders). Load documents directly into chat or add files to your document library, effortlessly accessing them using the `#` command before a query.
-
-- 🔍 **Web Search for RAG**: Perform web searches using 15+ providers including `SearXNG`, `Google PSE`, `Brave Search`, `Kagi`, `Mojeek`, `Tavily`, `Perplexity`, `serpstack`, `serper`, `Serply`, `DuckDuckGo`, `SearchApi`, `SerpApi`, `Bing`, `Jina`, `Exa`, `Sougou`, and `Azure AI Search`, injecting results directly into your chat experience.
-
-- 🌐 **Web Browsing Capability**: Seamlessly integrate websites into your chat experience using the `#` command followed by a URL. This feature allows you to incorporate web content directly into your conversations, enhancing the richness and depth of your interactions.
-
-- 🎨 **Image Generation & Editing Integration**: Create and edit images using multiple engines including OpenAI's DALL-E, Gemini, ComfyUI (local), and AUTOMATIC1111 (local), with support for both generation and prompt-based editing workflows.
-
-- ⚙️ **Many Models Conversations**: Effortlessly engage with various models simultaneously, harnessing their unique strengths for optimal responses. Enhance your experience by leveraging a diverse set of models in parallel.
-
-- 🔐 **Role-Based Access Control (RBAC)**: Ensure secure access with restricted permissions and administrator-only model management.
-
-- 🗄️ **Flexible Database & Storage Options**: Choose from SQLite (with optional encryption), PostgreSQL, or configure cloud storage backends (S3, Google Cloud Storage, Azure Blob Storage) for scalable deployments.
-
-- 🔍 **Advanced Vector Database Support**: Select from 9 vector database options including ChromaDB, PGVector, Qdrant, Milvus, Elasticsearch, OpenSearch, Pinecone, S3Vector, and Oracle 23ai for optimal RAG performance.
-
-- 🔐 **Enterprise Authentication**: Full support for LDAP/Active Directory integration, SCIM 2.0 automated provisioning, and SSO via trusted headers alongside OAuth providers. Enterprise-grade user and group provisioning through SCIM 2.0 protocol, enabling seamless integration with identity providers like Okta, Azure AD, and Google Workspace for automated user lifecycle management.
-
-- ☁️ **Cloud-Native Integration**: Native support for Google Drive and OneDrive/SharePoint file picking, enabling seamless document import from enterprise cloud storage.
-
-- 📊 **Production Observability**: Built-in OpenTelemetry support for traces, metrics, and logs, enabling comprehensive monitoring with your existing observability stack.
-
-- ⚖️ **Horizontal Scalability**: Redis-backed session management and WebSocket support for multi-worker and multi-node deployments behind load balancers.
-
-- 🌐🌍 **Multilingual Support**: Experience Open WebUI in your preferred language with our internationalization (i18n) support. Join us in expanding our supported languages! We're actively seeking contributors!
-
-- 🧩 **Pipelines, Open WebUI Plugin Support**: Seamlessly integrate custom logic and Python libraries into Open WebUI using [Pipelines Plugin Framework](https://github.com/open-webui/pipelines). Launch your Pipelines instance, set the OpenAI URL to the Pipelines URL, and explore endless possibilities. [Examples](https://github.com/open-webui/pipelines/tree/main/examples) include **Function Calling**, User **Rate Limiting** to control access, **Usage Monitoring** with tools like Langfuse, **Live Translation with LibreTranslate** for multilingual support, **Toxic Message Filtering** and much more.
-
-- 🌟 **Continuous Updates**: We are committed to improving Open WebUI with regular updates, fixes, and new features.
-
-Want to learn more about Open WebUI's features? Check out our [Open WebUI documentation](https://docs.openwebui.com/features) for a comprehensive overview!
+* **更清晰、更可控的 RAG / Knowledge Base 能力**
+* **原生（native）工具调用流水线**（含 MCP）
+* **OpenAI Responses API 适配**
+* **更轻量、更稳定的默认构建与运行体验**（镜像从 4.7GB -> 2.6GB）
 
 ---
 
-We are incredibly grateful for the generous support of our sponsors. Their contributions help us to maintain and improve our project, ensuring we can continue to deliver quality work to our community. Thank you!
+## 项目定位
 
-## How to Install 🚀
-
-### Installation via Python pip 🐍
-
-Open WebUI can be installed using pip, the Python package installer. Before proceeding, ensure you're using **Python 3.11** to avoid compatibility issues.
-
-1. **Install Open WebUI**:
-   Open your terminal and run the following command to install Open WebUI:
-
-   ```bash
-   pip install open-webui
-   ```
-
-2. **Running Open WebUI**:
-   After installation, you can start Open WebUI by executing:
-
-   ```bash
-   open-webui serve
-   ```
-
-This will start the Open WebUI server, which you can access at [http://localhost:8080](http://localhost:8080)
-
-### Quick Start with Docker 🐳
-
-> [!NOTE]  
-> Please note that for certain Docker environments, additional configurations might be needed. If you encounter any connection issues, our detailed guide on [Open WebUI Documentation](https://docs.openwebui.com/) is ready to assist you.
-
-> [!WARNING]
-> When using Docker to install Open WebUI, make sure to include the `-v open-webui:/app/backend/data` in your Docker command. This step is crucial as it ensures your database is properly mounted and prevents any loss of data.
-
-> [!TIP]  
-> If you wish to utilize Open WebUI with CUDA acceleration, we recommend utilizing our official images tagged with `:cuda`. To enable CUDA, you must install the [Nvidia CUDA container toolkit](https://docs.nvidia.com/dgx/nvidia-container-runtime-upgrade/) on your Linux/WSL system.
-
-### Installation with Default Configuration
-
-- **Default install**, use this command:
-
-  ```bash
-  docker run -d -p 3000:8080 --add-host=host.docker.internal:host-gateway -v open-webui:/app/backend/data --name open-webui --restart always ghcr.io/open-webui/open-webui:main
-  ```
-
-- **To run Open WebUI with Nvidia GPU support**, use this command:
-
-  ```bash
-  docker run -d -p 3000:8080 --gpus all --add-host=host.docker.internal:host-gateway -v open-webui:/app/backend/data --name open-webui --restart always ghcr.io/open-webui/open-webui:cuda
-  ```
-
-### Installation for OpenAI API Usage Only
-
-- **If you're only using OpenAI API**, use this command:
-
-  ```bash
-  docker run -d -p 3000:8080 -e OPENAI_API_KEY=your_secret_key -v open-webui:/app/backend/data --name open-webui --restart always ghcr.io/open-webui/open-webui:main
-  ```
-
-### Other Installation Methods
-
-We offer various installation alternatives, including non-Docker native installation methods, Docker Compose, Kustomize, and Helm. Visit our [Open WebUI Documentation](https://docs.openwebui.com/getting-started/) or join our [Discord community](https://discord.gg/5rJgQTnV4s) for comprehensive guidance.
-
-Look at the [Local Development Guide](https://docs.openwebui.com/getting-started/advanced-topics/development) for instructions on setting up a local development environment.
-
-### Troubleshooting
-
-Encountering connection issues? Our [Open WebUI Documentation](https://docs.openwebui.com/troubleshooting/) has got you covered. For further assistance and to join our vibrant community, visit the [Open WebUI Discord](https://discord.gg/5rJgQTnV4s).
-
-### Keeping Your Docker Installation Up-to-Date
-
-Check our Updating Guide available in our [Open WebUI Documentation](https://docs.openwebui.com/getting-started/updating).
-
-### Using the Dev Branch 🌙
-
-> [!WARNING]
-> The `:dev` branch contains the latest unstable features and changes. Use it at your own risk as it may have bugs or incomplete features.
-
-If you want to try out the latest bleeding-edge features and are okay with occasional instability, you can use the `:dev` tag like this:
-
-```bash
-docker run -d -p 3000:8080 -v open-webui:/app/backend/data --name open-webui --add-host=host.docker.internal:host-gateway --restart always ghcr.io/open-webui/open-webui:dev
-```
-
-### Offline Mode
-
-If you are running Open WebUI in an offline environment, you can set the `HF_HUB_OFFLINE` environment variable to `1` to prevent attempts to download models from the internet.
-
-```bash
-export HF_HUB_OFFLINE=1
-```
-
-## What's Next? 🌟
-
-Discover upcoming features on our roadmap in the [Open WebUI Documentation](https://docs.openwebui.com/roadmap/).
-
-## License 📜
-
-This project contains code under multiple licenses. The current codebase includes components licensed under the Open WebUI License with an additional requirement to preserve the "Open WebUI" branding, as well as prior contributions under their respective original licenses. For a detailed record of license changes and the applicable terms for each section of the code, please refer to [LICENSE_HISTORY](./LICENSE_HISTORY). For complete and updated licensing details, please see the [LICENSE](./LICENSE) and [LICENSE_HISTORY](./LICENSE_HISTORY) files.
-
-## Support 💬
-
-If you have any questions, suggestions, or need assistance, please open an issue or join our
-[Open WebUI Discord community](https://discord.gg/5rJgQTnV4s) to connect with us! 🤝
-
-## Star History
-
-<a href="https://star-history.com/#open-webui/open-webui&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=open-webui/open-webui&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=open-webui/open-webui&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=open-webui/open-webui&type=Date" />
-  </picture>
-</a>
+* **更轻、更干净的默认发行版**：移除大量默认不使用或维护成本高的引擎/入口（Ollama、部分语音引擎、OpenAPI tools、评测/评分/Arena 等）。
+* **工具调用优先**：把工具体系升级到以 **MCP（Model Context Protocol）** 为核心，支持系统级与用户级 MCP server 管理、OAuth 2.1、SSE/Streamable HTTP。
+* **RAG 强化**：从“一个全局配置套所有集合”升级到“**每个 Knowledge Collection 可独立覆写配置**”，并强化 clone、BM25/Hybrid/Rerank 的配置结构与稳定性。
+* **面向 Responses API**：新增 OpenAI Responses API 的适配层，支持对话、图片输入、工具调用与 reasoning/thinking 的展示。
 
 ---
 
-Created by [Timothy Jaeryang Baek](https://github.com/tjbck) - Let's make Open WebUI even more amazing together! 💪
+## 新增了什么？
+
+### 1) 原生 MCP（Native MCP Calls）
+
+OUI-X 增加了“原生 MCP 工具调用”的完整链路：
+
+* 支持 **Streamable HTTP** 与 **SSE** 两种 MCP 传输方式
+* 支持 MCP server 的 **start/stop（按工具列表启停）**
+* 支持 **OAuth 2.1**（动态注册 + 回调 + token 管理）
+* MCP tool schema/返回内容做了“更 OpenAI 友好”的标准化处理（schema 归一化、content block 序列化兜底）
+* 支持两种管理模式：
+
+  * **系统级 MCP 连接**（管理员配置）
+  * **用户级 MCP 连接**（用户可在 UI 中添加、verify、完成 OAuth 授权）
+
+---
+
+### 2) OpenAI Responses API 适配
+
+OUI-X 新增 Responses API 的适配层（在后端与前端均有接入）：
+
+* chat messages → responses input 的转换
+* responses streaming event → chat SSE chunks 的映射
+* tool calls / tool followups 在 Responses 结构里的表达与回放
+* reasoning/thinking 的提取与展示（同时避免把不合适的 summary 混入 UI）
+* UI 展示层对 content blocks 做了重排：**thinking 在正文之前展示**（仅展示顺序调整）
+
+---
+
+### 3) Native-Only 工具调用流水线重构
+
+围绕“只走 native function calling”的 pipeline 做了较大重构与测试补齐：
+
+* 新增并发控制：
+  * `TOOL_CALL_MAX_CONCURRENCY`（默认值与健壮兜底）
+* 新增全局/用户级工具调用配置注入（metadata 中可区分 global/user）
+* 关键工具编排逻辑补齐单测：
+  * function schema 规范化
+  * 参数解析 fallback
+  * 并发峰值验证
+  * follow-up messages 结构验证
+
+---
+
+### 4) Tool Calling Timeout（工具调用超时）
+
+新增 **工具调用超时**配置，并在后端 middleware 端到端注入：
+
+* `TOOL_CALL_TIMEOUT_SECONDS` 作为全局持久化配置
+* 用户 UI settings 可覆写（并做 clamp/兜底）
+* tool calling 相关 metadata 同时包含：
+  * `max_tool_calls_per_round`
+  * `tool_call_timeout_seconds`
+
+---
+
+### 5) RAG / Knowledge Base 强化
+
+#### 5.1 Retrieval Query Generation：参考上下文轮数（turns）
+
+新增配置项：生成检索 query 时参考多少轮历史对话：
+
+* `RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS`
+* 明确 **排除最新一条 user query**，只取前面的上下文
+* 附带单测覆盖（turns=0、排除最新 user 等）
+
+#### 5.2 Chunking / Splitter：引入 Voyage tokenizer + warmup
+
+* 新增 `VOYAGE_TOKENIZER_MODEL` 与更新逻辑
+* `token_voyage` splitter 场景下：
+  * 没配模型会回填默认值
+  * splitter 变化时异步 warmup tokenizer，降低首次请求抖动
+* 增强 tiktoken encoder / voyage tokenizer 的缓存与预热能力
+
+#### 5.3 Hybrid/BM25/Reranking 配置结构重构
+
+* 将配置从“混合概念”拆得更清晰：
+  * BM25 权重独立（例如从 `RAG_HYBRID_BM25_WEIGHT` 到 `RAG_BM25_WEIGHT`）
+  * BM25 搜索、enriched texts、reranking 分别有开关
+* 新增 **Voyage reranking engine**
+  * engine 校验支持 `external` / `voyage`
+  * external reranker 的 payload/response 结构更兼容
+
+#### 5.4 对话框一键禁用 RAG（端到端阻断）
+
+新增一个聊天输入区按钮：**Disable RAG**
+* 前端：作为 feature 写入请求
+* 后端：真正端到端 short-circuit：
+  * 不走 model knowledge
+  * 不触发 web_search
+  * 不处理文件 sources
+* 目标：让用户能稳定地把“工具/模型对话”与“RAG 对话”分离开
+
+#### 5.5 Collection 级别的 RAG 独立配置覆写
+
+OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta 里保存配置覆写**，从而让不同 collection 使用不同策略（embedding/rerank/阈值/top_k 等）。
+
+实现层面：
+
+* 后端检索改为“逐 collection 按 effective config 查询，再 merge 排序”
+* UI 增加 collection config modal（用于编辑/保存覆写项）
+* config 访问权限对齐：**需要 write 权限**（只读用户不再尝试加载 config，避免 toast 噪音）
+
+#### 5.6 Knowledge Collection Clone（更稳的复制策略）
+
+新增 Knowledge clone API，并持续强化稳定性：
+
+* `POST /knowledge/{id}/clone`
+* 优先 direct clone（向量库复制），失败回退 re-embed
+* 返回 `warnings`：提示 fallback 原因与部分失败细节
+* 对 Chroma：
+  * 复制策略升级为更可恢复的复制方式（按 ID copy、指数退避重试）
+  * 部分失败文件 fallback re-embed
+  * 修复 `has_collection` 兼容不同 Chroma client 返回形态
+
+---
+
+## 移除了什么？
+
+### 1) 移除 Ollama 相关组件与“内置绑定”
+
+* 去掉 Ollama 相关路由、前端管理组件与脚本
+* README 不再宣传带 Ollama 的镜像/一键运行方式
+* Docker build 不再在构建阶段安装 Ollama
+
+### 2) 移除评测 / 评分 / Arena
+
+* 删除 Evaluations 相关前后端页面与 API
+* 删除 message rating 开关与 UI
+* 清理相关权限点与配置项
+
+### 3) 移除 OpenAPI tools（全面转向 MCP）
+
+* 移除 OpenAPI tool servers 的 configs API、verify 流程
+* 移除工具聚合里对 OpenAPI tool server 的注入
+* middleware 不再根据 function_calling 决定注入 OpenAPI 工具
+
+### 4) 语音能力收敛（移除部分 TTS / STT 引擎）
+
+* TTS：移除 ElevenLabs 与部分本地 transformers TTS 分支
+* STT：移除部分 provider/config（例如 Whisper/Deepgram/Mistral STT 等相关配置与依赖链）
+
+---
+
+## 重构与稳定性改进（值得一提）
+
+* Docker 构建与依赖体系多次“瘦身”：
+  * 默认不启用/不安装一批未使用的依赖（减少镜像体积与构建失败）
+* Streaming 资源回收修复：
+  * Responses API 流式转发场景加入后台 cleanup，避免长跑线程/连接泄漏
+* Chat UI quick actions（浮动按钮）修复：
+  * 请求体更标准化、stream 解析更稳、错误信息更可诊断
+  * 后端对 `parent_message` 做了类型兜底防崩
+
+---
+
+## 运行与开发（简述）
+
+### 本地开发
+
+* 前端：`src/`（Svelte）
+* 后端：`backend/open_webui/`
+
+你通常需要：
+
+1. 启动后端（带必要环境变量）
+2. 启动前端（指向后端 API）
+3. 需要工具：配置 MCP 连接（系统级或用户级）
+
+或者通过 Docker compose 进行构建测试
+
+### Docker
+
+OUI-X 的 Dockerfile 倾向于“更轻依赖、少副作用”。
+如需特定能力（例如某些 OCR / STT / embedding 依赖），建议自行修改。
+
+---
+
+## 适用场景建议
+
+* 想要把“工具生态”做成产品核心：优先使用 MCP + native pipeline
+* 需要不同知识库集合使用不同检索策略：启用 collection-level config override
+* 需要更现代的 OpenAI API 兼容：使用 Responses API 通路
+* 希望默认构建更稳定、更轻：使用当前 OUI-X 的默认依赖策略
