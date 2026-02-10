@@ -198,14 +198,21 @@ def _normalize_chroma_sequence(value) -> list:
         return []
 
 
-def _format_cleanup_warnings(warnings: list[dict]) -> Optional[dict]:
-    if not warnings:
-        return None
+def _format_cleanup_warnings(
+    warnings: list[dict],
+    skipped_file_deletions: Optional[list[dict]] = None,
+) -> Optional[dict]:
+    payload: dict = {}
 
-    return {
-        "message": "Some cleanup steps failed",
-        "errors": warnings,
-    }
+    if warnings:
+        payload["message"] = "Some cleanup steps failed"
+        payload["errors"] = warnings
+
+    if skipped_file_deletions:
+        payload["skipped_file_deletions_count"] = len(skipped_file_deletions)
+        payload["skipped_file_deletions_sample"] = skipped_file_deletions[:10]
+
+    return payload or None
 
 
 def _cleanup_warning(stage: str, target: str, error: Exception | str) -> dict:
@@ -229,6 +236,103 @@ def _collect_external_references(file_id: str, current_knowledge_id: str) -> dic
             for knowledge in other_knowledges[:10]
         ],
     }
+
+
+def _get_other_collection_references(file_id: str, current_knowledge_id: str) -> list:
+    linked_knowledges = Knowledges.get_knowledges_by_file_id(file_id)
+    return [knowledge for knowledge in linked_knowledges if knowledge.id != current_knowledge_id]
+
+
+def _has_other_collection_references(file_id: str, current_knowledge_id: str) -> bool:
+    return len(_get_other_collection_references(file_id, current_knowledge_id)) > 0
+
+
+def _build_skip_entry(file_id: str, references: list) -> dict:
+    return {
+        "file_id": file_id,
+        "other_collections_count": len(references),
+        "other_collections_sample": [
+            {"id": knowledge.id, "name": knowledge.name}
+            for knowledge in references[:10]
+        ],
+    }
+
+
+def _detach_file_from_collection(knowledge, file_id: str) -> list[dict]:
+    warnings: list[dict] = []
+
+    collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
+    file = Files.get_file_by_id(file_id)
+
+    if collection_name:
+        try:
+            VECTOR_DB_CLIENT.delete(
+                collection_name=collection_name,
+                filter={"file_id": file_id},
+            )
+        except Exception as e:
+            warnings.append(
+                _cleanup_warning("vector.detach_by_file_id", collection_name, e)
+            )
+
+        if file and file.hash:
+            try:
+                VECTOR_DB_CLIENT.delete(
+                    collection_name=collection_name,
+                    filter={"hash": file.hash},
+                )
+            except Exception as e:
+                warnings.append(
+                    _cleanup_warning("vector.detach_by_hash", collection_name, e)
+                )
+
+    try:
+        result = Knowledges.remove_file_from_knowledge_by_id(knowledge.id, file_id)
+        if not result:
+            warnings.append(_cleanup_warning("db.detach_file", file_id, "detach failed"))
+    except Exception as e:
+        warnings.append(_cleanup_warning("db.detach_file", file_id, e))
+
+    if collection_name:
+        try:
+            mark_bm25_collections_dirty([collection_name])
+            invalidate_bm25_collections([collection_name])
+        except Exception as e:
+            warnings.append(_cleanup_warning("bm25.invalidate", collection_name, e))
+
+    return warnings
+
+
+def _delete_file_entity(file_id: str) -> list[dict]:
+    warnings: list[dict] = []
+
+    file = Files.get_file_by_id(file_id)
+    if not file:
+        return warnings
+
+    file_collection_name = f"file-{file_id}"
+    try:
+        if VECTOR_DB_CLIENT.has_collection(collection_name=file_collection_name):
+            VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection_name)
+    except Exception as e:
+        warnings.append(
+            _cleanup_warning("vector.delete_file_collection", file_collection_name, e)
+        )
+
+    if file.path:
+        try:
+            Storage.delete_file(file.path)
+        except Exception as e:
+            warnings.append(_cleanup_warning("storage.delete_file", file.path, e))
+
+    try:
+        result = Files.delete_file_by_id(file_id)
+        if not result:
+            warnings.append(_cleanup_warning("db.delete_file", file_id, "delete failed"))
+    except Exception as e:
+        warnings.append(_cleanup_warning("db.delete_file", file_id, e))
+
+    return warnings
 
 
 def _hard_delete_file_everywhere(file_id: str) -> list[dict]:
@@ -1632,28 +1736,27 @@ def remove_file_from_knowledge_by_id(
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    external_references = _collect_external_references(form_data.file_id, id)
-    if not force and (
-        external_references["other_collections_count"] > 0
-        or external_references["other_chats_count"] > 0
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "FILE_HAS_EXTERNAL_REFERENCES",
-                "file_id": form_data.file_id,
-                "external_references": external_references,
-                "message": "File has external references. Force delete to remove it globally.",
-            },
-        )
+    warnings: list[dict] = []
+    skipped_file_deletions: list[dict] = []
 
-    warnings = _hard_delete_file_everywhere(form_data.file_id)
+    warnings.extend(_detach_file_from_collection(knowledge, form_data.file_id))
+
+    other_collection_references = _get_other_collection_references(form_data.file_id, id)
+    if other_collection_references:
+        skipped_file_deletions.append(
+            _build_skip_entry(form_data.file_id, other_collection_references)
+        )
+    else:
+        warnings.extend(_delete_file_entity(form_data.file_id))
 
     if knowledge:
         return KnowledgeFilesResponse(
             **knowledge.model_dump(),
             files=Knowledges.get_file_metadatas_by_id(knowledge.id),
-            warnings=_format_cleanup_warnings(warnings),
+            warnings=_format_cleanup_warnings(
+                warnings,
+                skipped_file_deletions=skipped_file_deletions,
+            ),
         )
     else:
         raise HTTPException(
@@ -1770,37 +1873,8 @@ async def delete_knowledge_by_id(
 
     files = Knowledges.get_files_by_id(id)
 
-    if not force:
-        conflict_entries = []
-        for file in files:
-            references = _collect_external_references(file.id, id)
-            if (
-                references["other_collections_count"] > 0
-                or references["other_chats_count"] > 0
-            ):
-                conflict_entries.append(
-                    {
-                        "file_id": file.id,
-                        "other_collections_count": references[
-                            "other_collections_count"
-                        ],
-                        "other_chats_count": references["other_chats_count"],
-                    }
-                )
-
-        if conflict_entries:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "COLLECTION_CONTAINS_EXTERNALLY_REFERENCED_FILES",
-                    "collection_id": id,
-                    "conflicted_files_count": len(conflict_entries),
-                    "conflicted_files_sample": conflict_entries[:10],
-                    "message": "Collection contains files referenced outside this collection. Force delete to remove all related data globally.",
-                },
-            )
-
     warnings: list[dict] = []
+    skipped_file_deletions: list[dict] = []
 
     seen_file_ids: set[str] = set()
     for file in files:
@@ -1808,7 +1882,14 @@ async def delete_knowledge_by_id(
             continue
 
         seen_file_ids.add(file.id)
-        warnings.extend(_hard_delete_file_everywhere(file.id))
+        other_collection_references = _get_other_collection_references(file.id, id)
+        if other_collection_references:
+            skipped_file_deletions.append(
+                _build_skip_entry(file.id, other_collection_references)
+            )
+            continue
+
+        warnings.extend(_delete_file_entity(file.id))
 
     # Get all models
     models = Models.get_all_models()
@@ -1865,7 +1946,10 @@ async def delete_knowledge_by_id(
 
     return DeleteKnowledgeResponse(
         status=True,
-        warnings=_format_cleanup_warnings(warnings),
+        warnings=_format_cleanup_warnings(
+            warnings,
+            skipped_file_deletions=skipped_file_deletions,
+        ),
     )
 
 
