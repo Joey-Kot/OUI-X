@@ -720,8 +720,24 @@ def chat_to_responses_payload(payload: dict, metadata: Optional[dict], api_confi
         # support custom_params.summary -> reasoning.summary mapping
         explicit_reasoning_summary = payload.get("summary")
 
-    if payload.get("reasoning_effort"):
-        reasoning["effort"] = payload.get("reasoning_effort")
+    if isinstance(reasoning.get("effort"), str):
+        normalized_effort = reasoning["effort"].strip().lower()
+        if normalized_effort:
+            reasoning["effort"] = normalized_effort
+        else:
+            reasoning.pop("effort", None)
+
+    top_level_reasoning_effort = payload.get("reasoning_effort")
+    if isinstance(top_level_reasoning_effort, str):
+        normalized_effort = top_level_reasoning_effort.strip().lower()
+        if normalized_effort:
+            reasoning["effort"] = normalized_effort
+
+    verbosity = payload.get("verbosity")
+    if isinstance(verbosity, str):
+        normalized_verbosity = verbosity.strip().lower()
+        if normalized_verbosity and normalized_verbosity != "none":
+            responses_payload["verbosity"] = normalized_verbosity
 
     if is_responses_provider(api_config):
         reasoning["summary"] = normalize_reasoning_summary(
@@ -1581,6 +1597,13 @@ async def generate_chat_completion(
     key = request.app.state.config.OPENAI_API_KEYS[idx]
 
     provider_type = get_provider_type(api_config)
+
+    if not is_responses_provider(api_config):
+        payload.pop("summary", None)
+        if isinstance(payload.get("reasoning"), dict):
+            payload["reasoning"].pop("summary", None)
+            if not payload["reasoning"]:
+                payload.pop("reasoning", None)
 
     # Check if model is a reasoning model that needs special handling
     if is_openai_reasoning_model(payload["model"]) and not is_responses_provider(api_config):

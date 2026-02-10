@@ -130,6 +130,19 @@ logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 
 
+REMOVED_PARAM_KEYS = {
+    "min_p",
+    "repeat_penalty",
+    "tfs_z",
+    "repeat_last_n",
+    "mirostat_tau",
+    "mirostat_eta",
+    "mirostat",
+    "use_mmap",
+    "use_mlock",
+}
+
+
 DEFAULT_REASONING_TAGS = [
     ("<think>", "</think>"),
     ("<thinking>", "</thinking>"),
@@ -1133,7 +1146,7 @@ def apply_params_to_form_data(form_data, model):
     }
 
     for key in list(params.keys()):
-        if key in open_webui_params:
+        if key in open_webui_params or key in REMOVED_PARAM_KEYS:
             del params[key]
 
     if custom_params:
@@ -1149,6 +1162,34 @@ def apply_params_to_form_data(form_data, model):
 
         # If custom_params are provided, merge them into params
         params = deep_update(params, custom_params)
+
+    for key in list(params.keys()):
+        if key in REMOVED_PARAM_KEYS:
+            del params[key]
+
+    reasoning_effort = params.get("reasoning_effort")
+    if isinstance(reasoning_effort, str):
+        normalized_reasoning_effort = reasoning_effort.strip().lower()
+        if not normalized_reasoning_effort:
+            params.pop("reasoning_effort", None)
+        else:
+            params["reasoning_effort"] = normalized_reasoning_effort
+
+    verbosity = params.get("verbosity")
+    if isinstance(verbosity, str):
+        normalized_verbosity = verbosity.strip().lower()
+        if not normalized_verbosity or normalized_verbosity == "none":
+            params.pop("verbosity", None)
+        else:
+            params["verbosity"] = normalized_verbosity
+
+    summary = params.get("summary")
+    if isinstance(summary, str):
+        normalized_summary = summary.strip().lower()
+        if not normalized_summary or normalized_summary == "none":
+            params.pop("summary", None)
+        else:
+            params["summary"] = normalized_summary
 
     if isinstance(params, dict):
         for key, value in params.items():

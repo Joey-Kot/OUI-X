@@ -399,6 +399,21 @@
 			return ['auto', 'concise', 'detailed'].includes(normalized) ? normalized : fallback;
 		};
 
+
+		const normalizeReasoningEffortParam = (value) => {
+			if (typeof value !== 'string') return undefined;
+			const normalized = value.trim().toLowerCase();
+			if (!normalized) return undefined;
+			return normalized;
+		};
+
+		const normalizeVerbosityParam = (value) => {
+			if (typeof value !== 'string') return undefined;
+			const normalized = value.trim().toLowerCase();
+			if (!normalized || normalized === 'none') return undefined;
+			return normalized;
+		};
+
 		const payload = {
 			model: formData.model,
 			input: toResponsesInput(formData.messages ?? []),
@@ -428,11 +443,18 @@
 		const params = formData.params ?? {};
 		const summaryCandidate =
 			formData?.reasoning?.summary ?? params?.summary ?? formData?.summary ?? 'auto';
-		const effortCandidate = formData?.reasoning?.effort ?? params?.reasoning_effort;
+		const effortCandidate = normalizeReasoningEffortParam(
+			formData?.reasoning?.effort ?? params?.reasoning_effort
+		);
+		const verbosityCandidate = normalizeVerbosityParam(formData?.verbosity ?? params?.verbosity);
 		payload.reasoning = {
 			summary: normalizeReasoningSummary(summaryCandidate, 'auto'),
 			...(effortCandidate ? { effort: effortCandidate } : {})
 		};
+
+		if (verbosityCandidate) {
+			payload.verbosity = verbosityCandidate;
+		}
 
 		for (const key of ['temperature', 'top_p', 'stop', 'store', 'truncation', 'text', 'user']) {
 			if (params[key] !== undefined) {

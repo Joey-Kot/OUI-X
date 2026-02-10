@@ -105,11 +105,16 @@ def test_chat_to_responses_payload_maps_params_tools_and_reasoning():
         "tool_choice": {"type": "function", "function": {"name": "get_time"}},
         "parallel_tool_calls": True,
         "max_tokens": 42,
-        "reasoning_effort": "medium",
+        "reasoning_effort": "Medium",
+        "verbosity": "LOW",
         "temperature": 0.3,
     }
 
-    adapted = chat_to_responses_payload(payload, metadata={"chat_id": "abc"}, api_config={"provider_type": "openai_responses"})
+    adapted = chat_to_responses_payload(
+        payload,
+        metadata={"chat_id": "abc"},
+        api_config={"provider_type": "openai_responses"},
+    )
 
     assert adapted["model"] == "gpt-5"
     assert adapted["stream"] is True
@@ -119,9 +124,59 @@ def test_chat_to_responses_payload_maps_params_tools_and_reasoning():
     assert adapted["parallel_tool_calls"] is True
     assert adapted["max_output_tokens"] == 42
     assert adapted["reasoning"] == {"effort": "medium", "summary": "auto"}
+    assert adapted["verbosity"] == "low"
+    assert "text" not in adapted or "verbosity" not in adapted.get("text", {})
     assert adapted["temperature"] == 0.3
     assert "metadata" not in adapted
 
+
+def test_chat_to_responses_payload_drops_removed_legacy_sampling_params():
+    payload = {
+        "model": "gpt-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "min_p": 0.1,
+        "repeat_penalty": 1.2,
+        "tfs_z": 1.0,
+        "repeat_last_n": 64,
+        "mirostat_tau": 5,
+        "mirostat_eta": 0.1,
+        "mirostat": 2,
+        "use_mmap": True,
+        "use_mlock": True,
+    }
+
+    adapted = chat_to_responses_payload(
+        payload, metadata=None, api_config={"provider_type": "openai_responses"}
+    )
+
+    for key in [
+        "min_p",
+        "repeat_penalty",
+        "tfs_z",
+        "repeat_last_n",
+        "mirostat_tau",
+        "mirostat_eta",
+        "mirostat",
+        "use_mmap",
+        "use_mlock",
+    ]:
+        assert key not in adapted
+
+
+def test_chat_to_responses_payload_keeps_reasoning_none_and_omits_empty_verbosity():
+    payload = {
+        "model": "gpt-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "reasoning_effort": "none",
+        "verbosity": "",
+    }
+
+    adapted = chat_to_responses_payload(
+        payload, metadata=None, api_config={"provider_type": "openai_responses"}
+    )
+
+    assert adapted["reasoning"] == {"effort": "none", "summary": "auto"}
+    assert "verbosity" not in adapted
 
 def test_chat_to_responses_payload_custom_summary_overrides_default():
     payload = {
