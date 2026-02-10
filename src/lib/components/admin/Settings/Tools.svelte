@@ -80,7 +80,12 @@
 	}}
 />
 
-<form class="flex flex-col h-full justify-between text-sm" on:submit|preventDefault>
+<form
+	class="flex flex-col h-full justify-between text-sm"
+	on:submit|preventDefault={async () => {
+		await updateToolCallingConfigHandler();
+	}}
+>
 	<div class="overflow-y-scroll scrollbar-hidden h-full">
 		{#if mcpServers !== null}
 			<div class="mb-3">
@@ -92,12 +97,15 @@
 					<div class="flex justify-between items-center mb-0.5">
 						<div class="font-medium">{$i18n.t('Manage MCP Tools')}</div>
 
+
 						<Tooltip content={$i18n.t('Add Connection')}>
 							<button class="px-1" on:click={() => { showMCPConnectionModal = true; }} type="button">
 								<Plus />
 							</button>
 						</Tooltip>
 					</div>
+
+					<hr class="border-gray-100/30 dark:border-gray-850/30 my-2" />
 
 					<div class="flex flex-col gap-1">
 						{#each mcpServers as server, idx}
@@ -121,7 +129,9 @@
 
 				<div class="mb-2.5 flex flex-col w-full justify-between">
 					<div class="font-medium mb-1">{$i18n.t('Tool Calling Config')}</div>
-					<div class="flex flex-col gap-2 rounded-sm border border-gray-100/40 dark:border-gray-850/40 px-3 py-2">
+
+					<hr class="border-gray-100/30 dark:border-gray-850/30 my-2" />
+					<div class="flex flex-col gap-2">
 						<div class="mb-2.5 flex w-full flex-col">
 							<div class="self-start text-xs font-medium mb-1">
 								{$i18n.t('Tool Calling Timeout')} ({$i18n.t('seconds')})
@@ -146,15 +156,6 @@
 								bind:value={toolCallingConfig.MAX_TOOL_CALLS_PER_ROUND}
 							/>
 						</div>
-						<div class="flex justify-end">
-							<button
-								type="button"
-								class="px-2.5 py-1 text-xs rounded-sm bg-black text-white dark:bg-white dark:text-black"
-								on:click={updateToolCallingConfigHandler}
-							>
-								{$i18n.t('Save')}
-							</button>
-						</div>
 					</div>
 				</div>
 			</div>
@@ -165,5 +166,14 @@
 				</div>
 			</div>
 		{/if}
+	</div>
+
+	<div class="flex justify-end pt-3 text-sm font-medium">
+		<button
+			class="px-3.5 py-1.5 text-sm font-medium bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
+			type="submit"
+		>
+			{$i18n.t('Save')}
+		</button>
 	</div>
 </form>

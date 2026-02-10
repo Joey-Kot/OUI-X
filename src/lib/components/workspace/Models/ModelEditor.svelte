@@ -106,6 +106,58 @@
 	let actionIds = [];
 	let accessControl = {};
 
+
+	const REMOVED_PARAM_KEYS = [
+		'min_p',
+		'repeat_penalty',
+		'tfs_z',
+		'repeat_last_n',
+		'mirostat_tau',
+		'mirostat_eta',
+		'mirostat',
+		'use_mmap',
+		'use_mlock'
+	];
+
+	const normalizeReasoningEffortParam = (value: unknown) => {
+		if (typeof value !== 'string') {
+			return undefined;
+		}
+
+		const normalized = value.trim().toLowerCase();
+		if (!normalized) {
+			return undefined;
+		}
+
+		return normalized;
+	};
+
+	const normalizeVerbosityParam = (value: unknown) => {
+		if (typeof value !== 'string') {
+			return undefined;
+		}
+
+		const normalized = value.trim().toLowerCase();
+		if (!normalized || normalized === 'none') {
+			return undefined;
+		}
+
+		return normalized;
+	};
+
+	const normalizeSummaryParam = (value: unknown) => {
+		if (typeof value !== 'string') {
+			return undefined;
+		}
+
+		const normalized = value.trim().toLowerCase();
+		if (!normalized || normalized === 'none') {
+			return undefined;
+		}
+
+		return normalized;
+	};
+
 	const submitHandler = async () => {
 		loading = true;
 
@@ -194,6 +246,34 @@
 
 		info.params.system = system.trim() === '' ? null : system;
 		info.params.stop = params.stop ? params.stop.split(',').filter((s) => s.trim()) : null;
+
+		for (const key of REMOVED_PARAM_KEYS) {
+			if (key in info.params) {
+				delete info.params[key];
+			}
+		}
+
+		const normalizedReasoningEffort = normalizeReasoningEffortParam(info.params.reasoning_effort);
+		if (normalizedReasoningEffort === undefined) {
+			delete info.params.reasoning_effort;
+		} else {
+			info.params.reasoning_effort = normalizedReasoningEffort;
+		}
+
+		const normalizedVerbosity = normalizeVerbosityParam(info.params.verbosity);
+		if (normalizedVerbosity === undefined) {
+			delete info.params.verbosity;
+		} else {
+			info.params.verbosity = normalizedVerbosity;
+		}
+
+		const normalizedSummary = normalizeSummaryParam(info.params.summary);
+		if (normalizedSummary === undefined) {
+			delete info.params.summary;
+		} else {
+			info.params.summary = normalizedSummary;
+		}
+
 		Object.keys(info.params).forEach((key) => {
 			if (info.params[key] === '' || info.params[key] === null) {
 				delete info.params[key];

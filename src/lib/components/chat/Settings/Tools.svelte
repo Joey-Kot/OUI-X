@@ -119,7 +119,7 @@
 
 				<div class="mt-4">
 					<div class="font-medium mb-0.5">{$i18n.t('Tool Calling Config')}</div>
-					<div class="flex flex-col gap-2 rounded-sm border border-gray-100/40 dark:border-gray-850/40 px-3 py-2">
+					<div class="flex flex-col gap-2">
 						<div class="mb-2.5 flex w-full flex-col">
 							<div class="self-start text-xs font-medium mb-1">
 								{$i18n.t('Tool Calling Timeout')} ({$i18n.t('seconds')})
