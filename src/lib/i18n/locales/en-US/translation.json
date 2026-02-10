@@ -1233,6 +1233,8 @@
 	"Paste Large Text as File": "",
 	"PDF document (.pdf)": "",
 	"PDF Extract Images (OCR)": "",
+	"Conversation File Upload Embedding": "",
+	"When disabled, conversation file uploads only extract text and are used only in full-context mode. When enabled, files are embedded into a user-specific conversation knowledge collection.": "",
 	"pending": "",
 	"Pending": "",
 	"Pending User Overlay Content": "",

@@ -70,9 +70,14 @@
 	let showAddTextContentModal = false;
 
 	let showSyncConfirmModal = false;
+	let showDeleteFileConfirmModal = false;
+	let showDeleteFileForceConfirmModal = false;
 	let showAccessControlModal = false;
 	let showConfigModal = false;
 	let showReindexConfirmModal = false;
+
+	let pendingDeleteFileId = null;
+	let pendingDeleteFileReferences = null;
 
 	let collectionConfigMode: 'default' | 'custom' = 'default';
 	let collectionConfigGlobalDefaults = {};
@@ -544,21 +549,44 @@
 		}
 	};
 
-	const deleteFileHandler = async (fileId) => {
-		try {
-			console.log('Starting file deletion process for:', fileId);
+	const getDeleteFileForceMessage = (references) => {
+		const otherCollections = references?.other_collections_count ?? 0;
+		const otherChats = references?.other_chats_count ?? 0;
 
-			// Remove from knowledge base only
-			const res = await removeFileFromKnowledgeById(localStorage.token, id, fileId);
-			console.log('Knowledge base updated:', res);
+		return $i18n.t(
+			"This file is also referenced by {{collections}} other collections and {{chats}} chat messages. Force delete will remove all related references and data globally. Continue?",
+			{
+				collections: otherCollections,
+				chats: otherChats
+			}
+		);
+	};
+
+	const deleteFileHandler = async (fileId, force = false) => {
+		try {
+			console.log("Starting file deletion process for:", fileId);
+			const res = await removeFileFromKnowledgeById(localStorage.token, id, fileId, force);
+			console.log("Knowledge base updated:", res);
 
 			if (res) {
-				toast.success($i18n.t('File removed successfully.'));
+				toast.success($i18n.t("File removed successfully."));
+				pendingDeleteFileId = null;
+				pendingDeleteFileReferences = null;
 				await init();
 			}
 		} catch (e) {
-			console.error('Error in deleteFileHandler:', e);
-			toast.error(`${e}`);
+			const detail = e?.detail ?? e;
+			if (!force && detail?.code === "FILE_HAS_EXTERNAL_REFERENCES") {
+				pendingDeleteFileId = fileId;
+				pendingDeleteFileReferences = detail?.external_references ?? null;
+				showDeleteFileForceConfirmModal = true;
+				return;
+			}
+
+			console.error("Error in deleteFileHandler:", e);
+			toast.error(`${detail?.message ?? detail}`);
+			pendingDeleteFileId = null;
+			pendingDeleteFileReferences = null;
 		}
 	};
 
@@ -832,6 +860,36 @@
 </script>
 
 <FilesOverlay show={dragged} />
+<SyncConfirmDialog
+	bind:show={showDeleteFileConfirmModal}
+	title={$i18n.t("Delete file")}
+	message={$i18n.t("This will permanently delete the file and all related references. Do you wish to continue?")}
+	on:cancel={() => {
+		pendingDeleteFileId = null;
+		pendingDeleteFileReferences = null;
+	}}
+	on:confirm={() => {
+		if (pendingDeleteFileId) {
+			deleteFileHandler(pendingDeleteFileId, false);
+		}
+	}}
+/>
+
+<SyncConfirmDialog
+	bind:show={showDeleteFileForceConfirmModal}
+	title={$i18n.t("Force delete file")}
+	message={getDeleteFileForceMessage(pendingDeleteFileReferences)}
+	on:cancel={() => {
+		pendingDeleteFileId = null;
+		pendingDeleteFileReferences = null;
+	}}
+	on:confirm={() => {
+		if (pendingDeleteFileId) {
+			deleteFileHandler(pendingDeleteFileId, true);
+		}
+	}}
+/>
+
 <SyncConfirmDialog
 	bind:show={showSyncConfirmModal}
 	message={$i18n.t(
@@ -1121,13 +1179,14 @@
 													}
 												}
 											}}
-											onDelete={(fileId) => {
-												selectedFileId = null;
-												selectedFile = null;
-
-												deleteFileHandler(fileId);
-											}}
-										/>
+										onDelete={(fileId) => {
+											selectedFileId = null;
+											selectedFile = null;
+											pendingDeleteFileId = fileId;
+											pendingDeleteFileReferences = null;
+											showDeleteFileConfirmModal = true;
+										}}
+									/>
 									</div>
 
 									{#if fileItemsTotal > 30}

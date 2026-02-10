@@ -1337,6 +1337,63 @@ class ChatTable:
         except Exception:
             return False
 
+    def sync_chat_files_from_history(
+        self, chat_id: str, history: dict, user_id: str
+    ) -> bool:
+        messages = history.get("messages", {}) if isinstance(history, dict) else {}
+        active_file_ids: set[str] = set()
+
+        if isinstance(messages, dict):
+            for message in messages.values():
+                if not isinstance(message, dict):
+                    continue
+
+                for file_item in message.get("files", []) or []:
+                    if not isinstance(file_item, dict):
+                        continue
+
+                    if file_item.get("type", "file") != "file":
+                        continue
+
+                    file_id = file_item.get("id")
+                    if file_id:
+                        active_file_ids.add(file_id)
+
+        try:
+            with get_db() as db:
+                existing_records = db.query(ChatFile).filter_by(chat_id=chat_id).all()
+                existing_file_ids = {record.file_id for record in existing_records}
+
+                stale_file_ids = existing_file_ids.difference(active_file_ids)
+                if stale_file_ids:
+                    db.query(ChatFile).filter(
+                        ChatFile.chat_id == chat_id,
+                        ChatFile.file_id.in_(stale_file_ids),
+                    ).delete(synchronize_session=False)
+
+                new_file_ids = active_file_ids.difference(existing_file_ids)
+                if new_file_ids:
+                    now = int(time.time())
+                    db.add_all(
+                        [
+                            ChatFile(
+                                id=str(uuid.uuid4()),
+                                user_id=user_id,
+                                chat_id=chat_id,
+                                message_id=None,
+                                file_id=file_id,
+                                created_at=now,
+                                updated_at=now,
+                            )
+                            for file_id in new_file_ids
+                        ]
+                    )
+
+                db.commit()
+                return True
+        except Exception:
+            return False
+
     def get_shared_chats_by_file_id(self, file_id: str) -> list[ChatModel]:
         with get_db() as db:
             # Join Chat and ChatFile tables to get shared chats associated with the file_id
@@ -1348,6 +1405,15 @@ class ChatTable:
             )
 
             return [ChatModel.model_validate(chat) for chat in all_chats]
+
+    def count_chat_files_by_file_id(self, file_id: str) -> int:
+        with get_db() as db:
+            return (
+                db.query(func.count(ChatFile.id))
+                .filter(ChatFile.file_id == file_id)
+                .scalar()
+                or 0
+            )
 
 
 Chats = ChatTable()

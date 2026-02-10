@@ -578,13 +578,22 @@
 				// If the file is an audio file, provide the language for STT.
 				let metadata = null;
 				if (
-					(file.type.startsWith('audio/') || file.type.startsWith('video/')) &&
+					(file.type.startsWith("audio/") || file.type.startsWith("video/")) &&
 					$settings?.audio?.stt?.language
 				) {
 					metadata = {
 						language: $settings?.audio?.stt?.language
 					};
 				}
+
+				const conversationEmbeddingEnabled =
+					$config?.file?.conversation_file_upload_embedding ?? false;
+				metadata = {
+					...(metadata ?? {}),
+					conversation_ingest_mode: conversationEmbeddingEnabled
+						? "standard"
+						: "direct_context"
+				};
 
 				// During the file upload, file content is automatically extracted.
 				const uploadedFile = await uploadFile(localStorage.token, file, metadata, process);
@@ -606,6 +615,9 @@
 					fileItem.id = uploadedFile.id;
 					fileItem.collection_name =
 						uploadedFile?.meta?.collection_name || uploadedFile?.collection_name;
+					fileItem.active_collection_name = uploadedFile?.meta?.active_collection_name;
+					fileItem.conversation_upload_knowledge_id =
+						uploadedFile?.meta?.conversation_upload_knowledge_id;
 					fileItem.content_type = uploadedFile.meta?.content_type || uploadedFile.content_type;
 					fileItem.url = `${uploadedFile.id}`;
 

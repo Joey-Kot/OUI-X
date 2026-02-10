@@ -160,6 +160,77 @@
 	let files = [];
 	let params = {};
 
+	const normalizeConversationFileMetadata = (item: any) => {
+		if (!item || typeof item !== 'object') {
+			return item;
+		}
+
+		const itemMeta = item?.meta ?? {};
+		const fileMeta = item?.file?.meta ?? {};
+
+		const collectionName =
+			item?.collection_name ?? itemMeta?.collection_name ?? fileMeta?.collection_name;
+		const activeCollectionName =
+			item?.active_collection_name ??
+			itemMeta?.active_collection_name ??
+			fileMeta?.active_collection_name;
+		const conversationUploadKnowledgeId =
+			item?.conversation_upload_knowledge_id ??
+			itemMeta?.conversation_upload_knowledge_id ??
+			fileMeta?.conversation_upload_knowledge_id;
+
+		return {
+			...item,
+			...(collectionName ? { collection_name: collectionName } : {}),
+			...(activeCollectionName ? { active_collection_name: activeCollectionName } : {}),
+			...(conversationUploadKnowledgeId
+				? { conversation_upload_knowledge_id: conversationUploadKnowledgeId }
+				: {})
+		};
+	};
+
+	const dedupeAndMergeFilesByIdentity = (items: any[] = []) => {
+		const merged = new Map<string, any>();
+
+		for (const rawItem of items) {
+			if (!rawItem || typeof rawItem !== 'object') {
+				continue;
+			}
+
+			const item = normalizeConversationFileMetadata(rawItem);
+			const itemType = item?.type ?? 'file';
+			const itemId = item?.id;
+			const key = itemId
+				? `${itemType}:${itemId}`
+				: `${itemType}:no-id:${JSON.stringify(item)}`;
+
+			const existing = merged.get(key);
+			if (!existing) {
+				merged.set(key, item);
+				continue;
+			}
+
+			merged.set(key, {
+				...existing,
+				...item,
+				meta: {
+					...(existing?.meta ?? {}),
+					...(item?.meta ?? {})
+				},
+				file: {
+					...(existing?.file ?? {}),
+					...(item?.file ?? {}),
+					meta: {
+						...(existing?.file?.meta ?? {}),
+						...(item?.file?.meta ?? {})
+					}
+				}
+			});
+		}
+
+		return Array.from(merged.values()).map((item) => normalizeConversationFileMetadata(item));
+	};
+
 	$: if (chatIdProp) {
 		navigateHandler();
 	}
@@ -740,13 +811,22 @@
 			// If the file is an audio file, provide the language for STT.
 			let metadata = null;
 			if (
-				(file.type.startsWith('audio/') || file.type.startsWith('video/')) &&
+				(file.type.startsWith("audio/") || file.type.startsWith("video/")) &&
 				$settings?.audio?.stt?.language
 			) {
 				metadata = {
 					language: $settings?.audio?.stt?.language
 				};
 			}
+
+			const conversationEmbeddingEnabled =
+				$config?.file?.conversation_file_upload_embedding ?? false;
+			metadata = {
+				...(metadata ?? {}),
+				conversation_ingest_mode: conversationEmbeddingEnabled
+					? "standard"
+					: "direct_context"
+			};
 
 			// Upload file to server
 			console.log('Uploading file to server...');
@@ -763,7 +843,11 @@
 			fileItem.file = uploadedFile;
 			fileItem.id = uploadedFile.id;
 			fileItem.size = file.size;
-			fileItem.collection_name = uploadedFile?.meta?.collection_name;
+			fileItem.collection_name =
+				uploadedFile?.meta?.collection_name || uploadedFile?.collection_name;
+			fileItem.active_collection_name = uploadedFile?.meta?.active_collection_name;
+			fileItem.conversation_upload_knowledge_id =
+				uploadedFile?.meta?.conversation_upload_knowledge_id;
 			fileItem.url = `${uploadedFile.id}`;
 
 			files = files;
@@ -1602,20 +1686,16 @@
 		prompt = '';
 
 		const messages = createMessagesList(history, history.currentId);
-		const _files = JSON.parse(JSON.stringify(files));
+		const _files = dedupeAndMergeFilesByIdentity(JSON.parse(JSON.stringify(files)));
 
-		chatFiles.push(
+		chatFiles = dedupeAndMergeFilesByIdentity([
+			...chatFiles,
 			..._files.filter(
 				(item) =>
 					['doc', 'text', 'note', 'chat', 'folder', 'collection'].includes(item.type) ||
 					(item.type === 'file' && !(item?.content_type ?? '').startsWith('image/'))
 			)
-		);
-		chatFiles = chatFiles.filter(
-			// Remove duplicates
-			(item, index, array) =>
-				array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
-		);
+		]);
 
 		files = [];
 		messageInput?.setText('');
@@ -1831,19 +1911,14 @@
 			return fileExists;
 		});
 
-		let files = JSON.parse(JSON.stringify(chatFiles));
-		files.push(
+		let files = dedupeAndMergeFilesByIdentity([
+			...JSON.parse(JSON.stringify(chatFiles)),
 			...(userMessage?.files ?? []).filter(
 				(item) =>
 					['doc', 'text', 'note', 'chat', 'collection'].includes(item.type) ||
 					(item.type === 'file' && !(item?.content_type ?? '').startsWith('image/'))
 			)
-		);
-		// Remove duplicates
-		files = files.filter(
-			(item, index, array) =>
-				array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
-		);
+		]);
 
 		scrollToBottom();
 		eventTarget.dispatchEvent(

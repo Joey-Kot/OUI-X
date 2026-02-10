@@ -4,7 +4,8 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import BinaryIO, Tuple, Dict
+from pathlib import Path
+from typing import BinaryIO, Tuple, Dict, Optional
 
 import boto3
 from botocore.config import Config
@@ -26,6 +27,7 @@ from open_webui.config import (
     AZURE_STORAGE_KEY,
     STORAGE_PROVIDER,
     UPLOAD_DIR,
+    KNOWLEDGE_UPLOAD_DIR,
 )
 from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError, NotFound
@@ -45,7 +47,11 @@ class StorageProvider(ABC):
 
     @abstractmethod
     def upload_file(
-        self, file: BinaryIO, filename: str, tags: Dict[str, str]
+        self,
+        file: BinaryIO,
+        filename: str,
+        tags: Dict[str, str],
+        upload_dir: Optional[str | Path] = None,
     ) -> Tuple[bytes, str]:
         pass
 
@@ -61,15 +67,20 @@ class StorageProvider(ABC):
 class LocalStorageProvider(StorageProvider):
     @staticmethod
     def upload_file(
-        file: BinaryIO, filename: str, tags: Dict[str, str]
+        file: BinaryIO,
+        filename: str,
+        tags: Dict[str, str],
+        upload_dir: Optional[str | Path] = None,
     ) -> Tuple[bytes, str]:
         contents = file.read()
         if not contents:
             raise ValueError(ERROR_MESSAGES.EMPTY_CONTENT)
-        file_path = f"{UPLOAD_DIR}/{filename}"
+        target_dir = Path(upload_dir) if upload_dir else Path(UPLOAD_DIR)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_path = target_dir / filename
         with open(file_path, "wb") as f:
             f.write(contents)
-        return contents, file_path
+        return contents, str(file_path)
 
     @staticmethod
     def get_file(file_path: str) -> str:
@@ -79,12 +90,19 @@ class LocalStorageProvider(StorageProvider):
     @staticmethod
     def delete_file(file_path: str) -> None:
         """Handles deletion of the file from local storage."""
-        filename = file_path.split("/")[-1]
-        file_path = f"{UPLOAD_DIR}/{filename}"
         if os.path.isfile(file_path):
             os.remove(file_path)
-        else:
-            log.warning(f"File {file_path} not found in local storage.")
+            return
+
+        if "://" in file_path:
+            filename = file_path.split("/")[-1]
+            for base_dir in (UPLOAD_DIR, KNOWLEDGE_UPLOAD_DIR):
+                candidate = os.path.join(str(base_dir), filename)
+                if os.path.isfile(candidate):
+                    os.remove(candidate)
+                    return
+
+        log.warning(f"File {file_path} not found in local storage.")
 
     @staticmethod
     def delete_all_files() -> None:
@@ -144,10 +162,16 @@ class S3StorageProvider(StorageProvider):
         return re.sub(r"[^a-zA-Z0-9 äöüÄÖÜß\+\-=\._:/@]", "", s)
 
     def upload_file(
-        self, file: BinaryIO, filename: str, tags: Dict[str, str]
+        self,
+        file: BinaryIO,
+        filename: str,
+        tags: Dict[str, str],
+        upload_dir: Optional[str | Path] = None,
     ) -> Tuple[bytes, str]:
         """Handles uploading of the file to S3 storage."""
-        _, file_path = LocalStorageProvider.upload_file(file, filename, tags)
+        _, file_path = LocalStorageProvider.upload_file(
+            file, filename, tags, upload_dir=upload_dir
+        )
         s3_key = os.path.join(self.key_prefix, filename)
         try:
             self.s3_client.upload_file(file_path, self.bucket_name, s3_key)
@@ -237,10 +261,16 @@ class GCSStorageProvider(StorageProvider):
         self.bucket = self.gcs_client.bucket(GCS_BUCKET_NAME)
 
     def upload_file(
-        self, file: BinaryIO, filename: str, tags: Dict[str, str]
+        self,
+        file: BinaryIO,
+        filename: str,
+        tags: Dict[str, str],
+        upload_dir: Optional[str | Path] = None,
     ) -> Tuple[bytes, str]:
         """Handles uploading of the file to GCS storage."""
-        contents, file_path = LocalStorageProvider.upload_file(file, filename, tags)
+        contents, file_path = LocalStorageProvider.upload_file(
+            file, filename, tags, upload_dir=upload_dir
+        )
         try:
             blob = self.bucket.blob(filename)
             blob.upload_from_filename(file_path)
@@ -309,10 +339,16 @@ class AzureStorageProvider(StorageProvider):
         )
 
     def upload_file(
-        self, file: BinaryIO, filename: str, tags: Dict[str, str]
+        self,
+        file: BinaryIO,
+        filename: str,
+        tags: Dict[str, str],
+        upload_dir: Optional[str | Path] = None,
     ) -> Tuple[bytes, str]:
         """Handles uploading of the file to Azure Blob Storage."""
-        contents, file_path = LocalStorageProvider.upload_file(file, filename, tags)
+        contents, file_path = LocalStorageProvider.upload_file(
+            file, filename, tags, upload_dir=upload_dir
+        )
         try:
             blob_client = self.container_client.get_blob_client(filename)
             blob_client.upload_blob(contents, overwrite=True)

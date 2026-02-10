@@ -268,6 +268,7 @@ from open_webui.config import (
     VOYAGE_TOKENIZER_MODEL,
     TIKTOKEN_ENCODING_NAME,
     PDF_EXTRACT_IMAGES,
+    CONVERSATION_FILE_UPLOAD_EMBEDDING,
     YOUTUBE_LOADER_LANGUAGE,
     YOUTUBE_LOADER_PROXY_URL,
     # Retrieval (Web Search)
@@ -893,6 +894,9 @@ app.state.config.RAG_AZURE_OPENAI_API_KEY = RAG_AZURE_OPENAI_API_KEY
 app.state.config.RAG_AZURE_OPENAI_API_VERSION = RAG_AZURE_OPENAI_API_VERSION
 
 app.state.config.PDF_EXTRACT_IMAGES = PDF_EXTRACT_IMAGES
+app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING = (
+    CONVERSATION_FILE_UPLOAD_EMBEDDING
+)
 
 app.state.config.YOUTUBE_LOADER_LANGUAGE = YOUTUBE_LOADER_LANGUAGE
 app.state.config.YOUTUBE_LOADER_PROXY_URL = YOUTUBE_LOADER_PROXY_URL
@@ -1914,6 +1918,7 @@ async def get_app_config(request: Request):
                         "width": app.state.config.FILE_IMAGE_COMPRESSION_WIDTH,
                         "height": app.state.config.FILE_IMAGE_COMPRESSION_HEIGHT,
                     },
+                    "conversation_file_upload_embedding": app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING,
                 },
                 "permissions": {**app.state.config.USER_PERMISSIONS},
                 "google_drive": {

@@ -576,6 +576,15 @@ async def update_chat_by_id(
     if chat:
         updated_chat = {**chat.chat, **form_data.chat}
         chat = Chats.update_chat_by_id(id, updated_chat)
+        if chat:
+            try:
+                Chats.sync_chat_files_from_history(
+                    chat_id=id,
+                    history=chat.chat.get("history", {}),
+                    user_id=user.id,
+                )
+            except Exception:
+                pass
         return ChatResponse(**chat.model_dump())
     else:
         raise HTTPException(

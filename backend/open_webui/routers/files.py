@@ -48,9 +48,28 @@ from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access
 from open_webui.utils.misc import strict_match_mime_type
+from open_webui.utils.knowledge import get_active_vector_collection_name
+from open_webui.config import KNOWLEDGE_UPLOAD_DIR, UPLOAD_DIR
 from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
+
+IMAGE_FILE_EXTENSIONS = {
+    "avif",
+    "bmp",
+    "gif",
+    "heic",
+    "heif",
+    "ico",
+    "jfif",
+    "jpeg",
+    "jpg",
+    "png",
+    "svg",
+    "tif",
+    "tiff",
+    "webp",
+}
 
 router = APIRouter()
 
@@ -219,6 +238,47 @@ def upload_file_handler(
         id = str(uuid.uuid4())
         name = filename
         filename = f"{id}_{filename}"
+        conversation_ingest_mode = (
+            (file_metadata or {}).get("conversation_ingest_mode")
+            if isinstance(file_metadata, dict)
+            else None
+        )
+        has_knowledge_id = bool(
+            isinstance(file_metadata, dict) and file_metadata.get("knowledge_id")
+        )
+        is_knowledge_upload = has_knowledge_id
+        conversation_upload_embedding_enabled = bool(
+            request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING
+        )
+
+        extension_for_image = (file_extension or "").lower()
+        content_type = (file.content_type or "").lower()
+        is_image_upload = content_type.startswith("image/") or (
+            extension_for_image in IMAGE_FILE_EXTENSIONS
+        )
+
+        # Upload path policy:
+        # 1) Knowledge uploads always use knowledge dir.
+        # 2) Chat uploads with image files always use default uploads dir.
+        # 3) Other chat uploads follow CONVERSATION_FILE_UPLOAD_EMBEDDING.
+        should_use_knowledge_upload_dir = bool(
+            is_knowledge_upload
+            or (
+                (not is_knowledge_upload)
+                and (not is_image_upload)
+                and conversation_upload_embedding_enabled
+            )
+        )
+        upload_dir = KNOWLEDGE_UPLOAD_DIR if should_use_knowledge_upload_dir else None
+
+        log.debug(
+            "Upload directory decision: is_knowledge_upload=%s is_image_upload=%s conversation_upload_embedding=%s ingest_mode=%s selected_upload_dir=%s",
+            is_knowledge_upload,
+            is_image_upload,
+            conversation_upload_embedding_enabled,
+            conversation_ingest_mode,
+            str(upload_dir or UPLOAD_DIR),
+        )
         contents, file_path = Storage.upload_file(
             file.file,
             filename,
@@ -228,6 +288,7 @@ def upload_file_handler(
                 "OpenWebUI-User-Name": user.name,
                 "OpenWebUI-File-Id": id,
             },
+            upload_dir=upload_dir,
         )
 
         file_item = Files.insert_new_file(
@@ -445,6 +506,29 @@ async def get_file_process_status(
                                 event = {"status": status}
                                 if status == "failed":
                                     event["error"] = data.get("error")
+                                if status in ("completed", "failed"):
+                                    file_meta = file_item.meta or {}
+                                    event.update(
+                                        {
+                                            "file_id": file_item.id,
+                                            "collection_name": file_meta.get(
+                                                "collection_name"
+                                            ),
+                                            "active_collection_name": file_meta.get(
+                                                "active_collection_name"
+                                            ),
+                                            "conversation_upload_knowledge_id": file_meta.get(
+                                                "conversation_upload_knowledge_id"
+                                            ),
+                                            "ingest_mode": (
+                                                (file_meta.get("data") or {}).get(
+                                                    "conversation_ingest_mode"
+                                                )
+                                                if isinstance(file_meta.get("data"), dict)
+                                                else None
+                                            ),
+                                        }
+                                    )
 
                                 yield f"data: {json.dumps(event)}\n\n"
                                 if status in ("completed", "failed"):
@@ -745,10 +829,20 @@ async def delete_file_by_id(id: str, user=Depends(get_verified_user)):
         or has_access_to_file(id, "write", user)
     ):
 
+        linked_knowledges = Knowledges.get_knowledges_by_file_id(id)
+
         result = Files.delete_file_by_id(id)
         if result:
             try:
                 Storage.delete_file(file.path)
+                for knowledge in linked_knowledges:
+                    active_collection_name = get_active_vector_collection_name(
+                        knowledge.id, knowledge.meta
+                    )
+                    VECTOR_DB_CLIENT.delete(
+                        collection_name=active_collection_name,
+                        filter={"file_id": id},
+                    )
                 VECTOR_DB_CLIENT.delete(collection_name=f"file-{id}")
             except Exception as e:
                 log.exception(e)

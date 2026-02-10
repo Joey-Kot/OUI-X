@@ -69,16 +69,34 @@ export const uploadFile = async (
 								let data = JSON.parse(line.replace(/^data: /, ''));
 								console.log(data);
 
-								if (data?.error) {
-									console.error(data.error);
-									res.error = data.error;
-								}
+							if (data?.error) {
+								console.error(data.error);
+								res.error = data.error;
+							}
 
-								if (res?.data) {
-									res.data = data;
-								}
+							res.data = {
+								...(res?.data ?? {}),
+								...data
+							};
+
+							if (data?.status === "completed") {
+								res.collection_name = data?.collection_name ?? res.collection_name;
+								res.meta = {
+									...(res.meta ?? {}),
+									...(data?.collection_name ? { collection_name: data.collection_name } : {}),
+									...(data?.active_collection_name
+										? { active_collection_name: data.active_collection_name }
+										: {}),
+									...(data?.conversation_upload_knowledge_id
+										? {
+												conversation_upload_knowledge_id:
+													data.conversation_upload_knowledge_id
+										  }
+										: {})
+								};
 							}
 						}
+					}
 					}
 				} catch (error) {
 					console.log(error);
