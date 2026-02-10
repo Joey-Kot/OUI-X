@@ -754,7 +754,10 @@ def chat_to_responses_payload(payload: dict, metadata: Optional[dict], api_confi
     return responses_payload
 
 
-def responses_stream_to_chat_streaming_response(stream: aiohttp.StreamReader) -> StreamingResponse:
+def responses_stream_to_chat_streaming_response(
+    stream: aiohttp.StreamReader,
+    background: Optional[BackgroundTask] = None,
+) -> StreamingResponse:
     async def event_stream():
         buffer = ""
         state = {
@@ -804,7 +807,11 @@ def responses_stream_to_chat_streaming_response(stream: aiohttp.StreamReader) ->
                 ):
                     yield mapped_chunk
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        background=background,
+    )
 
 
 async def get_headers_and_cookies(
@@ -1640,7 +1647,14 @@ async def generate_chat_completion(
         if "text/event-stream" in r.headers.get("Content-Type", ""):
             streaming = True
             if provider_type == "openai_responses":
-                return responses_stream_to_chat_streaming_response(r.content)
+                return responses_stream_to_chat_streaming_response(
+                    r.content,
+                    background=BackgroundTask(
+                        cleanup_response,
+                        response=r,
+                        session=session,
+                    ),
+                )
 
             return StreamingResponse(
                 stream_chunks_handler(r.content),
