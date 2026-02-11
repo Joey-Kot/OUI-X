@@ -297,7 +297,14 @@ def test_responses_to_chat_compatible_maps_message_tools_and_reasoning_summary()
             },
         ],
         "reasoning": {"summary": "thinking summary"},
-        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        "usage": {
+            "input_tokens": 10,
+            "input_tokens_details": {"cached_tokens": 3},
+            "output_tokens": 5,
+            "output_tokens_details": {"reasoning_tokens": 1},
+            "total_tokens": 15,
+            "custom_metric": 99,
+        },
     }
 
     out = responses_to_chat_compatible(resp)
@@ -306,6 +313,11 @@ def test_responses_to_chat_compatible_maps_message_tools_and_reasoning_summary()
     assert out["choices"][0]["message"]["reasoning_content"] == "thinking summary"
     assert out["choices"][0]["message"]["tool_calls"][0]["id"] == "call_1"
     assert out["usage"] == {
+        "input_tokens": 10,
+        "input_tokens_details": {"cached_tokens": 3},
+        "output_tokens": 5,
+        "output_tokens_details": {"reasoning_tokens": 1},
+        "custom_metric": 99,
         "prompt_tokens": 10,
         "completion_tokens": 5,
         "total_tokens": 15,
@@ -386,4 +398,41 @@ def test_responses_event_mapping_emits_reasoning_tool_and_done():
     assert "detailed" not in text
     assert "tool_calls" in text
     assert '"content": "hello"' in text
+    assert '"input_tokens": 1' in text
+    assert '"prompt_tokens": 1' in text
     assert "[DONE]" in text
+
+
+def test_responses_event_mapping_usage_falls_back_total_tokens_when_missing():
+    state = {
+        "function_calls": {},
+        "call_indexes": {},
+        "emitted_call_ids": set(),
+        "text_emitted": False,
+    }
+
+    completed_chunks = _responses_event_to_chat_chunks(
+        "response.completed",
+        {
+            "response": {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "hello"}],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 3,
+                    "input_tokens_details": {"cached_tokens": 1},
+                },
+            }
+        },
+        state,
+    )
+
+    text = "".join(completed_chunks)
+    assert '"input_tokens_details": {"cached_tokens": 1}' in text
+    assert '"prompt_tokens": 2' in text
+    assert '"completion_tokens": 3' in text
+    assert '"total_tokens": 5' in text

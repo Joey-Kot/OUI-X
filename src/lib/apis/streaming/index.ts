@@ -13,13 +13,13 @@ type TextStreamUpdate = {
 };
 
 type ResponseUsage = {
-	/** Including images and tools if any */
+	/** Prompt/input token count, including images and tools if any */
 	prompt_tokens: number;
-	/** The tokens generated */
+	/** Generated/output token count */
 	completion_tokens: number;
-	/** Sum of the above two fields */
+	/** Total token count; may come from provider or be derived as prompt + completion */
 	total_tokens: number;
-	/** Any other fields that aren't part of the base OpenAI spec */
+	/** Additional provider-specific usage fields, e.g. input_tokens_details/output_tokens_details */
 	[other: string]: unknown;
 };
 

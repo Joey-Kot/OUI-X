@@ -472,6 +472,25 @@
 
 	const responsesToChatCompletion = (response = {}) => {
 		const output = response.output ?? [];
+		const normalizeResponsesUsage = (usage = null) => {
+			if (!usage || typeof usage !== 'object' || Array.isArray(usage)) {
+				return undefined;
+			}
+
+			const prompt_tokens = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0;
+			const completion_tokens = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0;
+			const total_tokens =
+				typeof usage.total_tokens === 'number'
+					? usage.total_tokens
+					: prompt_tokens + completion_tokens;
+
+			return {
+				...usage,
+				prompt_tokens,
+				completion_tokens,
+				total_tokens
+			};
+		};
 		const extractReasoningSummaryFromOutput = (items = []) =>
 			(items ?? [])
 				.filter((item) => item?.type === 'reasoning')
@@ -529,13 +548,7 @@
 					}
 				}
 			],
-			usage: response.usage
-				? {
-						prompt_tokens: response.usage.input_tokens ?? 0,
-						completion_tokens: response.usage.output_tokens ?? 0,
-						total_tokens: response.usage.total_tokens ?? 0
-					}
-				: undefined
+			usage: normalizeResponsesUsage(response.usage)
 		};
 	};
 
@@ -600,6 +613,26 @@
 			}
 
 			return typeof value === 'string' ? value : '';
+		};
+
+		const normalizeResponsesUsage = (usage = null) => {
+			if (!usage || typeof usage !== 'object' || Array.isArray(usage)) {
+				return undefined;
+			}
+
+			const prompt_tokens = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0;
+			const completion_tokens = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0;
+			const total_tokens =
+				typeof usage.total_tokens === 'number'
+					? usage.total_tokens
+					: prompt_tokens + completion_tokens;
+
+			return {
+				...usage,
+				prompt_tokens,
+				completion_tokens,
+				total_tokens
+			};
 		};
 
 		const reader = responseBody.getReader();
@@ -730,15 +763,12 @@
 						if (text) emitDelta({ content: text });
 					}
 
-					if (response?.usage) {
+					const normalizedUsage = normalizeResponsesUsage(response?.usage);
+					if (normalizedUsage) {
 						$socket?.emit(
 							channel,
 							`data: ${JSON.stringify({
-								usage: {
-									prompt_tokens: response.usage.input_tokens ?? 0,
-									completion_tokens: response.usage.output_tokens ?? 0,
-									total_tokens: response.usage.total_tokens ?? 0
-								}
+								usage: normalizedUsage
 							})}`
 						);
 					}
