@@ -1637,7 +1637,7 @@
 	"Thorough explanation": "Λεπτομερής εξήγηση",
 	"Thought for {{DURATION}}": "Σκέφτηκε για {{DURATION}}",
 	"Thought for {{DURATION}} seconds": "Σκέφτηκε για {{DURATION}} δευτερόλεπτα",
-	"Thought for less than a second": "Σκέφτηκε για λιγότερο από ένα δευτερόλεπτο",
+	"Thought for few second": "Σκέφτηκε για λιγότερο από ένα δευτερόλεπτο",
 	"Thread": "Συζήτηση",
 	"Tika": "",
 	"Tika Server URL required.": "Απαιτείται το URL διακομιστή Tika.",

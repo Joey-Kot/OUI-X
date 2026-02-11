@@ -7,7 +7,7 @@
 	const { saveAs } = fileSaver;
 
 	import { downloadChatAsPDF } from '$lib/apis/utils';
-	import { copyToClipboard, createMessagesList } from '$lib/utils';
+	import { copyToClipboard } from '$lib/utils';
 
 	import {
 		showOverview,
@@ -36,6 +36,9 @@
 	import ArchiveBox from '$lib/components/icons/ArchiveBox.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Download from '$lib/components/icons/Download.svelte';
+	import FloppyDisk from '$lib/components/icons/FloppyDisk.svelte';
+	import AddToCollectionModal from '$lib/components/chat/AddToCollectionModal.svelte';
+	import { serializeChatToMarkdown } from '$lib/utils/chat-export';
 
 	const i18n = getContext('i18n');
 
@@ -52,15 +55,44 @@
 	export let onClose: Function = () => {};
 
 	let showFullMessages = false;
+	let showAddToCollectionModal = false;
+	let selectedChatForCollection = null;
+	let preparingCollectionChat = false;
 
 	const getChatAsText = async () => {
-		const history = chat.chat.history;
-		const messages = createMessagesList(history, history.currentId);
-		const chatText = messages.reduce((a, message, i, arr) => {
-			return `${a}### ${message.role.toUpperCase()}\n${message.content}\n\n`;
-		}, '');
+		return serializeChatToMarkdown(chat);
+	};
 
-		return chatText.trim();
+	const canAddToCollection = () => {
+		const hasWorkspaceKnowledgePermission =
+			$user?.role === 'admin' || ($user?.permissions?.workspace?.knowledge ?? false);
+		const hasFileUploadPermission =
+			$user?.role === 'admin' || ($user?.permissions?.chat?.file_upload ?? true);
+		return hasWorkspaceKnowledgePermission && hasFileUploadPermission;
+	};
+
+	const prepareAddToCollection = async () => {
+		if (preparingCollectionChat || !canAddToCollection()) {
+			return;
+		}
+
+		preparingCollectionChat = true;
+
+		let selectedChat = null;
+		if ((chat?.id ?? '').startsWith('local') || $temporaryChatEnabled) {
+			selectedChat = chat;
+		} else {
+			selectedChat = await getChatById(localStorage.token, chat?.id).catch(() => null);
+		}
+
+		preparingCollectionChat = false;
+
+		if (!selectedChat) {
+			return;
+		}
+
+		selectedChatForCollection = selectedChat;
+		showAddToCollectionModal = true;
 	};
 
 	const downloadTxt = async () => {
@@ -268,6 +300,8 @@
 	</div>
 {/if}
 
+<AddToCollectionModal bind:show={showAddToCollectionModal} chat={selectedChatForCollection} />
+
 <Dropdown
 	on:change={(e) => {
 		if (e.detail === false) {
@@ -416,6 +450,19 @@
 					</DropdownMenu.Item>
 				</DropdownMenu.SubContent>
 			</DropdownMenu.Sub>
+
+			{#if canAddToCollection()}
+				<DropdownMenu.Item
+					class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl select-none w-full"
+					on:click={() => {
+						prepareAddToCollection();
+					}}
+					disabled={preparingCollectionChat}
+				>
+					<FloppyDisk strokeWidth="1.5" />
+					<div class="flex items-center">{$i18n.t('Add To Collection')}</div>
+				</DropdownMenu.Item>
+			{/if}
 
 			<DropdownMenu.Item
 				class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl select-none w-full"

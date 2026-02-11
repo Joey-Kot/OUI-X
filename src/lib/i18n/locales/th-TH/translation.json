@@ -1636,7 +1636,7 @@
 	"Thorough explanation": "คำอธิบายอย่างละเอียด",
 	"Thought for {{DURATION}}": "คิดเป็นเวลา {{DURATION}}",
 	"Thought for {{DURATION}} seconds": "ใช้เวลาคิด {{DURATION}} วินาที",
-	"Thought for less than a second": "คิดเป็นเวลาน้อยกว่าหนึ่งวินาที",
+	"Thought for few second": "คิดเป็นเวลาน้อยกว่าหนึ่งวินาที",
 	"Thread": "เธรด",
 	"Tika": "Tika",
 	"Tika Server URL required.": "จำเป็นต้องมี URL ของเซิร์ฟเวอร์ Tika",

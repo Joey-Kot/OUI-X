@@ -1636,7 +1636,7 @@
 	"Thorough explanation": "완전한 설명",
 	"Thought for {{DURATION}}": "{{DURATION}} 동안 생각함",
 	"Thought for {{DURATION}} seconds": "{{DURATION}}초 동안 생각함",
-	"Thought for less than a second": "1초 미만 동안 생각함",
+	"Thought for few second": "1초 미만 동안 생각함",
 	"Thread": "스레드",
 	"Tika": "",
 	"Tika Server URL required.": "Tika 서버 URL이 필요합니다.",

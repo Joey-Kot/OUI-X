@@ -246,7 +246,7 @@
 						{#if attributes?.type === 'reasoning'}
 							{#if attributes?.done === 'true' && attributes?.duration}
 								{#if attributes.duration < 1}
-									{$i18n.t('Thought for less than a second')}
+									{$i18n.t('Thought for few second')}
 								{:else if attributes.duration < 60}
 									{$i18n.t('Thought for {{DURATION}} seconds', {
 										DURATION: attributes.duration
