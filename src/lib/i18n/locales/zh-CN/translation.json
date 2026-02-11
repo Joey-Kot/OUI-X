@@ -1641,7 +1641,7 @@
 	"Thorough explanation": "解释详尽",
 	"Thought for {{DURATION}}": "思考用时 {{DURATION}}",
 	"Thought for {{DURATION}} seconds": "思考用时 {{DURATION}} 秒",
-	"Thought for less than a second": "思考用时小于 1 秒",
+	"Thought for few second": "思考用时小于 1 秒",
 	"Thread": "主题",
 	"Tika": "Tika",
 	"Tika Server URL required.": "请输入 Tika 服务器接口地址",

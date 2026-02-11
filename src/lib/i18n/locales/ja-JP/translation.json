@@ -1636,7 +1636,7 @@
 	"Thorough explanation": "詳細な説明",
 	"Thought for {{DURATION}}": "{{DURATION}}間の思考",
 	"Thought for {{DURATION}} seconds": "{{DURATION}}秒間の思考",
-	"Thought for less than a second": "1秒未満の思考",
+	"Thought for few second": "1秒未満の思考",
 	"Thread": "スレッド",
 	"Tika": "",
 	"Tika Server URL required.": "Tika Server URLが必要です。",

@@ -1636,7 +1636,7 @@
 	"Thorough explanation": "詳細解釋",
 	"Thought for {{DURATION}}": "思考時間 {{DURATION}}",
 	"Thought for {{DURATION}} seconds": "思考時間 {{DURATION}} 秒",
-	"Thought for less than a second": "思考用時小於 1 秒",
+	"Thought for few second": "思考用時小於 1 秒",
 	"Thread": "討論串",
 	"Tika": "Tika",
 	"Tika Server URL required.": "需要提供 Tika 伺服器 URL。",
