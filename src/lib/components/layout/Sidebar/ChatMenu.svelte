@@ -24,11 +24,13 @@
 		toggleChatPinnedStatusById
 	} from '$lib/apis/chats';
 	import { chats, folders, settings, theme, user } from '$lib/stores';
-	import { createMessagesList } from '$lib/utils';
 	import { downloadChatAsPDF } from '$lib/apis/utils';
 	import Download from '$lib/components/icons/Download.svelte';
+	import FloppyDisk from '$lib/components/icons/FloppyDisk.svelte';
 	import Folder from '$lib/components/icons/Folder.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
+	import AddToCollectionModal from '$lib/components/chat/AddToCollectionModal.svelte';
+	import { serializeChatToMarkdown } from '$lib/utils/chat-export';
 
 	const i18n = getContext('i18n');
 
@@ -48,6 +50,9 @@
 
 	let chat = null;
 	let showFullMessages = false;
+	let showAddToCollectionModal = false;
+	let selectedChatForCollection = null;
+	let preparingCollectionChat = false;
 
 	const pinHandler = async () => {
 		await toggleChatPinnedStatusById(localStorage.token, chatId);
@@ -59,13 +64,32 @@
 	};
 
 	const getChatAsText = async (chat) => {
-		const history = chat.chat.history;
-		const messages = createMessagesList(history, history.currentId);
-		const chatText = messages.reduce((a, message, i, arr) => {
-			return `${a}### ${message.role.toUpperCase()}\n${message.content}\n\n`;
-		}, '');
+		return serializeChatToMarkdown(chat);
+	};
 
-		return chatText.trim();
+	const canAddToCollection = () => {
+		const hasWorkspaceKnowledgePermission =
+			$user?.role === 'admin' || ($user?.permissions?.workspace?.knowledge ?? false);
+		const hasFileUploadPermission =
+			$user?.role === 'admin' || ($user?.permissions?.chat?.file_upload ?? true);
+		return hasWorkspaceKnowledgePermission && hasFileUploadPermission;
+	};
+
+	const prepareAddToCollection = async () => {
+		if (preparingCollectionChat || !canAddToCollection()) {
+			return;
+		}
+
+		preparingCollectionChat = true;
+		const selectedChat = await getChatById(localStorage.token, chatId).catch(() => null);
+		preparingCollectionChat = false;
+
+		if (!selectedChat) {
+			return;
+		}
+
+		selectedChatForCollection = selectedChat;
+		showAddToCollectionModal = true;
 	};
 
 	const downloadTxt = async () => {
@@ -280,6 +304,8 @@
 	</div>
 {/if}
 
+<AddToCollectionModal bind:show={showAddToCollectionModal} chat={selectedChatForCollection} />
+
 <Dropdown
 	bind:show
 	on:change={(e) => {
@@ -355,6 +381,19 @@
 					</DropdownMenu.Item>
 				</DropdownMenu.SubContent>
 			</DropdownMenu.Sub>
+
+			{#if canAddToCollection()}
+				<DropdownMenu.Item
+					class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
+					on:click={() => {
+						prepareAddToCollection();
+					}}
+					disabled={preparingCollectionChat}
+				>
+					<FloppyDisk strokeWidth="1.5" />
+					<div class="flex items-center">{$i18n.t('Add To Collection')}</div>
+				</DropdownMenu.Item>
+			{/if}
 
 			<DropdownMenu.Item
 				class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"

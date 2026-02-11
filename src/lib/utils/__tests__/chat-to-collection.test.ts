@@ -1,0 +1,81 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { addChatToCollection } from '../chat-to-collection';
+
+const uploadFileMock = vi.fn();
+const addFileToKnowledgeByIdMock = vi.fn();
+const deleteFileByIdMock = vi.fn();
+
+vi.mock('$lib/apis/files', () => ({
+	uploadFile: (...args: unknown[]) => uploadFileMock(...args),
+	deleteFileById: (...args: unknown[]) => deleteFileByIdMock(...args)
+}));
+
+vi.mock('$lib/apis/knowledge', () => ({
+	addFileToKnowledgeById: (...args: unknown[]) => addFileToKnowledgeByIdMock(...args)
+}));
+
+describe('addChatToCollection', () => {
+	const token = 'token';
+	const knowledgeId = 'knowledge-1';
+	const chat = {
+		chat: {
+			title: 'Collection Chat',
+			history: {
+				currentId: 'assistant-1',
+				messages: {
+					'user-1': {
+						id: 'user-1',
+						parentId: null,
+						childrenIds: ['assistant-1'],
+						role: 'user',
+						content: 'Hello'
+					},
+					'assistant-1': {
+						id: 'assistant-1',
+						parentId: 'user-1',
+						childrenIds: [],
+						role: 'assistant',
+						content: 'Hi'
+					}
+				}
+			}
+		}
+	};
+
+	beforeEach(() => {
+		uploadFileMock.mockReset();
+		addFileToKnowledgeByIdMock.mockReset();
+		deleteFileByIdMock.mockReset();
+	});
+
+	it('uploads markdown and attaches file to knowledge base', async () => {
+		uploadFileMock.mockResolvedValue({ id: 'file-1' });
+		addFileToKnowledgeByIdMock.mockResolvedValue({ status: true });
+
+		const result = await addChatToCollection({ token, chat, knowledgeId });
+
+		expect(uploadFileMock).toHaveBeenCalledTimes(1);
+		expect(addFileToKnowledgeByIdMock).toHaveBeenCalledWith(token, knowledgeId, 'file-1');
+		expect(deleteFileByIdMock).not.toHaveBeenCalled();
+		expect(result).toEqual({ fileId: 'file-1', knowledgeId });
+	});
+
+	it('throws when upload returns no file id', async () => {
+		uploadFileMock.mockResolvedValue(null);
+
+		await expect(addChatToCollection({ token, chat, knowledgeId })).rejects.toThrow(
+			'Failed to upload file.'
+		);
+		expect(addFileToKnowledgeByIdMock).not.toHaveBeenCalled();
+	});
+
+	it('cleans up uploaded file when knowledge add fails', async () => {
+		uploadFileMock.mockResolvedValue({ id: 'file-1' });
+		addFileToKnowledgeByIdMock.mockRejectedValue(new Error('add failed'));
+		deleteFileByIdMock.mockResolvedValue({ status: true });
+
+		await expect(addChatToCollection({ token, chat, knowledgeId })).rejects.toThrow('add failed');
+		expect(deleteFileByIdMock).toHaveBeenCalledWith(token, 'file-1');
+	});
+});
