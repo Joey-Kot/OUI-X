@@ -1,0 +1,4 @@
+# Test/development dependencies for Docker test flavor
+docker~=7.1.0
+pytest~=8.4.1
+pytest-docker~=3.2.5

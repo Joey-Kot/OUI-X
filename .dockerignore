@@ -1,3 +1,4 @@
+.git
 .github
 .DS_Store
 docs
@@ -11,10 +12,13 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 __pycache__
 .idea
+.vscode
 venv
 _old
 uploads
 .ipynb_checkpoints
 **/*.db
 _test
+cypress
+test
 backend/data/*
