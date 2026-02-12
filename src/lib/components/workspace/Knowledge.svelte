@@ -11,6 +11,7 @@
 	import {
 		cloneKnowledgeById,
 		deleteKnowledgeById,
+		downloadKnowledgeById,
 		searchKnowledgeBases
 	} from '$lib/apis/knowledge';
 
@@ -217,6 +218,19 @@
 		}
 	};
 
+	const downloadHandler = async (item) => {
+		toast.info($i18n.t("Preparing download..."));
+
+		await downloadKnowledgeById(localStorage.token, item.id)
+			.then(() => {
+				toast.success($i18n.t("Collection download started."));
+			})
+			.catch((e) => {
+				const message = e?.message ?? e?.detail?.message ?? e?.detail ?? e;
+				toast.error(String(message));
+			});
+	};
+
 	onMount(async () => {
 		viewOption = localStorage?.workspaceViewOption || '';
 		loaded = true;
@@ -364,21 +378,25 @@
 											{/if}
 										</div>
 
-										{#if item?.write_access || $user?.role === 'admin'}
-											<div class="flex items-center gap-2">
-												<div class=" flex self-center">
-													<ItemMenu
+										<div class="flex items-center gap-2">
+											<div class=" flex self-center">
+												<ItemMenu
+													showClone={item?.write_access || $user?.role === 'admin'}
+													showDelete={item?.write_access || $user?.role === 'admin'}
+													showDownload={true}
 													on:clone={() => {
 														cloneHandler(item);
+													}}
+													on:download={() => {
+														downloadHandler(item);
 													}}
 													on:delete={() => {
 														selectedItem = item;
 														showDeleteConfirm = true;
 													}}
 												/>
-												</div>
 											</div>
-										{/if}
+										</div>
 									</div>
 
 									<div class=" flex items-center gap-1 justify-between px-1.5">

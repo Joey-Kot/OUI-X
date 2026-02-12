@@ -134,6 +134,7 @@ type Settings = {
 	textScale?: number;
 	widescreenMode?: null;
 	largeTextAsFile?: boolean;
+	conversationFileUploadEmbedding?: boolean;
 	promptAutocomplete?: boolean;
 	hapticFeedback?: boolean;
 	responseAutoCopy?: any;

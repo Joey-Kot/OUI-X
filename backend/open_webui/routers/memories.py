@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import logging
 import asyncio
@@ -52,7 +53,8 @@ async def add_memory(
 
     vector = await request.app.state.EMBEDDING_FUNCTION(memory.content, user=user)
 
-    VECTOR_DB_CLIENT.upsert(
+    await run_in_threadpool(
+        VECTOR_DB_CLIENT.upsert,
         collection_name=f"user-memory-{user.id}",
         items=[
             {
@@ -103,7 +105,10 @@ async def query_memory(
 async def reset_memory_from_vector_db(
     request: Request, user=Depends(get_verified_user)
 ):
-    VECTOR_DB_CLIENT.delete_collection(f"user-memory-{user.id}")
+    await run_in_threadpool(
+        VECTOR_DB_CLIENT.delete_collection,
+        f"user-memory-{user.id}",
+    )
 
     memories = Memories.get_memories_by_user_id(user.id)
 
@@ -115,7 +120,8 @@ async def reset_memory_from_vector_db(
         ]
     )
 
-    VECTOR_DB_CLIENT.upsert(
+    await run_in_threadpool(
+        VECTOR_DB_CLIENT.upsert,
         collection_name=f"user-memory-{user.id}",
         items=[
             {
@@ -145,7 +151,10 @@ async def delete_memory_by_user_id(user=Depends(get_verified_user)):
 
     if result:
         try:
-            VECTOR_DB_CLIENT.delete_collection(f"user-memory-{user.id}")
+            await run_in_threadpool(
+                VECTOR_DB_CLIENT.delete_collection,
+                f"user-memory-{user.id}",
+            )
         except Exception as e:
             log.error(e)
         return True
@@ -174,7 +183,8 @@ async def update_memory_by_id(
     if form_data.content is not None:
         vector = await request.app.state.EMBEDDING_FUNCTION(memory.content, user=user)
 
-        VECTOR_DB_CLIENT.upsert(
+        await run_in_threadpool(
+            VECTOR_DB_CLIENT.upsert,
             collection_name=f"user-memory-{user.id}",
             items=[
                 {
@@ -202,8 +212,10 @@ async def delete_memory_by_id(memory_id: str, user=Depends(get_verified_user)):
     result = Memories.delete_memory_by_id_and_user_id(memory_id, user.id)
 
     if result:
-        VECTOR_DB_CLIENT.delete(
-            collection_name=f"user-memory-{user.id}", ids=[memory_id]
+        await run_in_threadpool(
+            VECTOR_DB_CLIENT.delete,
+            collection_name=f"user-memory-{user.id}",
+            ids=[memory_id],
         )
         return True
 

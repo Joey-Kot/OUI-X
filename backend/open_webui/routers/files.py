@@ -22,6 +22,7 @@ from fastapi import (
 )
 
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.concurrency import run_in_threadpool
 
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
@@ -48,6 +49,9 @@ from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access
 from open_webui.utils.misc import strict_match_mime_type
+from open_webui.utils.file_upload_settings import (
+    is_conversation_file_upload_embedding_enabled,
+)
 from open_webui.utils.knowledge import get_active_vector_collection_name
 from open_webui.config import KNOWLEDGE_UPLOAD_DIR, UPLOAD_DIR
 from pydantic import BaseModel
@@ -247,8 +251,11 @@ def upload_file_handler(
             isinstance(file_metadata, dict) and file_metadata.get("knowledge_id")
         )
         is_knowledge_upload = has_knowledge_id
-        conversation_upload_embedding_enabled = bool(
-            request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING
+        conversation_upload_embedding_enabled = (
+            is_conversation_file_upload_embedding_enabled(
+                user=user,
+                global_enabled=request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING,
+            )
         )
 
         extension_for_image = (file_extension or "").lower()
@@ -430,7 +437,7 @@ async def delete_all_files(user=Depends(get_admin_user)):
     if result:
         try:
             Storage.delete_all_files()
-            VECTOR_DB_CLIENT.reset()
+            await run_in_threadpool(VECTOR_DB_CLIENT.reset)
         except Exception as e:
             log.exception(e)
             log.error("Error deleting files")
@@ -839,11 +846,15 @@ async def delete_file_by_id(id: str, user=Depends(get_verified_user)):
                     active_collection_name = get_active_vector_collection_name(
                         knowledge.id, knowledge.meta
                     )
-                    VECTOR_DB_CLIENT.delete(
+                    await run_in_threadpool(
+                        VECTOR_DB_CLIENT.delete,
                         collection_name=active_collection_name,
                         filter={"file_id": id},
                     )
-                VECTOR_DB_CLIENT.delete(collection_name=f"file-{id}")
+                await run_in_threadpool(
+                    VECTOR_DB_CLIENT.delete,
+                    collection_name=f"file-{id}",
+                )
             except Exception as e:
                 log.exception(e)
                 log.error("Error deleting files")

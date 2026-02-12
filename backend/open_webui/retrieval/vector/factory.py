@@ -5,6 +5,15 @@ from open_webui.config import (
     ENABLE_QDRANT_MULTITENANCY_MODE,
     ENABLE_MILVUS_MULTITENANCY_MODE,
 )
+from open_webui.env import (
+    CHROMA_REDIS_ENABLED,
+    CHROMA_REDIS_URL,
+    REDIS_CLUSTER,
+    REDIS_KEY_PREFIX,
+    REDIS_SENTINEL_HOSTS,
+    REDIS_SENTINEL_PORT,
+)
+from open_webui.utils.redis import get_redis_connection, get_sentinels_from_env
 
 
 class Vector:
@@ -61,8 +70,40 @@ class Vector:
                 return ElasticsearchClient()
             case VectorType.CHROMA:
                 from open_webui.retrieval.vector.dbs.chroma import ChromaClient
+                from open_webui.retrieval.vector.chroma_redis_coordinator import (
+                    ChromaQueuedClient,
+                    ChromaWriteCoordinator,
+                )
 
-                return ChromaClient()
+                client = ChromaClient()
+
+                if not CHROMA_REDIS_ENABLED:
+                    return client
+
+                if not CHROMA_REDIS_URL:
+                    raise ValueError(
+                        "CHROMA_REDIS_ENABLED=true requires CHROMA_REDIS_URL (or REDIS_URL)"
+                    )
+
+                redis_client = get_redis_connection(
+                    redis_url=CHROMA_REDIS_URL,
+                    redis_sentinels=get_sentinels_from_env(
+                        REDIS_SENTINEL_HOSTS,
+                        REDIS_SENTINEL_PORT,
+                    ),
+                    redis_cluster=REDIS_CLUSTER,
+                    async_mode=False,
+                )
+                if redis_client is None:
+                    raise ValueError(
+                        "Failed to initialize Redis client for Chroma queued writes"
+                    )
+
+                coordinator = ChromaWriteCoordinator(
+                    redis_client=redis_client,
+                    key_prefix=REDIS_KEY_PREFIX,
+                )
+                return ChromaQueuedClient(inner_client=client, coordinator=coordinator)
             case VectorType.ORACLE23AI:
                 from open_webui.retrieval.vector.dbs.oracle23ai import Oracle23aiClient
 

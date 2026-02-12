@@ -1,11 +1,20 @@
 from typing import List, Optional
 import copy
+import json
+import os
+from pathlib import Path
+import re
+import tempfile
 import time
 import uuid
+import zipfile
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
 import logging
+from starlette.background import BackgroundTask
+from urllib.parse import quote
 
 from open_webui.models.groups import Groups
 from open_webui.models.knowledge import (
@@ -58,11 +67,204 @@ CHROMA_CLONE_PAGE_SIZE = 200
 FILE_ID_RETRY_ATTEMPTS = 5
 FILE_ID_RETRY_BACKOFF_BASE = 0.2
 FILE_ID_RETRY_BACKOFF_CAP = 2.0
+UUID_FILENAME_PREFIX_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}_(.+)$")
 
 
 SUPPORTED_EMBEDDING_ENGINES = {"openai", "azure_openai"}
 SUPPORTED_TEXT_SPLITTERS = {"", "character", "token", "token_voyage"}
 SUPPORTED_RERANKING_ENGINES = {"external", "voyage"}
+
+
+def _safe_display_filename(file: FileModel) -> str:
+    meta_name = file.meta.get("name") if isinstance(file.meta, dict) else None
+    candidate = meta_name or file.filename or file.id
+    candidate = os.path.basename(candidate) if candidate else file.id
+    candidate = candidate.strip()
+
+    match = UUID_FILENAME_PREFIX_PATTERN.match(candidate)
+    if match:
+        candidate = match.group(1)
+
+    candidate = candidate.replace("/", "_").replace("\\", "_").strip(" .")
+    return candidate or file.id
+
+
+def _dedupe_zip_entry_name(entry_name: str, used_entries: set[str]) -> str:
+    if entry_name not in used_entries:
+        used_entries.add(entry_name)
+        return entry_name
+
+    directory, filename = os.path.split(entry_name)
+    stem, suffix = os.path.splitext(filename)
+
+    counter = 1
+    while True:
+        candidate_name = f"{stem} ({counter}){suffix}"
+        candidate = os.path.join(directory, candidate_name)
+        if candidate not in used_entries:
+            used_entries.add(candidate)
+            return candidate
+        counter += 1
+
+
+def _resolve_storage_file_bytes(file: FileModel) -> bytes:
+    if not file.path:
+        raise FileNotFoundError("file path is empty")
+
+    local_path = Storage.get_file(file.path)
+    resolved_path = Path(local_path)
+    if not resolved_path.is_file():
+        raise FileNotFoundError(f"resolved path does not exist: {resolved_path}")
+
+    return resolved_path.read_bytes()
+
+
+def _extract_vector_documents(result) -> list[str]:
+    if not result:
+        return []
+
+    documents = getattr(result, "documents", None)
+    if not documents:
+        return []
+
+    first_batch = documents[0] if len(documents) > 0 else []
+    if not first_batch:
+        return []
+
+    return [doc for doc in first_batch if isinstance(doc, str) and doc]
+
+
+def _resolve_vector_fallback_text(file: FileModel, knowledge) -> str | None:
+    collections_to_query = [f"file-{file.id}"]
+
+    active_collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
+    if active_collection_name and active_collection_name not in collections_to_query:
+        collections_to_query.append(active_collection_name)
+
+    for collection_name in collections_to_query:
+        try:
+            result = VECTOR_DB_CLIENT.query(
+                collection_name=collection_name,
+                filter={"file_id": file.id},
+            )
+        except Exception:
+            continue
+
+        documents = _extract_vector_documents(result)
+        if documents:
+            return "\n\n".join(documents)
+
+    return None
+
+
+def _build_knowledge_archive_name(knowledge) -> str:
+    candidate = (knowledge.name or "").strip()
+    if not candidate:
+        candidate = f"knowledge-{knowledge.id}"
+
+    candidate = re.sub(r"[\\/:*?\"<>|]+", "_", candidate)
+    candidate = candidate.strip(" .")
+    if not candidate:
+        candidate = f"knowledge-{knowledge.id}"
+
+    return f"{candidate}.zip"
+
+
+def _remove_temp_file(file_path: str):
+    try:
+        os.remove(file_path)
+    except Exception:
+        pass
+
+
+def _build_knowledge_download_zip(knowledge, files: list[FileModel]) -> tuple[str, dict]:
+    zip_file = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    zip_file.close()
+
+    manifest = {
+        "knowledge": {
+            "id": knowledge.id,
+            "name": knowledge.name,
+            "exported_at": int(time.time()),
+        },
+        "summary": {
+            "total": len(files),
+            "from_storage": 0,
+            "from_vector": 0,
+            "failed": 0,
+        },
+        "items": [],
+    }
+
+    used_entries: set[str] = set()
+    try:
+        with zipfile.ZipFile(zip_file.name, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file in files:
+                display_name = _safe_display_filename(file)
+                mime_type = (
+                    file.meta.get("content_type")
+                    if isinstance(file.meta, dict)
+                    else None
+                )
+
+                manifest_item = {
+                    "file_id": file.id,
+                    "original_name": display_name,
+                    "zip_entry": None,
+                    "source": "fail",
+                    "mime_type": mime_type,
+                    "size_bytes": 0,
+                    "storage_path": file.path,
+                    "error": None,
+                }
+
+                try:
+                    storage_bytes = _resolve_storage_file_bytes(file)
+                    zip_entry = _dedupe_zip_entry_name(
+                        os.path.join("files", display_name),
+                        used_entries,
+                    )
+                    archive.writestr(zip_entry, storage_bytes)
+
+                    manifest_item["zip_entry"] = zip_entry
+                    manifest_item["source"] = "storage"
+                    manifest_item["size_bytes"] = len(storage_bytes)
+                    manifest["summary"]["from_storage"] += 1
+                    manifest["items"].append(manifest_item)
+                    continue
+                except Exception as storage_error:
+                    storage_error_message = str(storage_error)
+
+                fallback_text = _resolve_vector_fallback_text(file, knowledge)
+                if fallback_text is not None and fallback_text.strip() != "":
+                    fallback_entry = _dedupe_zip_entry_name(
+                        os.path.join("files", f"{display_name}.fallback.txt"),
+                        used_entries,
+                    )
+                    fallback_bytes = fallback_text.encode("utf-8")
+                    archive.writestr(fallback_entry, fallback_bytes)
+
+                    manifest_item["zip_entry"] = fallback_entry
+                    manifest_item["source"] = "vector"
+                    manifest_item["size_bytes"] = len(fallback_bytes)
+                    manifest["summary"]["from_vector"] += 1
+                else:
+                    manifest_item["source"] = "fail"
+                    manifest_item["error"] = storage_error_message
+                    manifest["summary"]["failed"] += 1
+
+                manifest["items"].append(manifest_item)
+
+            archive.writestr(
+                "manifest.json",
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+            )
+
+    except Exception:
+        _remove_temp_file(zip_file.name)
+        raise
+
+    return zip_file.name, manifest
 
 ############################
 # getKnowledgeBases
@@ -172,6 +374,28 @@ def _extract_qdrant_vector(point_vector):
 def _chunk_vector_items(items: list, chunk_size: int = 256):
     for i in range(0, len(items), chunk_size):
         yield items[i : i + chunk_size]
+
+
+def _upsert_chroma_records(
+    target_collection_name: str,
+    ids: list,
+    embeddings: list,
+    documents: list,
+    metadatas: list,
+):
+    items = []
+    for idx, item_id in enumerate(ids):
+        items.append(
+            {
+                "id": item_id,
+                "text": documents[idx] if idx < len(documents) else "",
+                "vector": embeddings[idx],
+                "metadata": metadatas[idx] if idx < len(metadatas) else {},
+            }
+        )
+
+    if items:
+        VECTOR_DB_CLIENT.upsert(collection_name=target_collection_name, items=items)
 
 
 def _normalize_chroma_sequence(value) -> list:
@@ -469,7 +693,11 @@ def _clone_qdrant_collection_vectors(
     return True, None
 
 
-def _clone_chroma_by_file_id(source, target, file_ids: list[str]) -> dict:
+def _clone_chroma_by_file_id(
+    source,
+    target_collection_name: str,
+    file_ids: list[str],
+) -> dict:
     copied_count = 0
     missing_file_ids: list[str] = []
     failed_file_ids: list[str] = []
@@ -535,7 +763,8 @@ def _clone_chroma_by_file_id(source, target, file_ids: list[str]) -> dict:
             continue
 
         for i in range(0, len(copy_ids), 256):
-            target.upsert(
+            _upsert_chroma_records(
+                target_collection_name=target_collection_name,
                 ids=copy_ids[i : i + 256],
                 embeddings=copy_embeddings[i : i + 256],
                 documents=copy_documents[i : i + 256],
@@ -636,11 +865,6 @@ def _clone_chroma_collection_vectors(
     missing_chunks = 0
     pages_scanned = 0
 
-    target = client.get_or_create_collection(
-        name=target_collection_name,
-        metadata={"hnsw:space": "cosine"},
-    )
-
     offset = 0
     while offset < total_items:
         try:
@@ -651,7 +875,11 @@ def _clone_chroma_collection_vectors(
             )
         except Exception as e:
             if file_ids:
-                retry_result = _clone_chroma_by_file_id(source, target, file_ids)
+                retry_result = _clone_chroma_by_file_id(
+                    source,
+                    target_collection_name,
+                    file_ids,
+                )
                 failed_file_ids = retry_result["failed_file_ids"]
                 missing_file_ids = set(retry_result["missing_file_ids"])
                 missing_chunks = retry_result["missing_chunks"]
@@ -728,7 +956,8 @@ def _clone_chroma_collection_vectors(
 
         for i in range(0, len(copy_ids), 256):
             try:
-                target.upsert(
+                _upsert_chroma_records(
+                    target_collection_name=target_collection_name,
                     ids=copy_ids[i : i + 256],
                     embeddings=copy_embeddings[i : i + 256],
                     documents=copy_documents[i : i + 256],
@@ -835,12 +1064,14 @@ async def _clone_collection_vectors(
     if VECTOR_DB_CLIENT.has_collection(collection_name=source_collection_name):
         try:
             if VECTOR_DB == "qdrant":
-                direct_clone_success, fallback_reason = _clone_qdrant_collection_vectors(
+                direct_clone_success, fallback_reason = await run_in_threadpool(
+                    _clone_qdrant_collection_vectors,
                     source_collection_name=source_collection_name,
                     target_collection_name=target_collection_name,
                 )
             elif VECTOR_DB == "chroma":
-                chroma_clone_result = _clone_chroma_collection_vectors(
+                chroma_clone_result = await run_in_threadpool(
+                    _clone_chroma_collection_vectors,
                     source_collection_name=source_collection_name,
                     target_collection_name=target_collection_name,
                     file_ids=[file.id for file in files],
@@ -974,7 +1205,10 @@ async def _clone_collection_vectors(
     if strategy != "partial_copy_with_reembed":
         try:
             if VECTOR_DB_CLIENT.has_collection(collection_name=target_collection_name):
-                VECTOR_DB_CLIENT.delete_collection(collection_name=target_collection_name)
+                await run_in_threadpool(
+                    VECTOR_DB_CLIENT.delete_collection,
+                    collection_name=target_collection_name,
+                )
         except Exception:
             pass
 
@@ -1071,7 +1305,10 @@ async def _reindex_collection_internal(request: Request, knowledge, user):
     try:
         try:
             if VECTOR_DB_CLIENT.has_collection(collection_name=temp_collection_name):
-                VECTOR_DB_CLIENT.delete_collection(collection_name=temp_collection_name)
+                await run_in_threadpool(
+                    VECTOR_DB_CLIENT.delete_collection,
+                    collection_name=temp_collection_name,
+                )
         except Exception:
             pass
 
@@ -1107,7 +1344,10 @@ async def _reindex_collection_internal(request: Request, knowledge, user):
         if active_collection_name != temp_collection_name:
             try:
                 if VECTOR_DB_CLIENT.has_collection(collection_name=active_collection_name):
-                    VECTOR_DB_CLIENT.delete_collection(collection_name=active_collection_name)
+                    await run_in_threadpool(
+                        VECTOR_DB_CLIENT.delete_collection,
+                        collection_name=active_collection_name,
+                    )
             except Exception as e:
                 log.warning(
                     f"Failed to delete old collection {active_collection_name} after successful reindex: {e}"
@@ -1123,7 +1363,10 @@ async def _reindex_collection_internal(request: Request, knowledge, user):
     except Exception as e:
         try:
             if VECTOR_DB_CLIENT.has_collection(collection_name=temp_collection_name):
-                VECTOR_DB_CLIENT.delete_collection(collection_name=temp_collection_name)
+                await run_in_threadpool(
+                    VECTOR_DB_CLIENT.delete_collection,
+                    collection_name=temp_collection_name,
+                )
         except Exception:
             pass
 
@@ -1552,6 +1795,52 @@ async def get_knowledge_files_by_id(
     )
 
 
+@router.get("/{id}/download")
+async def download_knowledge_by_id(
+    id: str,
+    user=Depends(get_verified_user),
+):
+    knowledge = Knowledges.get_knowledge_by_id(id=id)
+    if not knowledge:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    if not (
+        user.role == "admin"
+        or knowledge.user_id == user.id
+        or has_access(user.id, "read", knowledge.access_control)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    files = Knowledges.get_files_by_id(id)
+
+    try:
+        zip_path, _ = await run_in_threadpool(_build_knowledge_download_zip, knowledge, files)
+    except Exception as e:
+        log.exception(e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ERROR_MESSAGES.DEFAULT("Failed to build collection archive"),
+        )
+
+    archive_name = _build_knowledge_archive_name(knowledge)
+    encoded_filename = quote(archive_name)
+
+    return FileResponse(
+        path=zip_path,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+        },
+        background=BackgroundTask(_remove_temp_file, zip_path),
+    )
+
+
 ############################
 # AddFileToKnowledge
 ############################
@@ -1634,7 +1923,7 @@ def add_file_to_knowledge_by_id(
 
 
 @router.post("/{id}/file/update", response_model=Optional[KnowledgeFilesResponse])
-def update_file_from_knowledge_by_id(
+async def update_file_from_knowledge_by_id(
     request: Request,
     id: str,
     form_data: KnowledgeFileIdForm,
@@ -1667,13 +1956,16 @@ def update_file_from_knowledge_by_id(
 
     # Remove content from the vector database
     collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
-    VECTOR_DB_CLIENT.delete(
-        collection_name=collection_name, filter={"file_id": form_data.file_id}
+    await run_in_threadpool(
+        VECTOR_DB_CLIENT.delete,
+        collection_name=collection_name,
+        filter={"file_id": form_data.file_id},
     )
 
     # Add content to the vector database
     try:
-        process_file(
+        await run_in_threadpool(
+            process_file,
             request,
             ProcessFileForm(
                 file_id=form_data.file_id,
@@ -1922,7 +2214,10 @@ async def delete_knowledge_by_id(
     active_collection_name = get_active_vector_collection_name(id, knowledge.meta)
     try:
         if VECTOR_DB_CLIENT.has_collection(collection_name=active_collection_name):
-            VECTOR_DB_CLIENT.delete_collection(collection_name=active_collection_name)
+            await run_in_threadpool(
+                VECTOR_DB_CLIENT.delete_collection,
+                collection_name=active_collection_name,
+            )
             invalidate_bm25_collections([active_collection_name])
     except Exception as e:
         warnings.append(
@@ -1980,7 +2275,10 @@ async def reset_knowledge_by_id(id: str, user=Depends(get_verified_user)):
     try:
         active_collection_name = get_active_vector_collection_name(id, knowledge.meta)
         if VECTOR_DB_CLIENT.has_collection(collection_name=active_collection_name):
-            VECTOR_DB_CLIENT.delete_collection(collection_name=active_collection_name)
+            await run_in_threadpool(
+                VECTOR_DB_CLIENT.delete_collection,
+                collection_name=active_collection_name,
+            )
     except Exception as e:
         log.debug(e)
         pass

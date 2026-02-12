@@ -6,6 +6,7 @@
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import GarbageBin from '$lib/components/icons/GarbageBin.svelte';
+	import Download from '$lib/components/icons/Download.svelte';
 	import DocumentDuplicate from '$lib/components/icons/DocumentDuplicate.svelte';
 	import EllipsisHorizontal from '$lib/components/icons/EllipsisHorizontal.svelte';
 
@@ -13,6 +14,9 @@
 	const i18n = getContext('i18n');
 
 	export let onClose: Function = () => {};
+	export let showClone = true;
+	export let showDownload = true;
+	export let showDelete = true;
 
 	let show = false;
 </script>
@@ -48,27 +52,45 @@
 			align="end"
 			transition={flyAndScale}
 		>
-			<DropdownMenu.Item
-				class="flex  gap-2  items-center px-3 py-1.5 text-sm   cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
-				on:click={() => {
-					dispatch('clone');
-				}}
-			>
-				<DocumentDuplicate />
-				<div class="flex items-center">{$i18n.t('Clone')}</div>
-			</DropdownMenu.Item>
+			{#if showClone}
+				<DropdownMenu.Item
+					class="flex  gap-2  items-center px-3 py-1.5 text-sm   cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
+					on:click={() => {
+						dispatch('clone');
+					}}
+				>
+					<DocumentDuplicate />
+					<div class="flex items-center">{$i18n.t('Clone')}</div>
+				</DropdownMenu.Item>
+			{/if}
 
-			<hr class="border-gray-50/30 dark:border-gray-800/30 my-1" />
+			{#if showDownload}
+				<DropdownMenu.Item
+					class="flex  gap-2  items-center px-3 py-1.5 text-sm   cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
+					on:click={() => {
+						dispatch('download');
+					}}
+				>
+					<Download />
+					<div class="flex items-center">{$i18n.t('Download')}</div>
+				</DropdownMenu.Item>
+			{/if}
 
-			<DropdownMenu.Item
-				class="flex  gap-2  items-center px-3 py-1.5 text-sm   cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
-				on:click={() => {
-					dispatch('delete');
-				}}
-			>
-				<GarbageBin />
-				<div class="flex items-center">{$i18n.t('Delete')}</div>
-			</DropdownMenu.Item>
+			{#if showDelete}
+				{#if showClone || showDownload}
+					<hr class="border-gray-50/30 dark:border-gray-800/30 my-1" />
+				{/if}
+
+				<DropdownMenu.Item
+					class="flex  gap-2  items-center px-3 py-1.5 text-sm   cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
+					on:click={() => {
+						dispatch('delete');
+					}}
+				>
+					<GarbageBin />
+					<div class="flex items-center">{$i18n.t('Delete')}</div>
+				</DropdownMenu.Item>
+			{/if}
 		</DropdownMenu.Content>
 	</div>
 </Dropdown>

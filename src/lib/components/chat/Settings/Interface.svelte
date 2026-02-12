@@ -52,6 +52,7 @@
 	let promptAutocomplete = false;
 
 	let largeTextAsFile = false;
+	let conversationFileUploadEmbedding = false;
 
 	let insertSuggestionPrompt = false;
 	let keepFollowUpPrompts = false;
@@ -222,6 +223,7 @@
 		regenerateMenu = $settings?.regenerateMenu ?? true;
 
 		largeTextAsFile = $settings?.largeTextAsFile ?? false;
+		conversationFileUploadEmbedding = $settings?.conversationFileUploadEmbedding ?? false;
 		copyFormatted = $settings?.copyFormatted ?? false;
 
 		collapseCodeBlocks = $settings?.collapseCodeBlocks ?? false;
@@ -1114,6 +1116,33 @@
 					</div>
 				</div>
 			{/if}
+
+			<div>
+				<div class=" py-0.5 flex w-full justify-between">
+					<Tooltip
+						content={$i18n.t(
+							'When disabled, conversation file uploads only extract text and are used only in full-context mode. When enabled, files are embedded into a user-specific conversation knowledge collection.'
+						)}
+						placement="top-start"
+						className=" py-0.5 flex w-full justify-between"
+					>
+						<div id="conversation-file-upload-embedding-label" class="self-center text-xs cursor-help">
+							{$i18n.t('Conversation File Upload Embedding')}
+						</div>
+					</Tooltip>
+
+					<div class="flex items-center gap-2 p-1">
+						<Switch
+							tooltip={true}
+							ariaLabelledbyId="conversation-file-upload-embedding-label"
+							bind:state={conversationFileUploadEmbedding}
+							on:change={() => {
+								saveSettings({ conversationFileUploadEmbedding });
+							}}
+						/>
+					</div>
+				</div>
+			</div>
 
 			<div>
 				<div class=" py-0.5 flex w-full justify-between">

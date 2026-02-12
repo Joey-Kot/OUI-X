@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { addChatToCollection } from '../chat-to-collection';
 
@@ -44,9 +44,15 @@ describe('addChatToCollection', () => {
 	};
 
 	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date(2026, 1, 11, 9, 5));
 		uploadFileMock.mockReset();
 		addFileToKnowledgeByIdMock.mockReset();
 		deleteFileByIdMock.mockReset();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
 	});
 
 	it('uploads markdown and attaches file to knowledge base', async () => {
@@ -56,6 +62,9 @@ describe('addChatToCollection', () => {
 		const result = await addChatToCollection({ token, chat, knowledgeId });
 
 		expect(uploadFileMock).toHaveBeenCalledTimes(1);
+		expect((uploadFileMock.mock.calls[0]?.[1] as File)?.name).toBe(
+			'chat-20260211-0905-Collection Chat.md'
+		);
 		expect(addFileToKnowledgeByIdMock).toHaveBeenCalledWith(token, knowledgeId, 'file-1');
 		expect(deleteFileByIdMock).not.toHaveBeenCalled();
 		expect(result).toEqual({ fileId: 'file-1', knowledgeId });
