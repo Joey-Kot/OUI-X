@@ -46,6 +46,39 @@ describe('buildChatMarkdownFileName', () => {
 		};
 
 		const fixedDate = new Date(2026, 1, 11, 9, 5);
-		expect(buildChatMarkdownFileName(chat, fixedDate)).toBe('chat-my-chat-title-20260211-0905.md');
+		expect(buildChatMarkdownFileName(chat, fixedDate)).toBe('chat-20260211-0905-My Chat Title.md');
+	});
+
+	it('preserves non-latin title characters', () => {
+		const chat = {
+			chat: {
+				title: '我的会话'
+			}
+		};
+
+		const fixedDate = new Date(2026, 1, 11, 9, 5);
+		expect(buildChatMarkdownFileName(chat, fixedDate)).toBe('chat-20260211-0905-我的会话.md');
+	});
+
+	it('sanitizes invalid filename characters', () => {
+		const chat = {
+			chat: {
+				title: 'A/B:C'
+			}
+		};
+
+		const fixedDate = new Date(2026, 1, 11, 9, 5);
+		expect(buildChatMarkdownFileName(chat, fixedDate)).toBe('chat-20260211-0905-A-B-C.md');
+	});
+
+	it('falls back to chat when title becomes empty', () => {
+		const chat = {
+			chat: {
+				title: '...'
+			}
+		};
+
+		const fixedDate = new Date(2026, 1, 11, 9, 5);
+		expect(buildChatMarkdownFileName(chat, fixedDate)).toBe('chat-20260211-0905-chat.md');
 	});
 });
