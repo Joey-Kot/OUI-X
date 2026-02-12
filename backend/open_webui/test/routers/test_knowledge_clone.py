@@ -177,6 +177,54 @@ def test_clone_collection_vectors_chroma_direct_copy(monkeypatch):
     assert process_calls == []
 
 
+def test_clone_collection_vectors_uses_threadpool_for_direct_clone(monkeypatch):
+    files = [_file("file-1")]
+
+    source_payload = {
+        "ids": ["chunk-1"],
+        "embeddings": [[0.1, 0.2]],
+        "documents": ["doc1"],
+        "metadatas": [{"file_id": "file-1"}],
+    }
+
+    fake_client = FakeVectorClient(
+        client=FakeChromaClient(source_payload),
+        existing_collections={"collection-source"},
+    )
+
+    async def fake_process_files_batch(request, form_data, user):
+        return FakeBatchResult([])
+
+    threadpool_calls = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append(getattr(func, "__name__", str(func)))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(knowledge_router, "VECTOR_DB", "chroma")
+    monkeypatch.setattr(knowledge_router, "VECTOR_DB_CLIENT", fake_client)
+    monkeypatch.setattr(
+        knowledge_router,
+        "get_active_vector_collection_name",
+        lambda knowledge_id, meta: f"collection-{knowledge_id}",
+    )
+    monkeypatch.setattr(knowledge_router, "process_files_batch", fake_process_files_batch)
+    monkeypatch.setattr(knowledge_router, "run_in_threadpool", fake_run_in_threadpool)
+
+    result = asyncio.run(
+        knowledge_router._clone_collection_vectors(
+            request=SimpleNamespace(),
+            source_knowledge=SimpleNamespace(id="source", meta={}),
+            target_knowledge=SimpleNamespace(id="target", meta={}),
+            files=files,
+            user=SimpleNamespace(id="u1"),
+        )
+    )
+
+    assert result["warnings"]["strategy"] == "direct_copy"
+    assert "_clone_chroma_collection_vectors" in threadpool_calls
+
+
 def test_clone_collection_vectors_chroma_partial_copy_then_reembed(monkeypatch):
     files = [_file("file-1"), _file("file-2")]
 

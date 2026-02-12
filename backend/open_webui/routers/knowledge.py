@@ -862,12 +862,14 @@ async def _clone_collection_vectors(
     if VECTOR_DB_CLIENT.has_collection(collection_name=source_collection_name):
         try:
             if VECTOR_DB == "qdrant":
-                direct_clone_success, fallback_reason = _clone_qdrant_collection_vectors(
+                direct_clone_success, fallback_reason = await run_in_threadpool(
+                    _clone_qdrant_collection_vectors,
                     source_collection_name=source_collection_name,
                     target_collection_name=target_collection_name,
                 )
             elif VECTOR_DB == "chroma":
-                chroma_clone_result = _clone_chroma_collection_vectors(
+                chroma_clone_result = await run_in_threadpool(
+                    _clone_chroma_collection_vectors,
                     source_collection_name=source_collection_name,
                     target_collection_name=target_collection_name,
                     file_ids=[file.id for file in files],
@@ -1001,7 +1003,10 @@ async def _clone_collection_vectors(
     if strategy != "partial_copy_with_reembed":
         try:
             if VECTOR_DB_CLIENT.has_collection(collection_name=target_collection_name):
-                VECTOR_DB_CLIENT.delete_collection(collection_name=target_collection_name)
+                await run_in_threadpool(
+                    VECTOR_DB_CLIENT.delete_collection,
+                    collection_name=target_collection_name,
+                )
         except Exception:
             pass
 
@@ -1098,7 +1103,10 @@ async def _reindex_collection_internal(request: Request, knowledge, user):
     try:
         try:
             if VECTOR_DB_CLIENT.has_collection(collection_name=temp_collection_name):
-                VECTOR_DB_CLIENT.delete_collection(collection_name=temp_collection_name)
+                await run_in_threadpool(
+                    VECTOR_DB_CLIENT.delete_collection,
+                    collection_name=temp_collection_name,
+                )
         except Exception:
             pass
 
@@ -1134,7 +1142,10 @@ async def _reindex_collection_internal(request: Request, knowledge, user):
         if active_collection_name != temp_collection_name:
             try:
                 if VECTOR_DB_CLIENT.has_collection(collection_name=active_collection_name):
-                    VECTOR_DB_CLIENT.delete_collection(collection_name=active_collection_name)
+                    await run_in_threadpool(
+                        VECTOR_DB_CLIENT.delete_collection,
+                        collection_name=active_collection_name,
+                    )
             except Exception as e:
                 log.warning(
                     f"Failed to delete old collection {active_collection_name} after successful reindex: {e}"
@@ -1150,7 +1161,10 @@ async def _reindex_collection_internal(request: Request, knowledge, user):
     except Exception as e:
         try:
             if VECTOR_DB_CLIENT.has_collection(collection_name=temp_collection_name):
-                VECTOR_DB_CLIENT.delete_collection(collection_name=temp_collection_name)
+                await run_in_threadpool(
+                    VECTOR_DB_CLIENT.delete_collection,
+                    collection_name=temp_collection_name,
+                )
         except Exception:
             pass
 
@@ -1661,7 +1675,7 @@ def add_file_to_knowledge_by_id(
 
 
 @router.post("/{id}/file/update", response_model=Optional[KnowledgeFilesResponse])
-def update_file_from_knowledge_by_id(
+async def update_file_from_knowledge_by_id(
     request: Request,
     id: str,
     form_data: KnowledgeFileIdForm,
@@ -1694,13 +1708,16 @@ def update_file_from_knowledge_by_id(
 
     # Remove content from the vector database
     collection_name = get_active_vector_collection_name(knowledge.id, knowledge.meta)
-    VECTOR_DB_CLIENT.delete(
-        collection_name=collection_name, filter={"file_id": form_data.file_id}
+    await run_in_threadpool(
+        VECTOR_DB_CLIENT.delete,
+        collection_name=collection_name,
+        filter={"file_id": form_data.file_id},
     )
 
     # Add content to the vector database
     try:
-        process_file(
+        await run_in_threadpool(
+            process_file,
             request,
             ProcessFileForm(
                 file_id=form_data.file_id,
@@ -1949,7 +1966,10 @@ async def delete_knowledge_by_id(
     active_collection_name = get_active_vector_collection_name(id, knowledge.meta)
     try:
         if VECTOR_DB_CLIENT.has_collection(collection_name=active_collection_name):
-            VECTOR_DB_CLIENT.delete_collection(collection_name=active_collection_name)
+            await run_in_threadpool(
+                VECTOR_DB_CLIENT.delete_collection,
+                collection_name=active_collection_name,
+            )
             invalidate_bm25_collections([active_collection_name])
     except Exception as e:
         warnings.append(
@@ -2007,7 +2027,10 @@ async def reset_knowledge_by_id(id: str, user=Depends(get_verified_user)):
     try:
         active_collection_name = get_active_vector_collection_name(id, knowledge.meta)
         if VECTOR_DB_CLIENT.has_collection(collection_name=active_collection_name):
-            VECTOR_DB_CLIENT.delete_collection(collection_name=active_collection_name)
+            await run_in_threadpool(
+                VECTOR_DB_CLIENT.delete_collection,
+                collection_name=active_collection_name,
+            )
     except Exception as e:
         log.debug(e)
         pass

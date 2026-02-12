@@ -16,6 +16,11 @@ class DummySyncRedis:
         self.blpop_response = blpop_response
         self.xadd_calls = []
         self.blpop_calls = []
+        self.store = {}
+        self.group_info = []
+        self.consumer_info = []
+        self.pending_info = {}
+        self.stream_len = 0
 
     def xadd(self, key, fields):
         self.xadd_calls.append((key, fields))
@@ -25,6 +30,33 @@ class DummySyncRedis:
         if self.blpop_response is None:
             return None
         return (key, json.dumps(self.blpop_response))
+
+    def exists(self, _key):
+        return 1
+
+    def xlen(self, _key):
+        return self.stream_len
+
+    def xinfo_groups(self, _key):
+        return self.group_info
+
+    def xinfo_consumers(self, _key, _group):
+        return self.consumer_info
+
+    def xpending(self, _key, _group):
+        return self.pending_info
+
+    def xpending_range(self, _key, _group, _min, _max, _count):
+        return []
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def ttl(self, _key):
+        return 30
+
+    def llen(self, _key):
+        return 0
 
 
 class DummyInnerClient:
@@ -82,6 +114,8 @@ class DummyAsyncRedis:
         self.xautoclaim_responses = []
         self.xreadgroup_responses = []
         self.xgroup_create_calls = []
+        self.eval_responses = []
+        self.eval_calls = []
 
     async def xack(self, stream_key, group_name, *ids):
         self.xack_calls.append((stream_key, group_name, ids))
@@ -91,6 +125,7 @@ class DummyAsyncRedis:
 
     async def expire(self, key, ttl):
         self.expire_calls.append((key, ttl))
+        return True
 
     async def set(self, key, value, nx=False, xx=False, ex=None):
         if nx and key in self.store:
@@ -100,8 +135,43 @@ class DummyAsyncRedis:
         self.store[key] = value
         return True
 
+    async def eval(self, script, numkeys, key, token, ttl):
+        self.eval_calls.append((script, numkeys, key, token, ttl))
+        if self.eval_responses:
+            response = self.eval_responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+        if self.store.get(key) == token:
+            return 1
+        return 0
+
     async def get(self, key):
         return self.store.get(key)
+
+    async def exists(self, _key):
+        return 1
+
+    async def xlen(self, _key):
+        return 0
+
+    async def xinfo_groups(self, _key):
+        return []
+
+    async def xinfo_consumers(self, _key, _group):
+        return []
+
+    async def xpending(self, _key, _group):
+        return {}
+
+    async def xpending_range(self, _key, _group, _min, _max, _count):
+        return []
+
+    async def ttl(self, _key):
+        return 30
+
+    async def llen(self, _key):
+        return 0
 
     async def delete(self, key):
         self.store.pop(key, None)
@@ -169,12 +239,19 @@ def test_coordinator_enqueue_and_wait_failure():
         coordinator.enqueue_and_wait(op="delete", collection_name="col", payload={})
 
 
-def test_coordinator_enqueue_and_wait_timeout():
+def test_coordinator_enqueue_and_wait_timeout(caplog):
     redis_client = DummySyncRedis(blpop_response=None)
+    redis_client.stream_len = 1
     coordinator = ChromaWriteCoordinator(redis_client=redis_client, key_prefix="open-webui")
 
-    with pytest.raises(TimeoutError):
-        coordinator.enqueue_and_wait(op="delete", collection_name="col", payload={})
+    with caplog.at_level("ERROR"):
+        with pytest.raises(TimeoutError):
+            coordinator.enqueue_and_wait(op="delete", collection_name="col", payload={})
+
+    assert any(
+        "snapshot=" in record.message and "Timed out waiting queued chroma write result" in record.message
+        for record in caplog.records
+    )
 
 
 def test_queued_client_reads_passthrough_and_writes_queued():
@@ -404,6 +481,55 @@ def test_worker_does_not_swallow_non_nogroup_errors():
     asyncio.run(_run_test())
 
 
+def test_worker_renew_leader_logs_failure_reason(caplog):
+    async def _run_test():
+        redis_client = DummyAsyncRedis()
+        worker = ChromaWriteWorker(
+            inner_client=DummyInnerClient(),
+            redis_client=redis_client,
+            key_prefix="open-webui",
+        )
+        worker.leader_lock_token = "token-1"
+
+        with caplog.at_level("WARNING"):
+            renewed = await worker._renew_leader()
+
+        assert renewed is False
+        assert any("reason=key_missing" in record.message for record in caplog.records)
+
+    asyncio.run(_run_test())
+
+
+def test_worker_process_batch_logs_task_ids(caplog):
+    async def _run_test():
+        redis_client = DummyAsyncRedis()
+        inner = DummyInnerClient()
+        worker = ChromaWriteWorker(
+            inner_client=inner,
+            redis_client=redis_client,
+            key_prefix="open-webui",
+        )
+
+        batch = {
+            "op": "upsert",
+            "collection_name": "col",
+            "payload": {"items": [{"id": "1", "text": "doc", "vector": [0.1], "metadata": {}}]},
+            "tasks": [{"task_id": "task-1"}],
+            "message_ids": ["1-0"],
+        }
+
+        with caplog.at_level("INFO"):
+            await worker._process_batch(batch)
+
+        assert any(
+            "Processing chroma batch" in record.message
+            and "task_ids=[task-1]" in record.message
+            for record in caplog.records
+        )
+
+    asyncio.run(_run_test())
+
+
 def test_worker_nogroup_recovery_logging_is_rate_limited(caplog):
     async def _run_test():
         redis_client = DummyAsyncRedis()
@@ -425,5 +551,216 @@ def test_worker_nogroup_recovery_logging_is_rate_limited(caplog):
             if "Detected missing Chroma Redis stream/group" in record.message
         ]
         assert len(messages) == 1
+
+    asyncio.run(_run_test())
+
+
+def test_worker_error_classification():
+    assert (
+        ChromaWriteWorker._error_class(redis.exceptions.ResponseError("NOGROUP missing"))
+        == "nogroup"
+    )
+    assert (
+        ChromaWriteWorker._error_class(redis.exceptions.ConnectionError("connection down"))
+        == "connection"
+    )
+    assert (
+        ChromaWriteWorker._error_class(redis.exceptions.ResponseError("WRONGTYPE"))
+        == "other_response_error"
+    )
+
+
+def test_worker_ensure_group_uses_zero_offset():
+    async def _run_test():
+        redis_client = DummyAsyncRedis()
+        worker = ChromaWriteWorker(
+            inner_client=DummyInnerClient(),
+            redis_client=redis_client,
+            key_prefix="open-webui",
+        )
+
+        await worker._ensure_group()
+
+        assert redis_client.xgroup_create_calls
+        _name, _group, offset, _mkstream = redis_client.xgroup_create_calls[0]
+        assert offset == "0"
+
+    asyncio.run(_run_test())
+
+
+def test_worker_renew_leader_atomic_token_mismatch():
+    async def _run_test():
+        redis_client = DummyAsyncRedis()
+        redis_client.store["open-webui:chroma:worker:leader"] = "other-token"
+        worker = ChromaWriteWorker(
+            inner_client=DummyInnerClient(),
+            redis_client=redis_client,
+            key_prefix="open-webui",
+        )
+        worker.leader_lock_token = "local-token"
+
+        renewed = await worker._renew_leader()
+
+        assert renewed is False
+
+    asyncio.run(_run_test())
+
+
+def test_worker_renew_leader_falls_back_after_lua_response_error():
+    async def _run_test():
+        redis_client = DummyAsyncRedis()
+        worker = ChromaWriteWorker(
+            inner_client=DummyInnerClient(),
+            redis_client=redis_client,
+            key_prefix="open-webui",
+        )
+        worker.leader_lock_token = "token-1"
+        redis_client.store[worker.leader_key] = "token-1"
+        redis_client.eval_responses = [redis.exceptions.ResponseError("EVAL disabled")]
+
+        renewed = await worker._renew_leader()
+
+        assert renewed is True
+        assert redis_client.expire_calls
+
+    asyncio.run(_run_test())
+
+
+def test_worker_renew_leader_lua_script_uses_quoted_commands():
+    async def _run_test():
+        redis_client = DummyAsyncRedis()
+        worker = ChromaWriteWorker(
+            inner_client=DummyInnerClient(),
+            redis_client=redis_client,
+            key_prefix="open-webui",
+        )
+        worker.leader_lock_token = "token-1"
+        redis_client.store[worker.leader_key] = "token-1"
+
+        renewed = await worker._renew_leader()
+
+        assert renewed is True
+        assert redis_client.eval_calls
+        script = redis_client.eval_calls[0][0]
+        assert "redis.call('GET', KEYS[1])" in script
+        assert "redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))" in script
+
+    asyncio.run(_run_test())
+
+
+def test_worker_renew_leader_fallback_failure_on_token_mismatch():
+    async def _run_test():
+        redis_client = DummyAsyncRedis()
+        worker = ChromaWriteWorker(
+            inner_client=DummyInnerClient(),
+            redis_client=redis_client,
+            key_prefix="open-webui",
+        )
+        worker.leader_lock_token = "token-1"
+        redis_client.store[worker.leader_key] = "other-token"
+        redis_client.eval_responses = [redis.exceptions.ResponseError("EVAL disabled")]
+
+        renewed = await worker._renew_leader()
+
+        assert renewed is False
+
+    asyncio.run(_run_test())
+
+
+def test_worker_heartbeat_marks_unhealthy_on_renew_failure():
+    async def _run_test():
+        redis_client = DummyAsyncRedis()
+        worker = ChromaWriteWorker(
+            inner_client=DummyInnerClient(),
+            redis_client=redis_client,
+            key_prefix="open-webui",
+        )
+        worker.leader_lock_token = "token"
+        worker._leader_alive = True
+        worker.leader_heartbeat_interval_seconds = 0
+        redis_client.eval_responses = [0]
+
+        await worker._leader_heartbeat_loop()
+
+        assert worker._leader_alive is False
+
+    asyncio.run(_run_test())
+
+
+def test_worker_heartbeat_stays_alive_when_fallback_succeeds():
+    async def _run_test():
+        redis_client = DummyAsyncRedis()
+        worker = ChromaWriteWorker(
+            inner_client=DummyInnerClient(),
+            redis_client=redis_client,
+            key_prefix="open-webui",
+        )
+        worker.leader_lock_token = "token"
+        redis_client.store[worker.leader_key] = "token"
+        redis_client.eval_responses = [redis.exceptions.ResponseError("EVAL disabled")]
+        worker._leader_alive = True
+        worker.leader_heartbeat_interval_seconds = 0
+
+        async def stop_after_first_write():
+            worker._leader_alive = False
+
+        worker._write_leader_meta = stop_after_first_write
+
+        await worker._leader_heartbeat_loop()
+
+        assert worker._leader_alive is False
+        assert redis_client.expire_calls
+
+    asyncio.run(_run_test())
+
+
+def test_worker_recover_pending_messages_retries_connection_errors():
+    async def _run_test():
+        redis_client = DummyAsyncRedis()
+        redis_client.xautoclaim_responses = [
+            redis.exceptions.ConnectionError("tmp down"),
+            redis.exceptions.ConnectionError("tmp down"),
+            ("0-0", [], []),
+        ]
+
+        worker = ChromaWriteWorker(
+            inner_client=DummyInnerClient(),
+            redis_client=redis_client,
+            key_prefix="open-webui",
+        )
+
+        await worker._recover_pending_messages()
+
+        # no exception == retry path worked
+        assert True
+
+    asyncio.run(_run_test())
+
+
+def test_worker_run_as_leader_recovers_pending_before_reading():
+    async def _run_test():
+        worker = ChromaWriteWorker(
+            inner_client=DummyInnerClient(),
+            redis_client=DummyAsyncRedis(),
+            key_prefix="open-webui",
+        )
+
+        call_order = []
+
+        async def fake_recover():
+            call_order.append("recover")
+            worker._leader_alive = False
+
+        async def fake_read():
+            call_order.append("read")
+            return []
+
+        worker._leader_alive = True
+        worker._recover_pending_messages = fake_recover
+        worker._read_batch = fake_read
+
+        await worker._run_as_leader()
+
+        assert call_order[0] == "recover"
 
     asyncio.run(_run_test())

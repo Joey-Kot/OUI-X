@@ -373,6 +373,38 @@ def test_delete_collection_mixed_files(monkeypatch):
     assert res.warnings["skipped_file_deletions_sample"][0]["file_id"] == "file-a"
 
 
+def test_delete_knowledge_collects_vector_delete_collection_warning(monkeypatch):
+    knowledge = DummyKnowledge("k1")
+
+    monkeypatch.setattr(knowledge_router.Knowledges, "get_knowledge_by_id", lambda _id: knowledge)
+    monkeypatch.setattr(knowledge_router.Knowledges, "get_files_by_id", lambda _id: [])
+    monkeypatch.setattr(knowledge_router.Models, "get_all_models", lambda: [])
+    monkeypatch.setattr(knowledge_router.Knowledges, "delete_knowledge_by_id", lambda _id: True)
+    monkeypatch.setattr(
+        knowledge_router,
+        "get_active_vector_collection_name",
+        lambda _id, _meta: "col-k1",
+    )
+    monkeypatch.setattr(knowledge_router, "mark_bm25_collections_dirty", lambda _names: None)
+    monkeypatch.setattr(knowledge_router, "invalidate_bm25_collections", lambda _names: None)
+
+    vector = DummyVectorClient()
+    vector.existing.add("col-k1")
+
+    def fail_delete_collection(collection_name):
+        raise RuntimeError(f"boom: {collection_name}")
+
+    vector.delete_collection = fail_delete_collection
+    monkeypatch.setattr(knowledge_router, "VECTOR_DB_CLIENT", vector)
+
+    res = asyncio.run(knowledge_router.delete_knowledge_by_id("k1", force=False, user=_user()))
+
+    assert res.status is True
+    assert res.warnings is not None
+    assert res.warnings["message"] == "Some cleanup steps failed"
+    assert res.warnings["errors"][0]["stage"] == "vector.delete_collection"
+
+
 def test_detach_shared_file_does_not_touch_other_collections(monkeypatch):
     knowledge = DummyKnowledge("k1")
 

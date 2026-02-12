@@ -22,6 +22,7 @@ from fastapi import (
 )
 
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.concurrency import run_in_threadpool
 
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
@@ -430,7 +431,7 @@ async def delete_all_files(user=Depends(get_admin_user)):
     if result:
         try:
             Storage.delete_all_files()
-            VECTOR_DB_CLIENT.reset()
+            await run_in_threadpool(VECTOR_DB_CLIENT.reset)
         except Exception as e:
             log.exception(e)
             log.error("Error deleting files")
@@ -839,11 +840,15 @@ async def delete_file_by_id(id: str, user=Depends(get_verified_user)):
                     active_collection_name = get_active_vector_collection_name(
                         knowledge.id, knowledge.meta
                     )
-                    VECTOR_DB_CLIENT.delete(
+                    await run_in_threadpool(
+                        VECTOR_DB_CLIENT.delete,
                         collection_name=active_collection_name,
                         filter={"file_id": id},
                     )
-                VECTOR_DB_CLIENT.delete(collection_name=f"file-{id}")
+                await run_in_threadpool(
+                    VECTOR_DB_CLIENT.delete,
+                    collection_name=f"file-{id}",
+                )
             except Exception as e:
                 log.exception(e)
                 log.error("Error deleting files")

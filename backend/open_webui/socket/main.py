@@ -163,55 +163,75 @@ YDOC_MANAGER = YdocManager(
 
 
 async def periodic_usage_pool_cleanup():
-    max_retries = 2
-    retry_delay = random.uniform(
-        WEBSOCKET_REDIS_LOCK_TIMEOUT / 2, WEBSOCKET_REDIS_LOCK_TIMEOUT
-    )
-    for attempt in range(max_retries + 1):
-        if aquire_func():
-            break
-        else:
+    backoff_seconds = 1
+    max_backoff_seconds = 30
+
+    while True:
+        max_retries = 2
+        retry_delay = random.uniform(
+            WEBSOCKET_REDIS_LOCK_TIMEOUT / 2, WEBSOCKET_REDIS_LOCK_TIMEOUT
+        )
+
+        acquired = False
+        for attempt in range(max_retries + 1):
+            if aquire_func():
+                acquired = True
+                break
             if attempt < max_retries:
                 log.debug(
                     f"Cleanup lock already exists. Retry {attempt + 1} after {retry_delay}s..."
                 )
                 await asyncio.sleep(retry_delay)
-            else:
-                log.warning(
-                    "Failed to acquire cleanup lock after retries. Skipping cleanup."
-                )
-                return
 
-    log.debug("Running periodic_cleanup")
-    try:
-        while True:
-            if not renew_func():
-                log.error(f"Unable to renew cleanup lock. Exiting usage pool cleanup.")
-                raise Exception("Unable to renew usage pool cleanup lock.")
+        if not acquired:
+            log.warning(
+                "Failed to acquire cleanup lock after retries. Retrying loop in %ss.",
+                backoff_seconds,
+            )
+            await asyncio.sleep(backoff_seconds)
+            backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
+            continue
 
-            now = int(time.time())
-            send_usage = False
-            for model_id, connections in list(USAGE_POOL.items()):
-                # Creating a list of sids to remove if they have timed out
-                expired_sids = [
-                    sid
-                    for sid, details in connections.items()
-                    if now - details["updated_at"] > TIMEOUT_DURATION
-                ]
+        backoff_seconds = 1
+        log.debug("Running periodic_cleanup")
+        try:
+            while True:
+                if not renew_func():
+                    log.error(
+                        "Unable to renew cleanup lock. Exiting usage pool cleanup. redis_url_alias=%s redis_prefix=%s lock_timeout=%s",
+                        "configured" if WEBSOCKET_REDIS_URL else "unset",
+                        REDIS_KEY_PREFIX,
+                        WEBSOCKET_REDIS_LOCK_TIMEOUT,
+                    )
+                    raise Exception("Unable to renew usage pool cleanup lock.")
 
-                for sid in expired_sids:
-                    del connections[sid]
+                now = int(time.time())
+                send_usage = False
+                for model_id, connections in list(USAGE_POOL.items()):
+                    # Creating a list of sids to remove if they have timed out
+                    expired_sids = [
+                        sid
+                        for sid, details in connections.items()
+                        if now - details["updated_at"] > TIMEOUT_DURATION
+                    ]
 
-                if not connections:
-                    log.debug(f"Cleaning up model {model_id} from usage pool")
-                    del USAGE_POOL[model_id]
-                else:
-                    USAGE_POOL[model_id] = connections
+                    for sid in expired_sids:
+                        del connections[sid]
 
-                send_usage = True
-            await asyncio.sleep(TIMEOUT_DURATION)
-    finally:
-        release_func()
+                    if not connections:
+                        log.debug(f"Cleaning up model {model_id} from usage pool")
+                        del USAGE_POOL[model_id]
+                    else:
+                        USAGE_POOL[model_id] = connections
+
+                    send_usage = True
+                await asyncio.sleep(TIMEOUT_DURATION)
+        except Exception:
+            log.exception("periodic_usage_pool_cleanup loop failed; restarting")
+            await asyncio.sleep(backoff_seconds)
+            backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
+        finally:
+            release_func()
 
 
 app = socketio.ASGIApp(
