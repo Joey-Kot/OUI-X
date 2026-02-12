@@ -7,16 +7,12 @@ OUI-X 是基于 **Open WebUI** 的二次开发分支，目标是：
 * **OpenAI Responses API 适配**
 * **更轻量、更稳定的默认构建与运行体验**（镜像从 4.7GB -> 2.6GB）
 
----
-
 ## 项目定位
 
 * **更轻、更干净的默认发行版**：移除大量默认不使用或维护成本高的引擎/入口（Ollama、部分语音引擎、OpenAPI tools、评测/评分/Arena 等）。
 * **工具调用优先**：把工具体系升级到以 **MCP（Model Context Protocol）** 为核心，支持系统级与用户级 MCP server 管理、OAuth 2.1、SSE/Streamable HTTP。
 * **RAG 强化**：从“一个全局配置套所有集合”升级到“**每个 Knowledge Collection 可独立覆写配置**”，并强化 clone、BM25/Hybrid/Rerank 的配置结构与稳定性。
 * **面向 Responses API**：新增 OpenAI Responses API 的适配层，支持对话、图片输入、工具调用与 reasoning/thinking 的展示。
-
----
 
 ## 新增了什么？
 
@@ -33,8 +29,6 @@ OUI-X 增加了“原生 MCP 工具调用”的完整链路：
   * **系统级 MCP 连接**（管理员配置）
   * **用户级 MCP 连接**（用户可在 UI 中添加、verify、完成 OAuth 授权）
 
----
-
 ### 2) OpenAI Responses API 适配
 
 OUI-X 新增 Responses API 的适配层（在后端与前端均有接入）：
@@ -44,8 +38,6 @@ OUI-X 新增 Responses API 的适配层（在后端与前端均有接入）：
 * tool calls / tool followups 在 Responses 结构里的表达与回放
 * reasoning/thinking 的提取与展示（同时避免把不合适的 summary 混入 UI）
 * UI 展示层对 content blocks 做了重排：**thinking 在正文之前展示**（仅展示顺序调整）
-
----
 
 ### 3) Native-Only 工具调用流水线重构
 
@@ -60,8 +52,6 @@ OUI-X 新增 Responses API 的适配层（在后端与前端均有接入）：
   * 并发峰值验证
   * follow-up messages 结构验证
 
----
-
 ### 4) Tool Calling Timeout（工具调用超时）
 
 新增 **工具调用超时**配置，并在后端 middleware 端到端注入：
@@ -71,8 +61,6 @@ OUI-X 新增 Responses API 的适配层（在后端与前端均有接入）：
 * tool calling 相关 metadata 同时包含：
   * `max_tool_calls_per_round`
   * `tool_call_timeout_seconds`
-
----
 
 ### 5) RAG / Knowledge Base 强化
 
@@ -161,7 +149,23 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
   * 开启 embedding 时：会话文件进入用户专属 conversation knowledge collection
   * 上传路径策略补充：Knowledge 上传走 vector_db/uploads；会话图片始终走 uploads；其余会话文件按开关决定
 
----
+#### 5.10 Conversation Add To Collection（会话一键入库）
+
+* 在会话菜单新增 `Add To Collection` 按钮（Navbar / Sidebar 均支持）
+* 仅在满足以下权限时展示入口：
+  * `workspace.knowledge` 可用（或 admin）
+  * `chat.file_upload` 可用（或 admin）
+* 弹窗仅展示有写权限（`write_access`）的 Knowledge collections，并支持分页加载
+* 选定 collection 后将当前会话序列化为 Markdown，按标准上传链路写入知识库：
+  * 若“上传成功但挂载到知识库失败”，会自动执行文件清理（`deleteFileById`）以避免脏数据残留
+  * 当无可写 collection 时，提示并引导跳转到 Knowledge 工作区创建/管理
+* Add To Collection 文件命名规则，导出文件名由：
+  * `chat-<yyyyMMdd-HHmm>-<会话名>.md`
+  * 文件名安全清理逻辑：
+    * 替换非法字符（如 `/ \\ : * ? " < > |` 及控制字符）为 `-`
+    * 去除首尾空白与尾部 `.`，避免跨平台文件名兼容问题
+  * 当标题为空或清理后为空时，统一回退为 `chat`
+  * 后端存储策略：由后端追加 `uuid_` 前缀（如 `uuid_chat-<yyyyMMdd-HHmm>-<原会话名>.md`）
 
 ## 移除了什么？
 
@@ -188,8 +192,6 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
 * TTS：移除 ElevenLabs 与部分本地 transformers TTS 分支
 * STT：移除部分 provider/config（例如 Whisper/Deepgram/Mistral STT 等相关配置与依赖链）
 
----
-
 ## 重构与稳定性改进（值得一提）
 
 * Docker 构建与依赖体系多次“瘦身”：
@@ -199,8 +201,6 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
 * Chat UI quick actions（浮动按钮）修复：
   * 请求体更标准化、stream 解析更稳、错误信息更可诊断
   * 后端对 `parent_message` 做了类型兜底防崩
-
----
 
 ## 运行与开发（简述）
 
@@ -221,8 +221,6 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
 
 OUI-X 的 Dockerfile 倾向于“更轻依赖、少副作用”。
 如需特定能力（例如某些 OCR / STT / embedding 依赖），建议自行修改。
-
----
 
 ## 适用场景建议
 
