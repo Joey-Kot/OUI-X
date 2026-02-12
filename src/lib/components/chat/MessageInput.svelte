@@ -587,7 +587,8 @@
 				}
 
 				const conversationEmbeddingEnabled =
-					$config?.file?.conversation_file_upload_embedding ?? false;
+					($settings?.conversationFileUploadEmbedding === true) ||
+					($config?.file?.conversation_file_upload_embedding ?? false);
 				metadata = {
 					...(metadata ?? {}),
 					conversation_ingest_mode: conversationEmbeddingEnabled

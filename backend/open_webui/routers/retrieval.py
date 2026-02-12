@@ -91,6 +91,9 @@ from open_webui.utils.misc import (
     sanitize_text_for_db,
 )
 from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.file_upload_settings import (
+    is_conversation_file_upload_embedding_enabled,
+)
 
 from open_webui.config import (
     ENV,
@@ -1756,15 +1759,18 @@ def process_file(
         try:
             is_conversation_upload = is_conversation_upload_processing(form_data)
             conversation_upload_knowledge = None
+            conversation_upload_embedding_enabled = (
+                is_conversation_file_upload_embedding_enabled(
+                    user=user,
+                    global_enabled=request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING,
+                )
+            )
 
             collection_name = form_data.collection_name
             logical_collection_name = form_data.knowledge_id or form_data.collection_name
 
             if collection_name is None:
-                if (
-                    is_conversation_upload
-                    and request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING
-                ):
+                if is_conversation_upload and conversation_upload_embedding_enabled:
                     conversation_upload_knowledge = (
                         get_or_create_user_conversation_upload_knowledge(request, user)
                     )
@@ -1920,10 +1926,7 @@ def process_file(
             hash = calculate_sha256_string(text_content)
             Files.update_file_hash_by_id(file.id, hash)
 
-            if (
-                is_conversation_upload
-                and not request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING
-            ):
+            if is_conversation_upload and not conversation_upload_embedding_enabled:
                 Files.update_file_data_by_id(file.id, {"status": "completed"})
                 return {
                     "status": True,

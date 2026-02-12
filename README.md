@@ -121,9 +121,9 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
 * UI 增加 collection config modal（用于编辑/保存覆写项）
 * config 访问权限对齐：**需要 write 权限**（只读用户不再尝试加载 config，避免 toast 噪音）
 
-#### 5.6 Knowledge Collection Clone（更稳的复制策略）
+#### 5.6 新增 Knowledge Collection Clone
 
-新增 Knowledge clone API，并持续强化稳定性：
+新增 Knowledge clone API：
 
 * `POST /knowledge/{id}/clone`
 * 优先 direct clone（向量库复制），失败回退 re-embed
@@ -133,7 +133,16 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
   * 部分失败文件 fallback re-embed
   * 修复 `has_collection` 兼容不同 Chroma client 返回形态
 
-#### 5.7 Chroma 引入 Redis 队列写入调度
+#### 新增 5.7 Knowledge Collection Download
+
+新增 Knowledge download API：
+
+* 优先读取文件实体关联的 storage 文件并写入 zip
+* 若 storage 文件缺失/不可读，fallback 到向量库内容并生成 *.fallback.txt
+* fallback 查询顺序：file-{file_id} -> 当前 knowledge active collection（按 file_id 过滤）
+* 对单文件失败采用“不中断整体导出”策略，失败详情写入 manifest
+
+#### 5.8 Chroma 引入 Redis 队列写入调度
 
 * 新增 Chroma Redis 开关（默认关闭）：
   * `CHROMA_REDIS_ENABLED`（仅显式 true 时启用）

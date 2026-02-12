@@ -49,6 +49,9 @@ from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access
 from open_webui.utils.misc import strict_match_mime_type
+from open_webui.utils.file_upload_settings import (
+    is_conversation_file_upload_embedding_enabled,
+)
 from open_webui.utils.knowledge import get_active_vector_collection_name
 from open_webui.config import KNOWLEDGE_UPLOAD_DIR, UPLOAD_DIR
 from pydantic import BaseModel
@@ -248,8 +251,11 @@ def upload_file_handler(
             isinstance(file_metadata, dict) and file_metadata.get("knowledge_id")
         )
         is_knowledge_upload = has_knowledge_id
-        conversation_upload_embedding_enabled = bool(
-            request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING
+        conversation_upload_embedding_enabled = (
+            is_conversation_file_upload_embedding_enabled(
+                user=user,
+                global_enabled=request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING,
+            )
         )
 
         extension_for_image = (file_extension or "").lower()
