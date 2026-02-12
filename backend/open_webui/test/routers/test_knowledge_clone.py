@@ -78,6 +78,7 @@ class FakeVectorClient:
         self.client = client
         self.existing_collections = set(existing_collections or set())
         self.deleted_collections = []
+        self.upserts = []
 
     def has_collection(self, collection_name):
         return collection_name in self.existing_collections
@@ -85,6 +86,9 @@ class FakeVectorClient:
     def delete_collection(self, collection_name):
         self.deleted_collections.append(collection_name)
         self.existing_collections.discard(collection_name)
+
+    def upsert(self, collection_name, items):
+        self.upserts.append((collection_name, items))
 
 
 class FakeBatchResult:

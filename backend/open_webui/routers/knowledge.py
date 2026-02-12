@@ -174,6 +174,28 @@ def _chunk_vector_items(items: list, chunk_size: int = 256):
         yield items[i : i + chunk_size]
 
 
+def _upsert_chroma_records(
+    target_collection_name: str,
+    ids: list,
+    embeddings: list,
+    documents: list,
+    metadatas: list,
+):
+    items = []
+    for idx, item_id in enumerate(ids):
+        items.append(
+            {
+                "id": item_id,
+                "text": documents[idx] if idx < len(documents) else "",
+                "vector": embeddings[idx],
+                "metadata": metadatas[idx] if idx < len(metadatas) else {},
+            }
+        )
+
+    if items:
+        VECTOR_DB_CLIENT.upsert(collection_name=target_collection_name, items=items)
+
+
 def _normalize_chroma_sequence(value) -> list:
     if value is None:
         return []
@@ -469,7 +491,11 @@ def _clone_qdrant_collection_vectors(
     return True, None
 
 
-def _clone_chroma_by_file_id(source, target, file_ids: list[str]) -> dict:
+def _clone_chroma_by_file_id(
+    source,
+    target_collection_name: str,
+    file_ids: list[str],
+) -> dict:
     copied_count = 0
     missing_file_ids: list[str] = []
     failed_file_ids: list[str] = []
@@ -535,7 +561,8 @@ def _clone_chroma_by_file_id(source, target, file_ids: list[str]) -> dict:
             continue
 
         for i in range(0, len(copy_ids), 256):
-            target.upsert(
+            _upsert_chroma_records(
+                target_collection_name=target_collection_name,
                 ids=copy_ids[i : i + 256],
                 embeddings=copy_embeddings[i : i + 256],
                 documents=copy_documents[i : i + 256],
@@ -636,11 +663,6 @@ def _clone_chroma_collection_vectors(
     missing_chunks = 0
     pages_scanned = 0
 
-    target = client.get_or_create_collection(
-        name=target_collection_name,
-        metadata={"hnsw:space": "cosine"},
-    )
-
     offset = 0
     while offset < total_items:
         try:
@@ -651,7 +673,11 @@ def _clone_chroma_collection_vectors(
             )
         except Exception as e:
             if file_ids:
-                retry_result = _clone_chroma_by_file_id(source, target, file_ids)
+                retry_result = _clone_chroma_by_file_id(
+                    source,
+                    target_collection_name,
+                    file_ids,
+                )
                 failed_file_ids = retry_result["failed_file_ids"]
                 missing_file_ids = set(retry_result["missing_file_ids"])
                 missing_chunks = retry_result["missing_chunks"]
@@ -728,7 +754,8 @@ def _clone_chroma_collection_vectors(
 
         for i in range(0, len(copy_ids), 256):
             try:
-                target.upsert(
+                _upsert_chroma_records(
+                    target_collection_name=target_collection_name,
                     ids=copy_ids[i : i + 256],
                     embeddings=copy_embeddings[i : i + 256],
                     documents=copy_documents[i : i + 256],

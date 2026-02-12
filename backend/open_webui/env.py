@@ -353,6 +353,12 @@ ENABLE_QUERIES_CACHE = os.environ.get("ENABLE_QUERIES_CACHE", "False").lower() =
 REDIS_URL = os.environ.get("REDIS_URL", "")
 REDIS_CLUSTER = os.environ.get("REDIS_CLUSTER", "False").lower() == "true"
 
+# Optional Redis-backed write coordination for Chroma.
+CHROMA_REDIS_ENABLED = (
+    os.environ.get("CHROMA_REDIS_ENABLED", "").lower() == "true"
+)
+CHROMA_REDIS_URL = os.environ.get("CHROMA_REDIS_URL", REDIS_URL)
+
 REDIS_KEY_PREFIX = os.environ.get("REDIS_KEY_PREFIX", "open-webui")
 
 REDIS_SENTINEL_HOSTS = os.environ.get("REDIS_SENTINEL_HOSTS", "")

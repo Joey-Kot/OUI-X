@@ -419,6 +419,7 @@ from open_webui.config import (
     QUERY_GENERATION_PROMPT_TEMPLATE,
     AUTOCOMPLETE_GENERATION_PROMPT_TEMPLATE,
     AUTOCOMPLETE_GENERATION_INPUT_MAX_LENGTH,
+    VECTOR_DB,
     AppConfig,
     reset_config,
 )
@@ -460,6 +461,8 @@ from open_webui.env import (
     AIOHTTP_CLIENT_SESSION_SSL,
     ENABLE_STAR_SESSIONS_MIDDLEWARE,
     ENABLE_PUBLIC_ACTIVE_USERS_COUNT,
+    CHROMA_REDIS_ENABLED,
+    CHROMA_REDIS_URL,
 )
 
 
@@ -581,6 +584,43 @@ async def lifespan(app: FastAPI):
             redis_task_command_listener(app)
         )
 
+    app.state.chroma_write_worker_task = None
+    app.state.chroma_write_worker = None
+    if CHROMA_REDIS_ENABLED and VECTOR_DB == "chroma":
+        app.state.chroma_redis = get_redis_connection(
+            redis_url=CHROMA_REDIS_URL,
+            redis_sentinels=get_sentinels_from_env(
+                REDIS_SENTINEL_HOSTS, REDIS_SENTINEL_PORT
+            ),
+            redis_cluster=REDIS_CLUSTER,
+            async_mode=True,
+        )
+
+        if app.state.chroma_redis is None:
+            raise RuntimeError(
+                "CHROMA_REDIS_ENABLED=true requires a valid CHROMA_REDIS_URL/REDIS_URL"
+            )
+
+        try:
+            await app.state.chroma_redis.ping()
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to connect to Redis for Chroma queued writes"
+            ) from e
+
+        from open_webui.retrieval.vector.chroma_redis_coordinator import ChromaWriteWorker
+        from open_webui.retrieval.vector.dbs.chroma import ChromaClient
+
+        app.state.chroma_write_worker = ChromaWriteWorker(
+            inner_client=ChromaClient(),
+            redis_client=app.state.chroma_redis,
+            key_prefix=REDIS_KEY_PREFIX,
+            consumer_name=f"{INSTANCE_ID}-{os.getpid()}",
+        )
+        app.state.chroma_write_worker_task = asyncio.create_task(
+            app.state.chroma_write_worker.run()
+        )
+
     if THREAD_POOL_SIZE and THREAD_POOL_SIZE > 0:
         limiter = anyio.to_thread.current_default_thread_limiter()
         limiter.total_tokens = THREAD_POOL_SIZE
@@ -622,6 +662,9 @@ async def lifespan(app: FastAPI):
 
     if hasattr(app.state, "redis_task_command_listener"):
         app.state.redis_task_command_listener.cancel()
+
+    if app.state.chroma_write_worker_task is not None:
+        app.state.chroma_write_worker_task.cancel()
 
 
 app = FastAPI(
