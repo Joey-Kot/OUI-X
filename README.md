@@ -121,7 +121,7 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
   * 部分失败文件 fallback re-embed
   * 修复 `has_collection` 兼容不同 Chroma client 返回形态
 
-#### 新增 5.7 Knowledge Collection Download
+#### 5.7 新增 Knowledge Collection Download
 
 新增 Knowledge download API：
 
