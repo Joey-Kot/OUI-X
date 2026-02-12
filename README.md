@@ -150,6 +150,17 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
 * 未启用时保持原行为不变，确保向后兼容
 * VECTOR_DB="chroma" 且 CHROMA_REDIS_ENABLED="true" 且 CHROMA_REDIS_URL 非空时，才会生效
 
+#### 5.9 Conversation File Upload Embedding + 安全清理
+
+* 向量化开关与覆盖链路
+  * 新增全局开关 Conversation File Upload Embedding（默认关闭）
+  * 新增用户级设置 Conversation File Upload Embedding（仅显式 true 时覆盖开启）
+  * 当用户级设置关闭时，设置将跟随全局状态
+* 会话文件上传行为
+  * 关闭 embedding 时：会话文件走“仅抽取文本 + full-context/direct_context”路径，不写入会话知识库
+  * 开启 embedding 时：会话文件进入用户专属 conversation knowledge collection
+  * 上传路径策略补充：Knowledge 上传走 vector_db/uploads；会话图片始终走 uploads；其余会话文件按开关决定
+
 ---
 
 ## 移除了什么？
