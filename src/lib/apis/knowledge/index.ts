@@ -515,6 +515,55 @@ export const cloneKnowledgeById = async (token: string, id: string) => {
 	return res;
 };
 
+export const downloadKnowledgeById = async (token: string, id: string) => {
+	let error = null;
+
+	const response = await fetch(WEBUI_API_BASE_URL + '/knowledge/' + id + '/download', {
+		method: 'GET',
+		headers: {
+			Accept: 'application/zip',
+			authorization: 'Bearer ' + token
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res;
+		})
+		.catch((err) => {
+			error = err?.detail ?? err;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	if (!response) {
+		return null;
+	}
+
+	const blob = await response.blob();
+	const url = window.URL.createObjectURL(blob);
+	const anchor = document.createElement('a');
+	const contentDisposition = response.headers.get('Content-Disposition') ?? '';
+	const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+	const fallbackMatch = contentDisposition.match(/filename=\"?([^\";]+)\"?/i);
+	const filename = utf8Match
+		? decodeURIComponent(utf8Match[1])
+		: fallbackMatch
+			? fallbackMatch[1]
+			: 'knowledge-' + id + '.zip';
+
+	anchor.href = url;
+	anchor.download = filename;
+	document.body.appendChild(anchor);
+	anchor.click();
+	anchor.remove();
+	window.URL.revokeObjectURL(url);
+};
+
+
 export const reindexKnowledgeFiles = async (token: string) => {
 	let error = null;
 
