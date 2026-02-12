@@ -133,6 +133,14 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
   * 部分失败文件 fallback re-embed
   * 修复 `has_collection` 兼容不同 Chroma client 返回形态
 
+#### 5.7 Chroma 引入 Redis 队列写入调度
+
+* 新增 Chroma Redis 开关（默认关闭）：
+  * `CHROMA_REDIS_ENABLED`（仅显式 true 时启用）
+  * `CHROMA_REDIS_URL`（默认回退 `REDIS_URL`）
+* 未启用时保持原行为不变，确保向后兼容
+* VECTOR_DB="chroma" 且 CHROMA_REDIS_ENABLED="true" 且 CHROMA_REDIS_URL 非空时，才会生效
+
 ---
 
 ## 移除了什么？
