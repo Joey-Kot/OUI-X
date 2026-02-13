@@ -70,6 +70,48 @@ describe('addChatToCollection', () => {
 		expect(result).toEqual({ fileId: 'file-1', knowledgeId });
 	});
 
+	it('filters reasoning and tool-calling details when options are disabled', async () => {
+		uploadFileMock.mockResolvedValue({ id: 'file-1' });
+		addFileToKnowledgeByIdMock.mockResolvedValue({ status: true });
+
+		const detailedChat = {
+			chat: {
+				title: 'Collection Chat',
+				history: {
+					currentId: 'assistant-1',
+					messages: {
+						'user-1': {
+							id: 'user-1',
+							parentId: null,
+							childrenIds: ['assistant-1'],
+							role: 'user',
+							content: 'Hello'
+						},
+						'assistant-1': {
+							id: 'assistant-1',
+							parentId: 'user-1',
+							childrenIds: [],
+							role: 'assistant',
+							content:
+								'A<details type="reasoning">think</details><details type="tool_calls">tool</details>B'
+						}
+					}
+				}
+			}
+		};
+
+		await addChatToCollection({
+			token,
+			chat: detailedChat,
+			knowledgeId,
+			includeThinkingContent: false,
+			includeToolCallingContent: false
+		});
+
+		const uploadedFile = uploadFileMock.mock.calls[0]?.[1] as File;
+		await expect(uploadedFile.text()).resolves.toContain('### ASSISTANT\nAB');
+	});
+
 	it('throws when upload returns no file id', async () => {
 		uploadFileMock.mockResolvedValue(null);
 
