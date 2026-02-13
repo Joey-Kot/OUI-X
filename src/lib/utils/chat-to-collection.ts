@@ -11,15 +11,22 @@ type AddChatToCollectionParams = {
 	chat: SerializableChat;
 	knowledgeId: string;
 	fileName?: string;
+	includeThinkingContent?: boolean;
+	includeToolCallingContent?: boolean;
 };
 
 export const addChatToCollection = async ({
 	token,
 	chat,
 	knowledgeId,
-	fileName
+	fileName,
+	includeThinkingContent = true,
+	includeToolCallingContent = true
 }: AddChatToCollectionParams): Promise<{ fileId: string; knowledgeId: string }> => {
-	const markdown = serializeChatToMarkdown(chat);
+	const markdown = serializeChatToMarkdown(chat, {
+		includeThinkingContent,
+		includeToolCallingContent
+	});
 	if (!markdown.trim()) {
 		throw new Error('Chat is empty or unavailable.');
 	}

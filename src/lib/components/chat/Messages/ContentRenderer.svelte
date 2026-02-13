@@ -39,6 +39,8 @@
 	export let onSourceClick = (e) => {};
 	export let onTaskClick = (e) => {};
 	export let onAddMessages = (e) => {};
+	export let onToolCallContextInjectionChange = (e) => {};
+	export let toolCallContextInjectionToggleEnabled = false;
 
 	let contentContainerElement;
 	let floatingButtonsElement;
@@ -175,6 +177,8 @@
 		}, [])}
 		{onSourceClick}
 		{onTaskClick}
+		{onToolCallContextInjectionChange}
+		{toolCallContextInjectionToggleEnabled}
 		{onSave}
 		onUpdate={async (token) => {
 			const { lang, text: code } = token;

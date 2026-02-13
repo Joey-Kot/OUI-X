@@ -10,6 +10,11 @@ export type SerializableChat = {
 	};
 };
 
+type SerializeChatToMarkdownOptions = {
+	includeThinkingContent?: boolean;
+	includeToolCallingContent?: boolean;
+};
+
 const stripTrailingDots = (value: string): string => {
 	let result = value;
 	while (result.endsWith('.')) {
@@ -38,7 +43,17 @@ const formatTimestamp = (date: Date): string => {
 	return String(yyyy) + mm + dd + '-' + hh + min;
 };
 
-export const serializeChatToMarkdown = (chat: SerializableChat): string => {
+const removeDetailsByType = (content: string, type: 'reasoning' | 'tool_calls'): string => {
+	return content.replace(new RegExp(`<details\\s+type="${type}"[^>]*>[\\s\\S]*?<\\/details>`, 'gis'), '');
+};
+
+export const serializeChatToMarkdown = (
+	chat: SerializableChat,
+	{
+		includeThinkingContent = true,
+		includeToolCallingContent = true
+	}: SerializeChatToMarkdownOptions = {}
+): string => {
 	const history = chat?.chat?.history;
 	if (!history?.messages || !history.currentId) {
 		return '';
@@ -48,7 +63,16 @@ export const serializeChatToMarkdown = (chat: SerializableChat): string => {
 	return messages
 		.reduce((acc, message) => {
 			const role = String(message?.role ?? '').toUpperCase();
-			const content = String(message?.content ?? '');
+			let content = String(message?.content ?? '');
+
+			if (!includeThinkingContent) {
+				content = removeDetailsByType(content, 'reasoning');
+			}
+
+			if (!includeToolCallingContent) {
+				content = removeDetailsByType(content, 'tool_calls');
+			}
+
 			return acc + '### ' + role + '\n' + content + '\n\n';
 		}, '')
 		.trim();

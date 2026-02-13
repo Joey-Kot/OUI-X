@@ -8,6 +8,8 @@
 	export let state = true;
 	export let id = '';
 	export let ariaLabelledbyId = '';
+	export let ariaLabel = '';
+	export let disabled = false;
 	export let tooltip = false;
 
 	const i18n = getContext('i18n');
@@ -27,8 +29,10 @@
 	<Switch.Root
 		bind:checked={state}
 		{id}
+		disabled={disabled}
 		aria-labelledby={ariaLabelledbyId}
-		class="flex h-[1.125rem] min-h-[1.125rem] w-8 shrink-0 cursor-pointer items-center rounded-full px-1 mx-[1px] transition  {($settings?.highContrastMode ??
+		aria-label={ariaLabel}
+		class="flex h-[1.125rem] min-h-[1.125rem] w-8 shrink-0 items-center rounded-full px-1 mx-[1px] transition {disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}  {($settings?.highContrastMode ??
 		false)
 			? 'focus:outline focus:outline-2 focus:outline-gray-800 focus:dark:outline-gray-200'
 			: 'outline outline-1 outline-gray-100 dark:outline-gray-800'} {state

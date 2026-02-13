@@ -40,6 +40,7 @@
 	import Image from './Image.svelte';
 	import FullHeightIframe from './FullHeightIframe.svelte';
 	import { settings } from '$lib/stores';
+	import Switch from './Switch.svelte';
 
 	export let open = false;
 
@@ -58,8 +59,14 @@
 	export let hide = false;
 
 	export let onChange: Function = () => {};
+	export let onToolCallContextInjectionChange: Function = () => {};
+	export let toolCallContextInjectionToggleEnabled = false;
 
 	$: onChange(open);
+	let toolContextInjectionDisabled = false;
+	$: if (attributes?.type === 'tool_calls') {
+		toolContextInjectionDisabled = attributes?.context_injection_disabled === 'true';
+	}
 
 	const collapsibleId = uuidv4();
 
@@ -138,8 +145,25 @@
 						</div>
 					{/if}
 
-					<div class="">
+					<div class="flex items-center gap-2">
 						{#if attributes?.done === 'true'}
+							<div
+								on:pointerup|stopPropagation
+								on:click|stopPropagation
+							>
+								<Switch
+									bind:state={toolContextInjectionDisabled}
+									tooltip="Disable Context Injection"
+									ariaLabel="Disable Context Injection"
+									disabled={!toolCallContextInjectionToggleEnabled}
+									on:change={() => {
+										onToolCallContextInjectionChange({
+											toolCallId: attributes?.id,
+											disabled: toolContextInjectionDisabled
+										});
+									}}
+								/>
+							</div>
 							<Markdown
 								id={`${collapsibleId}-tool-calls-${attributes?.id}`}
 								content={$i18n.t('View Result from **{{NAME}}**', {

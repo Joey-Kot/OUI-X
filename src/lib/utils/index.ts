@@ -860,23 +860,28 @@ export const removeAllDetails = (content) => {
 export const processDetails = (content) => {
 	content = removeDetails(content, ['reasoning', 'code_interpreter']);
 
-	// This regex matches <details> tags with type="tool_calls" and captures their attributes to convert them to a string
-	const detailsRegex = /<details\s+type="tool_calls"([^>]*)>([\s\S]*?)<\/details>/gis;
-	const matches = content.match(detailsRegex);
-	if (matches) {
-		for (const match of matches) {
-			const attributesRegex = /(\w+)="([^"]*)"/g;
-			const attributes = {};
-			let attributeMatch;
-			while ((attributeMatch = attributesRegex.exec(match)) !== null) {
-				attributes[attributeMatch[1]] = attributeMatch[2];
-			}
-
-			if (attributes.result) {
-				content = content.replace(match, `"${attributes.result}"`);
-			}
+	// Convert tool call details into model-consumable text and always remove details tags.
+	const detailsRegex = /<details\s+([^>]*)>([\s\S]*?)<\/details>/gis;
+	content = content.replace(detailsRegex, (match, attributesString) => {
+		const attributesRegex = /(\w+)="([^"]*)"/g;
+		const attributes = {};
+		let attributeMatch;
+		while ((attributeMatch = attributesRegex.exec(attributesString)) !== null) {
+			attributes[attributeMatch[1]] = attributeMatch[2];
 		}
-	}
+
+		if (attributes.type !== 'tool_calls') {
+			return match;
+		}
+
+		const contextInjectionDisabled = `${attributes.context_injection_disabled ?? ''}`.toLowerCase() === 'true';
+
+		if (!contextInjectionDisabled && attributes.result) {
+			return `"${attributes.result}"`;
+		}
+
+		return '';
+	});
 
 	return content;
 };

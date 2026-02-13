@@ -35,6 +35,105 @@ describe('serializeChatToMarkdown', () => {
 	it('returns empty string when history is unavailable', () => {
 		expect(serializeChatToMarkdown({ chat: {} })).toBe('');
 	});
+
+	it('removes reasoning details when includeThinkingContent is false', () => {
+		const chat = {
+			chat: {
+				history: {
+					currentId: 'assistant-1',
+					messages: {
+						'assistant-1': {
+							id: 'assistant-1',
+							parentId: null,
+							childrenIds: [],
+							role: 'assistant',
+							content: 'before<details type="reasoning">secret</details>after'
+						}
+					}
+				}
+			}
+		};
+
+		expect(serializeChatToMarkdown(chat, { includeThinkingContent: false })).toBe(
+			'### ASSISTANT\nbeforeafter'
+		);
+	});
+
+	it('removes tool call details when includeToolCallingContent is false', () => {
+		const chat = {
+			chat: {
+				history: {
+					currentId: 'assistant-1',
+					messages: {
+						'assistant-1': {
+							id: 'assistant-1',
+							parentId: null,
+							childrenIds: [],
+							role: 'assistant',
+							content: 'before<details type="tool_calls">tool</details>after'
+						}
+					}
+				}
+			}
+		};
+
+		expect(serializeChatToMarkdown(chat, { includeToolCallingContent: false })).toBe(
+			'### ASSISTANT\nbeforeafter'
+		);
+	});
+
+	it('removes both details types when both options are false', () => {
+		const chat = {
+			chat: {
+				history: {
+					currentId: 'assistant-1',
+					messages: {
+						'assistant-1': {
+							id: 'assistant-1',
+							parentId: null,
+							childrenIds: [],
+							role: 'assistant',
+							content:
+								'start<details type="reasoning">secret</details><details type="tool_calls">tool</details>end'
+						}
+					}
+				}
+			}
+		};
+
+		expect(
+			serializeChatToMarkdown(chat, {
+				includeThinkingContent: false,
+				includeToolCallingContent: false
+			})
+		).toBe('### ASSISTANT\nstartend');
+	});
+
+	it('keeps non-details content unchanged when filters are disabled', () => {
+		const chat = {
+			chat: {
+				history: {
+					currentId: 'assistant-1',
+					messages: {
+						'assistant-1': {
+							id: 'assistant-1',
+							parentId: null,
+							childrenIds: [],
+							role: 'assistant',
+							content: 'plain content'
+						}
+					}
+				}
+			}
+		};
+
+		expect(
+			serializeChatToMarkdown(chat, {
+				includeThinkingContent: false,
+				includeToolCallingContent: false
+			})
+		).toBe('### ASSISTANT\nplain content');
+	});
 });
 
 describe('buildChatMarkdownFileName', () => {
