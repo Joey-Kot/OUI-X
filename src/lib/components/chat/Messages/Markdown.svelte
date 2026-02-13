@@ -32,6 +32,8 @@
 
 	export let onSourceClick = () => {};
 	export let onTaskClick = () => {};
+	export let onToolCallContextInjectionChange = () => {};
+	export let toolCallContextInjectionToggleEnabled = false;
 
 	let tokens = [];
 
@@ -71,6 +73,8 @@
 		{topPadding}
 		{onTaskClick}
 		{onSourceClick}
+		{onToolCallContextInjectionChange}
+		{toolCallContextInjectionToggleEnabled}
 		{onSave}
 		{onUpdate}
 		{onPreview}

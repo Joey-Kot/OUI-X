@@ -45,6 +45,8 @@
 
 	export let onTaskClick: Function = () => {};
 	export let onSourceClick: Function = () => {};
+	export let onToolCallContextInjectionChange: Function = () => {};
+	export let toolCallContextInjectionToggleEnabled = false;
 
 	const headerComponent = (depth: number) => {
 		return 'h' + depth;
@@ -227,6 +229,8 @@
 					{onTaskClick}
 					{sourceIds}
 					{onSourceClick}
+					{onToolCallContextInjectionChange}
+					{toolCallContextInjectionToggleEnabled}
 				/>
 			</blockquote>
 		{/if}
@@ -262,6 +266,8 @@
 							{onTaskClick}
 							{sourceIds}
 							{onSourceClick}
+							{onToolCallContextInjectionChange}
+							{toolCallContextInjectionToggleEnabled}
 						/>
 					</li>
 				{/each}
@@ -297,6 +303,8 @@
 									{onTaskClick}
 									{sourceIds}
 									{onSourceClick}
+									{onToolCallContextInjectionChange}
+									{toolCallContextInjectionToggleEnabled}
 								/>
 							</div>
 						{:else}
@@ -309,6 +317,8 @@
 								{onTaskClick}
 								{sourceIds}
 								{onSourceClick}
+								{onToolCallContextInjectionChange}
+								{toolCallContextInjectionToggleEnabled}
 							/>
 						{/if}
 					</li>
@@ -322,6 +332,8 @@
 			attributes={token?.attributes}
 			className="w-full space-y-1"
 			dir="auto"
+			{onToolCallContextInjectionChange}
+			{toolCallContextInjectionToggleEnabled}
 		>
 			<div class=" mb-1.5" slot="content">
 				<svelte:self
@@ -333,6 +345,8 @@
 					{onTaskClick}
 					{sourceIds}
 					{onSourceClick}
+					{onToolCallContextInjectionChange}
+					{toolCallContextInjectionToggleEnabled}
 				/>
 			</div>
 		</Collapsible>

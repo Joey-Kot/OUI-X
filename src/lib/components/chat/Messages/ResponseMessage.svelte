@@ -319,6 +319,42 @@
 
 	let preprocessedDetailsCache = [];
 
+	const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+	const updateToolCallContextInjectionStateInContent = (
+		content: string,
+		toolCallId: string,
+		disabled: boolean
+	) => {
+		if (!content || !toolCallId) {
+			return content;
+		}
+
+		const normalizedValue = disabled ? 'true' : 'false';
+		const toolCallIdPattern = escapeRegExp(toolCallId);
+		const detailsTagRegex = /<details\s+([^>]*)>/gis;
+
+		return content.replace(detailsTagRegex, (match, attrs) => {
+			if (!/\btype="tool_calls"/i.test(attrs)) {
+				return match;
+			}
+
+			if (!new RegExp(`\\bid="${toolCallIdPattern}"`, 'i').test(attrs)) {
+				return match;
+			}
+
+			if (/\bcontext_injection_disabled="/i.test(attrs)) {
+				const updatedAttrs = attrs.replace(
+					/\bcontext_injection_disabled="(true|false)"/i,
+					`context_injection_disabled="${normalizedValue}"`
+				);
+				return `<details ${updatedAttrs}>`;
+			}
+
+			return `<details ${attrs} context_injection_disabled="${normalizedValue}">`;
+		});
+	};
+
 	function preprocessForEditing(content: string): string {
 		// Replace <details>...</details> with unique ID placeholder
 		const detailsBlocks = [];
@@ -680,6 +716,26 @@
 									}}
 									onAddMessages={({ modelId, parentId, messages }) => {
 										addMessages({ modelId, parentId, messages });
+									}}
+									toolCallContextInjectionToggleEnabled={!readOnly &&
+										!!chatId &&
+										!chatId.startsWith('local:')}
+									onToolCallContextInjectionChange={({ toolCallId, disabled }) => {
+										if (!toolCallId || readOnly || !chatId || chatId.startsWith('local:')) {
+											return;
+										}
+
+										const updatedContent = updateToolCallContextInjectionStateInContent(
+											history.messages[message.id].content ?? '',
+											toolCallId,
+											disabled
+										);
+										if (updatedContent === history.messages[message.id].content) {
+											return;
+										}
+
+										history.messages[message.id].content = updatedContent;
+										updateChat();
 									}}
 									onSave={({ raw, oldContent, newContent }) => {
 										history.messages[message.id].content = history.messages[

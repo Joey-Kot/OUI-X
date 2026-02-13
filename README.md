@@ -25,9 +25,12 @@ OUI-X 增加了“原生 MCP 工具调用”的完整链路：
 * 支持 **OAuth 2.1**（动态注册 + 回调 + token 管理）
 * MCP tool schema/返回内容做了“更 OpenAI 友好”的标准化处理（schema 归一化、content block 序列化兜底）
 * 支持两种管理模式：
-
   * **系统级 MCP 连接**（管理员配置）
   * **用户级 MCP 连接**（用户可在 UI 中添加、verify、完成 OAuth 授权）
+* 在工具调用结果标题行左侧新增 Disable Context Injection 开关
+  * 开关仅在工具调用完成时展示，点击开关不会触发展开/折叠行为
+  * 开关默认关闭，打开时将禁用本条工具调用数据注入上下文行为
+  * 每个开关状态随会话数据在后端持久化保存
 
 ### 2) OpenAI Responses API 适配
 
@@ -152,6 +155,9 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
 #### 5.10 Conversation Add To Collection（会话一键入库）
 
 * 在会话菜单新增 `Add To Collection` 按钮（Navbar / Sidebar 均支持）
+  * 在 Add To Collection 弹窗中新增两个内容开关：
+    * Add Thinking Content（默认开启）
+    * Add Tool Calling Content（默认开启）
 * 仅在满足以下权限时展示入口：
   * `workspace.knowledge` 可用（或 admin）
   * `chat.file_upload` 可用（或 admin）
