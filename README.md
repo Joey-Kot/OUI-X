@@ -140,19 +140,32 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
   * `CHROMA_REDIS_URL`（默认回退 `REDIS_URL`）
 * 未启用时保持原行为不变，确保向后兼容
 * VECTOR_DB="chroma" 且 CHROMA_REDIS_ENABLED="true" 且 CHROMA_REDIS_URL 非空时，才会生效
+* 增强队列超时可观测性：
+  * 超时日志补充 in_event_loop、thread 与队列/leader/pending 快照
+  * 更易定位“消息未消费 / leader 丢失 / 事件循环阻塞”问题
+* 将 async 路由内同步向量写操作线程池化（run_in_threadpool）：
+  * 覆盖 knowledge/files/memories 的 upsert/delete/delete_collection/reset 等路径
+  * 降低 Clone/Delete 场景下请求超时与卡死风险
+  * direct clone（qdrant/chroma）使用线程池执行，降低大批量复制对事件循环的阻塞
 
 #### 5.9 Conversation File Upload Embedding + 安全清理
 
-* 向量化开关与覆盖链路
+* 新增 Conversation File Upload Embedding 开关链路（默认关闭）：
   * 新增全局开关 Conversation File Upload Embedding（默认关闭）
   * 新增用户级设置 Conversation File Upload Embedding（仅显式 true 时覆盖开启）
   * 当用户级设置关闭时，设置将跟随全局状态
-* 会话文件上传行为
+* 会话文件上传路径策略变化：
   * 关闭 embedding 时：会话文件走“仅抽取文本 + full-context/direct_context”路径，不写入会话知识库
   * 开启 embedding 时：会话文件进入用户专属 conversation knowledge collection
   * 上传路径策略补充：Knowledge 上传走 vector_db/uploads；会话图片始终走 uploads；其余会话文件按开关决定
 
-#### 5.10 Conversation Add To Collection（会话一键入库）
+#### 5.10 删除清理链路增强
+
+* 新增支持关联引用、文件实体、存储文件与数据库记录的级联清理，并补充确认交互弹窗
+* 当文件仍被其他 Knowledge Collection 引用时，跳过文件实体删除，仅执行当前集合 detach，避免误删共享文件
+  * warnings 中返回 skipped 信息，便于审计与排障
+
+#### 5.11 Conversation Add To Collection（会话一键入库）
 
 * 在会话菜单新增 `Add To Collection` 按钮（Navbar / Sidebar 均支持）
   * 在 Add To Collection 弹窗中新增两个内容开关：
@@ -172,6 +185,21 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
     * 去除首尾空白与尾部 `.`，避免跨平台文件名兼容问题
   * 当标题为空或清理后为空时，统一回退为 `chat`
   * 后端存储策略：由后端追加 `uuid_` 前缀（如 `uuid_chat-<yyyyMMdd-HHmm>-<原会话名>.md`）
+
+### 6) 高级参数侧边栏重构与 Responses 参数规范化
+
+* 高级参数面板收敛与重排：
+    * 新增并突出 reasoning_effort、verbosity、summary 三个参数入口（统一为标准化值）
+    * Provider 生效条件：
+        * 仅在 provider_type = openai_responses 时透传 summary/verbosity 等 Responses 语义参数
+        * 非 Responses provider 会清理 summary 相关字段，避免不兼容参数污染请求
+    * 移除旧采样参数在侧边栏与提交链路中的默认透传（如 min_p、repeat_penalty、tfs_z、mirostat*、use_mmap/use_mlock）
+* 参数标准化规则（前后端一致）：
+    * reasoning_effort：去空白并转小写；空值不下发
+    * verbosity：去空白并转小写；空值或 none 不下发
+    * summary：去空白并转小写；空值或 none 不下发
+* 前端UI展示标准化为 Title Case，统一移除下划线
+* 每个模型预配置中的 Advanced Params 优先级从最高级降为“仅 fallback”，用户请求参数始终优先
 
 ## 移除了什么？
 
