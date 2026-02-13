@@ -1597,14 +1597,27 @@ async def chat_completion(
         )
         reasoning_tags = form_data.get("params", {}).get("reasoning_tags")
 
-        # Model Params
-        if model_info_params.get("stream_response") is not None:
+        # Model Params (fallback only; request values take precedence)
+        if (
+            "stream" not in form_data
+            and model_info_params.get("stream_response") is not None
+        ):
             form_data["stream"] = model_info_params.get("stream_response")
 
-        if model_info_params.get("stream_delta_chunk_size"):
+        request_params = (
+            form_data.get("params", {}) if isinstance(form_data.get("params", {}), dict) else {}
+        )
+
+        if (
+            "stream_delta_chunk_size" not in request_params
+            and model_info_params.get("stream_delta_chunk_size")
+        ):
             stream_delta_chunk_size = model_info_params.get("stream_delta_chunk_size")
 
-        if model_info_params.get("reasoning_tags") is not None:
+        if (
+            "reasoning_tags" not in request_params
+            and model_info_params.get("reasoning_tags") is not None
+        ):
             reasoning_tags = model_info_params.get("reasoning_tags")
 
         metadata = {

@@ -38,8 +38,7 @@ from open_webui.constants import ERROR_MESSAGES
 
 
 from open_webui.utils.payload import (
-    apply_model_params_to_body_openai,
-    apply_system_prompt_to_body,
+    apply_model_params_as_defaults_openai,
 )
 from open_webui.utils.misc import (
     convert_logit_bias_input_to_json,
@@ -1545,12 +1544,10 @@ async def generate_chat_completion(
             model_id = base_model_id
 
         params = model_info.params.model_dump()
-
         if params:
-            system = params.pop("system", None)
-
-            payload = apply_model_params_to_body_openai(params, payload)
-            payload = apply_system_prompt_to_body(system, payload, metadata, user)
+            payload = apply_model_params_as_defaults_openai(
+                params, payload, metadata, user
+            )
 
         # Check if user has access to the model
         if not bypass_filter and user.role == "user":
