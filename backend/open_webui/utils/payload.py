@@ -2,6 +2,7 @@ from open_webui.utils.task import prompt_template, prompt_variables_template
 from open_webui.utils.misc import (
     deep_update,
     add_or_update_system_message,
+    get_system_message,
     replace_system_message_content,
 )
 
@@ -120,3 +121,34 @@ def apply_model_params_to_body_openai(params: dict, form_data: dict) -> dict:
     }
     return apply_model_params_to_body(params, form_data, mappings)
 
+
+# inplace function: form_data is modified
+def apply_model_params_as_defaults_openai(
+    model_params: dict,
+    form_data: dict,
+    metadata: Optional[dict] = None,
+    user=None,
+) -> dict:
+    """
+    Applies model params as fallbacks only.
+
+    Request/body values always take precedence over model-level defaults, including
+    explicit nulls in the request body.
+    """
+    if not model_params:
+        return form_data
+
+    params = model_params.copy()
+    system = params.pop("system", None)
+
+    # Reuse the existing coercion/custom_params logic to build normalized defaults.
+    defaults = apply_model_params_to_body_openai(params, {})
+    for key, value in defaults.items():
+        if key not in form_data:
+            form_data[key] = value
+
+    # Model system prompt is only a fallback when request has no system message.
+    if system and not get_system_message(form_data.get("messages", [])):
+        form_data = apply_system_prompt_to_body(system, form_data, metadata, user)
+
+    return form_data

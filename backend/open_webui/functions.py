@@ -47,8 +47,7 @@ from open_webui.utils.misc import (
     openai_chat_completion_message_template,
 )
 from open_webui.utils.payload import (
-    apply_model_params_to_body_openai,
-    apply_system_prompt_to_body,
+    apply_model_params_as_defaults_openai,
 )
 
 
@@ -282,11 +281,10 @@ async def generate_function_chat_completion(
             form_data["model"] = model_info.base_model_id
 
         params = model_info.params.model_dump()
-
         if params:
-            system = params.pop("system", None)
-            form_data = apply_model_params_to_body_openai(params, form_data)
-            form_data = apply_system_prompt_to_body(system, form_data, metadata, user)
+            form_data = apply_model_params_as_defaults_openai(
+                params, form_data, metadata, user
+            )
 
     pipe_id = get_pipe_id(form_data)
     function_module = get_function_module_by_id(request, pipe_id)

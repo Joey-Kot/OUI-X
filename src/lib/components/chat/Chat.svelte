@@ -1940,9 +1940,9 @@
 		}
 
 		const stream =
-			model?.info?.params?.stream_response ??
-			$settings?.params?.stream_response ??
 			params?.stream_response ??
+			$settings?.params?.stream_response ??
+			model?.info?.params?.stream_response ??
 			true;
 
 		let messages = [
