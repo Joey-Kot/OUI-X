@@ -616,15 +616,20 @@ async def update_file_data_content_by_id(
         or has_access_to_file(id, "write", user)
     ):
         try:
-            process_file(
+            await run_in_threadpool(
+                process_file,
                 request,
                 ProcessFileForm(file_id=id, content=form_data.content),
-                user=user,
+                user,
             )
             file = Files.get_file_by_id(id=id)
         except Exception as e:
             log.exception(e)
             log.error(f"Error processing file: {file.id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e.detail) if hasattr(e, "detail") else str(e),
+            )
 
         return {"content": file.data.get("content", "")}
     else:

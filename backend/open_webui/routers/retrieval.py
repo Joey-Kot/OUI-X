@@ -1793,15 +1793,31 @@ def process_file(
                 # Update the content in the file
                 # Usage: /files/{file_id}/data/content/update, /files/ (audio file upload pipeline)
 
+                file_collection_name = f"file-{file.id}"
                 try:
                     # /files/{file_id}/data/content/update
-                    VECTOR_DB_CLIENT.delete_collection(
-                        collection_name=f"file-{file.id}"
-                    )
-                    invalidate_bm25_collections([f"file-{file.id}"])
-                except:
-                    # Audio file upload pipeline
-                    pass
+                    if VECTOR_DB_CLIENT.has_collection(
+                        collection_name=file_collection_name
+                    ):
+                        VECTOR_DB_CLIENT.delete_collection(
+                            collection_name=file_collection_name
+                        )
+                        invalidate_bm25_collections([file_collection_name])
+                    else:
+                        log.debug(
+                            "Skipping collection delete because collection does not exist: %s",
+                            file_collection_name,
+                        )
+                except Exception as e:
+                    # Audio file upload pipeline can race with collection lifecycle.
+                    if "does not exist" in str(e).lower():
+                        log.debug(
+                            "Ignoring missing collection during delete: %s (%s)",
+                            file_collection_name,
+                            e,
+                        )
+                    else:
+                        raise
 
                 docs = [
                     Document(
