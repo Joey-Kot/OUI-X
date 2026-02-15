@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 from urllib.parse import quote
 from huggingface_hub import snapshot_download
 from langchain_classic.retrievers import (
-    ContextualCompressionRetriever,
     EnsembleRetriever,
 )
 from langchain_community.retrievers import BM25Retriever
@@ -65,6 +64,45 @@ from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.retrievers import BaseRetriever
+
+
+def normalize_doc_text(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    return re.sub(r"\s+", " ", text.strip())
+
+
+def build_dedup_key(doc: Document) -> str:
+    metadata = doc.metadata if isinstance(doc.metadata, dict) else {}
+
+    source_id = None
+    for key in ("file_id", "source", "id"):
+        value = metadata.get(key)
+        if value is not None and str(value).strip():
+            source_id = str(value).strip()
+            break
+
+    start_index = metadata.get("start_index")
+    if source_id is not None and start_index is not None:
+        return f"meta:{source_id}:{start_index}"
+
+    normalized_text = normalize_doc_text(doc.page_content)
+    text_hash = hashlib.sha256(normalized_text.encode()).hexdigest()
+    return f"text:{text_hash}"
+
+
+def dedupe_documents_before_rerank(docs: list[Document]) -> list[Document]:
+    deduped_docs: list[Document] = []
+    seen_keys: set[str] = set()
+
+    for doc in docs:
+        key = build_dedup_key(doc)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped_docs.append(doc)
+
+    return deduped_docs
 
 
 def is_youtube_url(url: str) -> bool:
@@ -498,6 +536,12 @@ async def query_doc_with_rag_pipeline(
                         weights=[bm25_weight, 1.0 - bm25_weight],
                     )
 
+        retrieved_docs = await base_retriever.ainvoke(query)
+        retrieved_count = len(retrieved_docs)
+        deduped_docs = dedupe_documents_before_rerank(retrieved_docs)
+        deduped_count = len(deduped_docs)
+        rerank_input_count = deduped_count if enable_reranking else 0
+
         if enable_reranking:
             compressor = RerankCompressor(
                 embedding_function=embedding_function,
@@ -505,12 +549,9 @@ async def query_doc_with_rag_pipeline(
                 reranking_function=reranking_function,
                 r_score=r,
             )
-
-            compression_retriever = ContextualCompressionRetriever(
-                base_compressor=compressor,
-                base_retriever=base_retriever,
+            result_docs = list(
+                await compressor.acompress_documents(deduped_docs, query)
             )
-            result_docs = await compression_retriever.ainvoke(query)
 
             if k < k_reranker:
                 result_docs = sorted(
@@ -519,7 +560,7 @@ async def query_doc_with_rag_pipeline(
                     reverse=True,
                 )[:k]
         else:
-            result_docs = await base_retriever.ainvoke(query)
+            result_docs = deduped_docs
             result_docs = result_docs[:k]
 
         ranked = [
@@ -545,6 +586,10 @@ async def query_doc_with_rag_pipeline(
             "metadatas": [metadatas],
         }
 
+        log.info(
+            "query_doc_with_rag_pipeline:counts "
+            + f"retrieved_count={retrieved_count} deduped_count={deduped_count} rerank_input_count={rerank_input_count}"
+        )
         log.info(
             "query_doc_with_rag_pipeline:result "
             + f'{result["metadatas"]} {result["distances"]}'
@@ -868,6 +913,12 @@ async def query_doc_with_file_scope(
         base_retriever = BM25Retriever.from_documents(scoped_docs)
         base_retriever.k = max(k, k_reranker)
 
+        retrieved_docs = await base_retriever.ainvoke(query)
+        retrieved_count = len(retrieved_docs)
+        deduped_docs = dedupe_documents_before_rerank(retrieved_docs)
+        deduped_count = len(deduped_docs)
+        rerank_input_count = deduped_count if enable_reranking else 0
+
         if enable_reranking:
             compressor = RerankCompressor(
                 embedding_function=embedding_function,
@@ -875,11 +926,9 @@ async def query_doc_with_file_scope(
                 reranking_function=reranking_function,
                 r_score=r,
             )
-            compression_retriever = ContextualCompressionRetriever(
-                base_compressor=compressor,
-                base_retriever=base_retriever,
+            result_docs = list(
+                await compressor.acompress_documents(deduped_docs, query)
             )
-            result_docs = await compression_retriever.ainvoke(query)
             if k < k_reranker:
                 result_docs = sorted(
                     result_docs,
@@ -887,7 +936,7 @@ async def query_doc_with_file_scope(
                     reverse=True,
                 )[:k]
         else:
-            result_docs = await base_retriever.ainvoke(query)
+            result_docs = deduped_docs
             result_docs = result_docs[:k]
 
         ranked = [
@@ -903,11 +952,16 @@ async def query_doc_with_file_scope(
             for idx, doc in enumerate(result_docs)
         ]
 
-        return {
+        result = {
             "distances": [[item[0] for item in ranked]],
             "documents": [[item[1] for item in ranked]],
             "metadatas": [[item[2] for item in ranked]],
         }
+        log.info(
+            "query_doc_with_file_scope:counts "
+            + f"retrieved_count={retrieved_count} deduped_count={deduped_count} rerank_input_count={rerank_input_count}"
+        )
+        return result
     except Exception as e:
         log.exception(
             f"Error querying file-scoped docs from {collection_name} with file_id={file_id}: {e}"
