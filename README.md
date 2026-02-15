@@ -104,13 +104,17 @@ OUI-X 新增 Responses API 的适配层（在后端与前端均有接入）：
 
 #### 5.5 Collection 级别的 RAG 独立配置覆写
 
-OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta 里保存配置覆写**，从而让不同 collection 使用不同策略（embedding/rerank/阈值/top_k 等）。
+OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta 里保存配置覆写**，从而让不同 collection 使用不同策略（embedding/rerank/阈值/top_k 等）。Collection Config 按 **Embedding / Retrieval / BM25 / Reranking / Other** 等大类别分组。
 
 实现层面：
 
 * 后端检索改为“逐 collection 按 effective config 查询，再 merge 排序”
-* UI 增加 collection config modal（用于编辑/保存覆写项）
-* config 访问权限对齐：**需要 write 权限**（只读用户不再尝试加载 config，避免 toast 噪音）
+  * `k` 参数解析优先级统一为：**显式 `k` > collection override 的 `TOP_K` > 全局 `TOP_K`**
+  * 多 collection 且未显式传 `k` 时，merge 上限按 `max(collection_k)` 解析
+* BM25 Search 和 Reranking 开关的生效边界：
+  * BM25 Search 关闭时，后端会忽略 BM25 enriched texts/BM25 weight 对检索路径的影响
+  * Reranking 关闭时，后端会忽略 reranking engine/model、top_k_reranker、relevance_threshold
+* config 访问权限对齐：**需要 write 权限**（只读用户不尝试加载 config，避免 toast 噪音）
 
 #### 5.6 新增 Knowledge Collection Clone
 
@@ -186,6 +190,33 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
   * 当标题为空或清理后为空时，统一回退为 `chat`
   * 后端存储策略：由后端追加 `uuid_` 前缀（如 `uuid_chat-<yyyyMMdd-HHmm>-<原会话名>.md`）
 
+#### 5.12 Retrieval 稳定性与 TopK 解析修复
+
+对 Retrieval 链路做了“行为一致性”收敛，重点覆盖非 rerank 场景与多 collection 合并语义：
+
+* 融合召回统一在最后一步进行一次去重
+  * 去重策略保序，优先使用 metadata 键；缺失时回退归一化文本哈希
+  * `retrieval -> dedupe -> optional rerank -> expansion -> dedupe -> output`
+* merge 上限增加 expansion-aware 解析：
+  * 未显式传 `k` 时，按 `TOP_K * (2 * expansion + 1)` 计算每集合上限并取 `max`
+  * 显式传 `k` 时保持原语义，避免破坏调用行为
+
+#### 5.13 Citation 体验升级与标签语义统一
+
+Citation 行为重构为“正文可精确点击 + 底部聚合不变 + 标签语义一致”：
+
+* 引用编号从 source 粒度升级为 chunk 粒度：
+  * 正文 `[n]` / `【n】` 可精确定位到对应 chunk
+  * 底部 Sources 仍按 source 聚合展示
+* 正文引用按钮文案升级为“源文件名[n]”：
+  * 多引用主按钮展示 `源文件名[n]+k`
+  * 保留 source 聚合面板交互，降低阅读负担
+* 引用语法兼容半角/全角及混合相邻形式（如 `[1][2]`、`【1】【2】`）
+* Citation 弹窗标签语义统一展示为：**Extended > Retrieval > Relevance**
+  * 无 rerank 场景下，原始召回块稳定显示 `Retrieval`
+  * 扩展块稳定显示为 `Extended`，避免出现无标签或数值误导
+  * rerank 分数场景下，展示百分比分数
+
 ### 6) 高级参数侧边栏重构与 Responses 参数规范化
 
 * 高级参数面板收敛与重排：
@@ -235,6 +266,9 @@ OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta
 * Chat UI quick actions（浮动按钮）修复：
   * 请求体更标准化、stream 解析更稳、错误信息更可诊断
   * 后端对 `parent_message` 做了类型兜底防崩
+* Retrieval/Citation 一致性修复：
+  * 非 rerank 场景下的 Chunk Expansion、Citation 标签与 TopK 解析行为已统一
+  * Collection override 在向量直出链路可稳定生效，减少上下文膨胀风险
 
 ## 运行与开发（简述）
 
