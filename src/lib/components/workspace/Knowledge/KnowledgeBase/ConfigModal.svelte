@@ -24,6 +24,11 @@
     min?: number;
     max?: number;
   };
+  type FieldGroup = {
+    title: string;
+    keys: string[];
+    extraClass?: string;
+  };
 
   const reindexHint =
     'After updating or changing the embedding model, you must reindex the knowledge base for the changes to take effect. You can do this using the "Reindex" button below.';
@@ -96,6 +101,47 @@
       step: '1'
     },
     { key: 'RAG_TEMPLATE', label: 'RAG Template', type: 'textarea' }
+  ];
+  const fieldMap = new Map(fields.map((field) => [field.key, field]));
+  const fieldGroups: FieldGroup[] = [
+    {
+      title: 'Embedding Config',
+      keys: [
+        'RAG_EMBEDDING_ENGINE',
+        'RAG_EMBEDDING_MODEL',
+        'TEXT_SPLITTER',
+        'VOYAGE_TOKENIZER_MODEL',
+        'CHUNK_SIZE',
+        'CHUNK_OVERLAP',
+        'RAG_EMBEDDING_BATCH_SIZE'
+      ]
+    },
+    {
+      title: 'Retrieval Config',
+      keys: ['TOP_K', 'RETRIEVAL_CHUNK_EXPANSION'],
+      extraClass: 'pt-2'
+    },
+    {
+      title: 'BM25 Config',
+      keys: ['ENABLE_RAG_BM25_SEARCH', 'ENABLE_RAG_BM25_ENRICHED_TEXTS', 'BM25_WEIGHT'],
+      extraClass: 'pt-2'
+    },
+    {
+      title: 'Reranking Config',
+      keys: [
+        'ENABLE_RAG_RERANKING',
+        'RAG_RERANKING_ENGINE',
+        'RAG_RERANKING_MODEL',
+        'TOP_K_RERANKER',
+        'RELEVANCE_THRESHOLD'
+      ],
+      extraClass: 'pt-2'
+    },
+    {
+      title: 'Other',
+      keys: ['RAG_TEMPLATE'],
+      extraClass: 'pt-2'
+    }
   ];
 
   let localMode: 'default' | 'custom' = 'default';
@@ -257,85 +303,95 @@
 
     {#if localMode === 'custom'}
       <div class="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
-        {#each fields as field}
-          {#if isVisible(field.key)}
-            <div>
-              <div class="flex justify-between items-center mb-1">
-                <div class="text-xs font-medium">{$i18n.t(field.label)}</div>
-                <div class="flex items-center gap-2 pr-1">
-                  {#if field.type === 'boolean'}
-                    <Switch
-                      state={effectiveBoolean(field.key)}
-                      disabled={fieldModes[field.key] === 'default'}
-                      on:change={(e) => {
-                        setFieldValue(field.key, normalizeBoolean(e.detail));
-                      }}
-                    />
-                  {/if}
-                  <button
-                    type="button"
-                    class="text-xs px-2 py-0.5 rounded {fieldModes[field.key] === 'custom'
-                      ? 'bg-gray-900 text-white dark:bg-white dark:text-black'
-                      : 'bg-gray-100 text-gray-500 dark:bg-gray-850 dark:text-gray-400'}"
-                    on:click={() => toggleFieldMode(field.key)}
-                  >
-                    {$i18n.t(fieldModes[field.key] === 'custom' ? 'Custom' : 'Default')}
-                  </button>
-                </div>
-              </div>
+        {#each fieldGroups as group}
+          <div class={group.extraClass ?? ''}>
+            <div class="mt-0.5 mb-2.5 text-base font-medium">{$i18n.t(group.title)}</div>
+            <hr class="border-gray-100/30 dark:border-gray-850/30 my-2" />
 
-              {#if field.type === 'select'}
-                <select
-                  class="w-full rounded-lg py-2 px-3 text-sm outline-hidden {fieldModes[field.key] === 'custom'
-                    ? 'bg-white dark:bg-gray-900'
-                    : 'bg-gray-50 text-gray-500 dark:bg-gray-850 dark:text-gray-400'}"
-                  value={localValues[field.key]}
-                  disabled={fieldModes[field.key] === 'default'}
-                  on:change={(e) => handleSelectChange(field.key, e.currentTarget.value)}
-                >
-                  {#each field.options || [] as option}
-                    <option value={option.value}>{$i18n.t(option.label)}</option>
-                  {/each}
-                </select>
-              {:else if field.type === 'boolean'}
-              {:else if field.type === 'textarea'}
-                <Textarea
-                  value={localValues[field.key] ?? ''}
-                  className="w-full rounded-lg px-3.5 py-2 text-sm outline-hidden {fieldModes[field.key] === 'custom'
-                    ? 'bg-white dark:bg-gray-900'
-                    : 'bg-gray-50 text-gray-500 dark:bg-gray-850 dark:text-gray-400'}"
-                  readonly={fieldModes[field.key] === 'default'}
-                  onInput={(e) =>
-                    setFieldValue(field.key, (e.target as HTMLTextAreaElement)?.value ?? '')
-                  }
-                />
-              {:else}
-                <input
-                  class="w-full rounded-lg py-2 px-3 text-sm outline-hidden {fieldModes[field.key] === 'custom'
-                    ? 'bg-white dark:bg-gray-900'
-                    : 'bg-gray-50 text-gray-500 dark:bg-gray-850 dark:text-gray-400'}"
-                  type={field.type}
-                  value={localValues[field.key]}
-                  on:input={(e) => {
-                    const raw = e.currentTarget.value;
-                    if (field.type === 'number') {
-                      setFieldValue(field.key, raw === '' ? '' : Number(raw));
-                    } else {
-                      setFieldValue(field.key, raw);
-                    }
-                  }}
-                  disabled={fieldModes[field.key] === 'default'}
-                  min={field.type === 'number' ? field.min : undefined}
-                  max={field.type === 'number' ? field.max : undefined}
-                  step={field.step}
-                />
-              {/if}
+            <div class="space-y-3">
+              {#each group.keys as key}
+                {@const field = fieldMap.get(key)}
+                {#if field && isVisible(field.key)}
+                  <div>
+                    <div class="flex justify-between items-center mb-1">
+                      <div class="text-xs font-medium">{$i18n.t(field.label)}</div>
+                      <div class="flex items-center gap-2 pr-1">
+                        {#if field.type === 'boolean'}
+                          <Switch
+                            state={effectiveBoolean(field.key)}
+                            disabled={fieldModes[field.key] === 'default'}
+                            on:change={(e) => {
+                              setFieldValue(field.key, normalizeBoolean(e.detail));
+                            }}
+                          />
+                        {/if}
+                        <button
+                          type="button"
+                          class="text-xs px-2 py-0.5 rounded {fieldModes[field.key] === 'custom'
+                            ? 'bg-gray-900 text-white dark:bg-white dark:text-black'
+                            : 'bg-gray-100 text-gray-500 dark:bg-gray-850 dark:text-gray-400'}"
+                          on:click={() => toggleFieldMode(field.key)}
+                        >
+                          {$i18n.t(fieldModes[field.key] === 'custom' ? 'Custom' : 'Default')}
+                        </button>
+                      </div>
+                    </div>
 
-              {#if field.hint}
-                <div class="mt-1 text-xs text-gray-400 dark:text-gray-500">{$i18n.t(field.hint)}</div>
-              {/if}
+                    {#if field.type === 'select'}
+                      <select
+                        class="w-full rounded-lg py-2 px-3 text-sm outline-hidden {fieldModes[field.key] === 'custom'
+                          ? 'bg-white dark:bg-gray-900'
+                          : 'bg-gray-50 text-gray-500 dark:bg-gray-850 dark:text-gray-400'}"
+                        value={localValues[field.key]}
+                        disabled={fieldModes[field.key] === 'default'}
+                        on:change={(e) => handleSelectChange(field.key, e.currentTarget.value)}
+                      >
+                        {#each field.options || [] as option}
+                          <option value={option.value}>{$i18n.t(option.label)}</option>
+                        {/each}
+                      </select>
+                    {:else if field.type === 'boolean'}
+                    {:else if field.type === 'textarea'}
+                      <Textarea
+                        value={localValues[field.key] ?? ''}
+                        className="w-full rounded-lg px-3.5 py-2 text-sm outline-hidden {fieldModes[field.key] === 'custom'
+                          ? 'bg-white dark:bg-gray-900'
+                          : 'bg-gray-50 text-gray-500 dark:bg-gray-850 dark:text-gray-400'}"
+                        readonly={fieldModes[field.key] === 'default'}
+                        onInput={(e) =>
+                          setFieldValue(field.key, (e.target as HTMLTextAreaElement)?.value ?? '')
+                        }
+                      />
+                    {:else}
+                      <input
+                        class="w-full rounded-lg py-2 px-3 text-sm outline-hidden {fieldModes[field.key] === 'custom'
+                          ? 'bg-white dark:bg-gray-900'
+                          : 'bg-gray-50 text-gray-500 dark:bg-gray-850 dark:text-gray-400'}"
+                        type={field.type}
+                        value={localValues[field.key]}
+                        on:input={(e) => {
+                          const raw = e.currentTarget.value;
+                          if (field.type === 'number') {
+                            setFieldValue(field.key, raw === '' ? '' : Number(raw));
+                          } else {
+                            setFieldValue(field.key, raw);
+                          }
+                        }}
+                        disabled={fieldModes[field.key] === 'default'}
+                        min={field.type === 'number' ? field.min : undefined}
+                        max={field.type === 'number' ? field.max : undefined}
+                        step={field.step}
+                      />
+                    {/if}
+
+                    {#if field.hint}
+                      <div class="mt-1 text-xs text-gray-400 dark:text-gray-500">{$i18n.t(field.hint)}</div>
+                    {/if}
+                  </div>
+                {/if}
+              {/each}
             </div>
-          {/if}
+          </div>
         {/each}
       </div>
     {/if}
