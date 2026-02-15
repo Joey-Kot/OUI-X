@@ -276,6 +276,22 @@ async def test_query_doc_with_rag_pipeline_dedupes_when_rerank_disabled(monkeypa
     assert result["documents"][0] == ["alpha", "beta"]
 
 
+def test_merge_and_sort_query_results_handles_none_distance():
+    result = retrieval_utils.merge_and_sort_query_results(
+        [
+            {
+                "distances": [[0.9, None, 0.8]],
+                "documents": [["main", "expanded", "tail"]],
+                "metadatas": [[{"m": 1}, {"m": 2}, {"m": 3}]],
+            }
+        ],
+        k=10,
+    )
+
+    assert result["documents"][0] == ["main", "tail", "expanded"]
+    assert result["distances"][0] == [0.9, 0.8, None]
+
+
 @pytest.mark.asyncio
 async def test_get_sources_from_items_uses_collection_top_k_when_k_not_explicit(
     monkeypatch,
@@ -437,6 +453,7 @@ async def test_get_sources_from_items_uses_max_merge_k_for_multiple_collections(
 
     def fake_runtime(_request, collection_name):
         top_k = 4 if collection_name == "kb-a" else 9
+        expansion = 1 if collection_name == "kb-a" else 2
         return {
             "physical_collection_name": f"phys-{collection_name}",
             "effective_config": {
@@ -447,7 +464,7 @@ async def test_get_sources_from_items_uses_max_merge_k_for_multiple_collections(
                 "ENABLE_RAG_BM25_SEARCH": False,
                 "ENABLE_RAG_BM25_ENRICHED_TEXTS": False,
                 "ENABLE_RAG_RERANKING": False,
-                "RETRIEVAL_CHUNK_EXPANSION": 0,
+                "RETRIEVAL_CHUNK_EXPANSION": expansion,
             },
             "embedding_function": fake_collection_embedding,
             "reranking_function": None,
@@ -514,4 +531,87 @@ async def test_get_sources_from_items_uses_max_merge_k_for_multiple_collections(
     )
 
     assert captured["ks"] == [4, 9]
-    assert captured["merge_k"] == 9
+    assert captured["merge_k"] == 45
+
+
+@pytest.mark.asyncio
+async def test_get_sources_from_items_does_not_fallback_when_merge_sees_none_distance(
+    monkeypatch,
+):
+    async def fake_collection_embedding(_query, prefix, user=None):
+        del prefix, user
+        return [0.1, 0.2]
+
+    def fake_runtime(_request, collection_name):
+        assert collection_name == "kb-1"
+        return {
+            "physical_collection_name": "phys-kb-1",
+            "effective_config": {
+                "TOP_K": 5,
+                "TOP_K_RERANKER": 3,
+                "RELEVANCE_THRESHOLD": 0.0,
+                "BM25_WEIGHT": 0.5,
+                "ENABLE_RAG_BM25_SEARCH": False,
+                "ENABLE_RAG_BM25_ENRICHED_TEXTS": False,
+                "ENABLE_RAG_RERANKING": False,
+                "RETRIEVAL_CHUNK_EXPANSION": 1,
+            },
+            "embedding_function": fake_collection_embedding,
+            "reranking_function": None,
+        }
+
+    async def fake_query_doc_with_rag_pipeline(*args, **kwargs):
+        del args, kwargs
+        return {
+            "distances": [[0.99, None]],
+            "documents": [["seed", "seed-expanded"]],
+            "metadatas": [
+                [
+                    {"file_id": "f-1"},
+                    {"file_id": "f-1", "retrieval_chunk_expanded": True},
+                ]
+            ],
+        }
+
+    async def fail_fallback(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("Fallback query_collection should not be called")
+
+    monkeypatch.setattr(
+        retrieval_utils, "_build_collection_runtime_functions", fake_runtime
+    )
+    monkeypatch.setattr(
+        retrieval_utils,
+        "query_doc_with_rag_pipeline",
+        fake_query_doc_with_rag_pipeline,
+    )
+    monkeypatch.setattr(retrieval_utils, "query_collection", fail_fallback)
+    monkeypatch.setattr(
+        retrieval_utils.Knowledges, "get_knowledge_by_id", lambda _id: None
+    )
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(config=SimpleNamespace(TOP_K=25)))
+    )
+    user = SimpleNamespace(id="u-1", role="admin")
+
+    sources = await retrieval_utils.get_sources_from_items(
+        request=request,
+        items=[{"collection_names": ["kb-1"]}],
+        queries=["hello"],
+        embedding_function=lambda *_args, **_kwargs: [0.3, 0.4],
+        k=None,
+        reranking_function=None,
+        k_reranker=3,
+        r=0.0,
+        bm25_weight=0.5,
+        enable_bm25_search=False,
+        enable_reranking=False,
+        enable_bm25_enriched_texts=False,
+        retrieval_chunk_expansion=1,
+        full_context=False,
+        user=user,
+    )
+
+    assert len(sources) == 1
+    assert sources[0]["document"] == ["seed", "seed-expanded"]

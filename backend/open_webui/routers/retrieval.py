@@ -84,6 +84,7 @@ from open_webui.retrieval.utils import (
     query_doc,
     query_doc_with_rag_pipeline,
     merge_and_sort_query_results,
+    resolve_expansion_aware_merge_k,
 )
 from open_webui.retrieval.vector.utils import filter_metadata
 from open_webui.utils.misc import (
@@ -2722,6 +2723,7 @@ async def query_collection_handler(
         explicit_k = form_data.k
         results = []
         resolved_collection_ks = []
+        resolved_collection_expansions = []
 
         for logical_collection_name in form_data.collection_names:
             physical_collection_name = get_physical_collection_name(logical_collection_name)
@@ -2734,6 +2736,9 @@ async def query_collection_handler(
                 else effective_config["TOP_K"]
             )
             resolved_collection_ks.append(collection_k)
+            resolved_collection_expansions.append(
+                effective_config["RETRIEVAL_CHUNK_EXPANSION"]
+            )
             enable_bm25_search = (
                 form_data.enable_bm25_search
                 if form_data.enable_bm25_search is not None
@@ -2803,20 +2808,18 @@ async def query_collection_handler(
             )
             results.append(query_result)
 
-        final_merge_k = (
-            explicit_k
-            if explicit_k is not None
-            else (
-                max(resolved_collection_ks)
-                if resolved_collection_ks
-                else request.app.state.config.TOP_K
-            )
+        final_merge_k = resolve_expansion_aware_merge_k(
+            explicit_k=explicit_k,
+            collection_ks=resolved_collection_ks,
+            collection_expansions=resolved_collection_expansions,
+            default_k=request.app.state.config.TOP_K,
         )
         log.debug(
             "query_collection_handler:resolved_top_k "
             + f"explicit_k={explicit_k} "
             + f"explicit_k_passed={explicit_k is not None} "
             + f"collection_ks={resolved_collection_ks} "
+            + f"collection_expansions={resolved_collection_expansions} "
             + f"final_merge_k={final_merge_k}"
         )
 

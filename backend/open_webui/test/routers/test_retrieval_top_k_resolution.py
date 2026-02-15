@@ -28,6 +28,12 @@ def _make_effective_config(top_k: int) -> dict:
     }
 
 
+def _make_effective_config_with_expansion(top_k: int, expansion: int) -> dict:
+    config = _make_effective_config(top_k)
+    config["RETRIEVAL_CHUNK_EXPANSION"] = expansion
+    return config
+
+
 @pytest.mark.asyncio
 async def test_query_doc_handler_honors_explicit_zero_k(monkeypatch):
     captured = {}
@@ -146,6 +152,73 @@ async def test_query_collection_handler_uses_per_collection_top_k_and_max_merge(
     assert captured["ks"] == [4, 9]
     assert captured["merge_k"] == 9
     assert result == {"k": 9}
+
+
+@pytest.mark.asyncio
+async def test_query_collection_handler_uses_expansion_aware_merge_k_when_k_not_explicit(
+    monkeypatch,
+):
+    captured = {"ks": [], "merge_k": None}
+
+    monkeypatch.setattr(
+        retrieval_router, "get_physical_collection_name", lambda collection_name: collection_name
+    )
+
+    def fake_get_collection_effective_config(_request, collection_name):
+        if collection_name == "kb-a":
+            return _make_effective_config_with_expansion(4, 1)
+        return _make_effective_config_with_expansion(9, 2)
+
+    monkeypatch.setattr(
+        retrieval_router,
+        "get_collection_effective_config",
+        fake_get_collection_effective_config,
+    )
+
+    async def fake_embedding_function(query, prefix, user=None):
+        del query, prefix, user
+        return [0.1, 0.2]
+
+    monkeypatch.setattr(
+        retrieval_router,
+        "build_embedding_function_from_effective_config",
+        lambda _request, _effective_config: fake_embedding_function,
+    )
+    monkeypatch.setattr(
+        retrieval_router,
+        "build_reranking_function_from_effective_config",
+        lambda _request, _effective_config: None,
+    )
+
+    async def fake_query_doc_with_rag_pipeline(**kwargs):
+        captured["ks"].append(kwargs["k"])
+        return {
+            "distances": [[1.0]],
+            "documents": [["chunk"]],
+            "metadatas": [[{"source": "s"}]],
+        }
+
+    monkeypatch.setattr(
+        retrieval_router, "query_doc_with_rag_pipeline", fake_query_doc_with_rag_pipeline
+    )
+    monkeypatch.setattr(
+        retrieval_router,
+        "merge_and_sort_query_results",
+        lambda _results, k: captured.update({"merge_k": k}) or {"k": k},
+    )
+
+    request = _make_request(top_k=25)
+    user = SimpleNamespace(id="u-1", role="admin")
+    form_data = retrieval_router.QueryCollectionsForm(
+        collection_names=["kb-a", "kb-b"],
+        query="hello",
+    )
+
+    result = await retrieval_router.query_collection_handler(request, form_data, user)
+
+    assert captured["ks"] == [4, 9]
+    assert captured["merge_k"] == 45
+    assert result == {"k": 45}
 
 
 @pytest.mark.asyncio

@@ -803,9 +803,42 @@ def merge_get_results(get_results: list[dict]) -> dict:
     return result
 
 
+def normalize_merge_distance(distance: Optional[float]) -> float:
+    if isinstance(distance, (int, float)):
+        return float(distance)
+    return float("-inf")
+
+
+def resolve_expansion_aware_merge_k(
+    explicit_k: Optional[int],
+    collection_ks: list[int],
+    collection_expansions: list[int],
+    default_k: int,
+) -> int:
+    if explicit_k is not None:
+        return explicit_k
+
+    if not collection_ks:
+        return default_k
+
+    expansion_aware_ks: list[int] = []
+    for idx, base_k in enumerate(collection_ks):
+        expansion = (
+            collection_expansions[idx] if idx < len(collection_expansions) else 0
+        )
+        normalized_base_k = max(0, int(base_k))
+        normalized_expansion = max(0, int(expansion))
+        expansion_aware_ks.append(
+            normalized_base_k * (2 * normalized_expansion + 1)
+        )
+
+    return max(expansion_aware_ks) if expansion_aware_ks else default_k
+
+
 def merge_and_sort_query_results(query_results: list[dict], k: int) -> dict:
     # Initialize lists to store combined data
     combined = dict()  # To store documents with unique document hashes
+    has_none_distance = False
 
     for data in query_results:
         if (
@@ -820,33 +853,60 @@ def merge_and_sort_query_results(query_results: list[dict], k: int) -> dict:
         metadatas = data["metadatas"][0]
 
         for distance, document, metadata in zip(distances, documents, metadatas):
+            normalized_distance = normalize_merge_distance(distance)
+            has_none_distance = has_none_distance or distance is None
             if isinstance(document, str):
                 doc_hash = hashlib.sha256(
                     document.encode()
                 ).hexdigest()  # Compute a hash for uniqueness
 
                 if doc_hash not in combined.keys():
-                    combined[doc_hash] = (distance, document, metadata)
+                    combined[doc_hash] = (
+                        normalized_distance,
+                        distance,
+                        document,
+                        metadata,
+                    )
                     continue  # if doc is new, no further comparison is needed
 
                 # if doc is alredy in, but new distance is better, update
-                if distance > combined[doc_hash][0]:
-                    combined[doc_hash] = (distance, document, metadata)
+                if normalized_distance > combined[doc_hash][0]:
+                    combined[doc_hash] = (
+                        normalized_distance,
+                        distance,
+                        document,
+                        metadata,
+                    )
 
     combined = list(combined.values())
     # Sort the list based on distances
     combined.sort(key=lambda x: x[0], reverse=True)
+    if combined:
+        log.debug(
+            "merge_and_sort_query_results:counts "
+            + f"input_results={len(query_results)} "
+            + f"deduped_count={len(combined)} "
+            + f"merge_limit={k} "
+            + f"has_none_distance={has_none_distance}"
+        )
 
     # Slice to keep only the top k elements
+    sorted_rows = combined[:k] if k > 0 else []
     sorted_distances, sorted_documents, sorted_metadatas = (
-        zip(*combined[:k]) if combined else ([], [], [])
+        (
+            [row[1] for row in sorted_rows],
+            [row[2] for row in sorted_rows],
+            [row[3] for row in sorted_rows],
+        )
+        if sorted_rows
+        else ([], [], [])
     )
 
     # Create and return the output dictionary
     return {
-        "distances": [list(sorted_distances)],
-        "documents": [list(sorted_documents)],
-        "metadatas": [list(sorted_metadatas)],
+        "distances": [sorted_distances],
+        "documents": [sorted_documents],
+        "metadatas": [sorted_metadatas],
     }
 
 
@@ -1735,9 +1795,24 @@ async def get_sources_from_items(
                             scoped_results.append(scoped_result)
 
                     if scoped_results:
+                        scoped_merge_k = resolve_expansion_aware_merge_k(
+                            explicit_k=None,
+                            collection_ks=[effective_config["TOP_K"]],
+                            collection_expansions=[
+                                effective_config["RETRIEVAL_CHUNK_EXPANSION"]
+                            ],
+                            default_k=effective_config["TOP_K"],
+                        )
+                        log.debug(
+                            "get_sources_from_items:file_scope_merge_k "
+                            + f"top_k={effective_config['TOP_K']} "
+                            + "explicit_k_passed=False "
+                            + f"retrieval_chunk_expansion={effective_config['RETRIEVAL_CHUNK_EXPANSION']} "
+                            + f"final_merge_k={scoped_merge_k}"
+                        )
                         query_result = merge_and_sort_query_results(
                             scoped_results,
-                            k=effective_config["TOP_K"],
+                            k=scoped_merge_k,
                         )
                 elif not request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING:
                     # When disabled, chat uploads only participate via full-context mode.
@@ -1822,6 +1897,7 @@ async def get_sources_from_items(
                     try:
                         per_collection_results = []
                         resolved_collection_ks = []
+                        resolved_collection_expansions = []
                         for collection_name in collection_names:
                             runtime = _build_collection_runtime_functions(
                                 request, collection_name
@@ -1831,6 +1907,9 @@ async def get_sources_from_items(
                                 k if k is not None else effective_config["TOP_K"]
                             )
                             resolved_collection_ks.append(collection_k)
+                            resolved_collection_expansions.append(
+                                effective_config["RETRIEVAL_CHUNK_EXPANSION"]
+                            )
                             physical_collection_name = runtime[
                                 "physical_collection_name"
                             ]
@@ -1890,20 +1969,18 @@ async def get_sources_from_items(
                                 )
                                 per_collection_results.append(result)
 
-                        merge_k = (
-                            k
-                            if k is not None
-                            else (
-                                max(resolved_collection_ks)
-                                if resolved_collection_ks
-                                else request.app.state.config.TOP_K
-                            )
+                        merge_k = resolve_expansion_aware_merge_k(
+                            explicit_k=k,
+                            collection_ks=resolved_collection_ks,
+                            collection_expansions=resolved_collection_expansions,
+                            default_k=request.app.state.config.TOP_K,
                         )
                         log.debug(
                             "get_sources_from_items:resolved_top_k "
                             + f"explicit_k={k} "
                             + f"explicit_k_passed={k is not None} "
                             + f"collection_ks={resolved_collection_ks} "
+                            + f"collection_expansions={resolved_collection_expansions} "
                             + f"final_merge_k={merge_k}"
                         )
                         query_result = merge_and_sort_query_results(
