@@ -102,6 +102,13 @@
     },
     { key: 'RAG_TEMPLATE', label: 'RAG Template', type: 'textarea' }
   ];
+  const BM25_DEPENDENT_KEYS = new Set(['ENABLE_RAG_BM25_ENRICHED_TEXTS', 'BM25_WEIGHT']);
+  const RERANKING_DEPENDENT_KEYS = new Set([
+    'RAG_RERANKING_ENGINE',
+    'RAG_RERANKING_MODEL',
+    'TOP_K_RERANKER',
+    'RELEVANCE_THRESHOLD'
+  ]);
   const fieldMap = new Map(fields.map((field) => [field.key, field]));
   const fieldGroups: FieldGroup[] = [
     {
@@ -175,9 +182,42 @@
     return normalizeBoolean(effectiveValue(key));
   };
 
-  const isVisible = (key: string) => {
+  const getEffectiveValue = (
+    key: string,
+    values: Record<string, any>,
+    modes: Record<string, FieldMode>,
+    defaults: Record<string, any>
+  ) => {
+    if (modes[key] === 'custom') {
+      return values[key];
+    }
+
+    return defaults[key];
+  };
+
+  const getEffectiveBoolean = (
+    key: string,
+    values: Record<string, any>,
+    modes: Record<string, FieldMode>,
+    defaults: Record<string, any>
+  ) => {
+    return normalizeBoolean(getEffectiveValue(key, values, modes, defaults));
+  };
+
+  const isVisible = (
+    key: string,
+    values: Record<string, any>,
+    modes: Record<string, FieldMode>,
+    defaults: Record<string, any>
+  ) => {
     if (key === 'VOYAGE_TOKENIZER_MODEL') {
-      return effectiveValue('TEXT_SPLITTER') === 'token_voyage';
+      return getEffectiveValue('TEXT_SPLITTER', values, modes, defaults) === 'token_voyage';
+    }
+    if (BM25_DEPENDENT_KEYS.has(key)) {
+      return getEffectiveBoolean('ENABLE_RAG_BM25_SEARCH', values, modes, defaults);
+    }
+    if (RERANKING_DEPENDENT_KEYS.has(key)) {
+      return getEffectiveBoolean('ENABLE_RAG_RERANKING', values, modes, defaults);
     }
 
     return true;
@@ -311,7 +351,7 @@
             <div class="space-y-3">
               {#each group.keys as key}
                 {@const field = fieldMap.get(key)}
-                {#if field && isVisible(field.key)}
+                {#if field && isVisible(field.key, localValues, fieldModes, globalDefaults)}
                   <div>
                     <div class="flex justify-between items-center mb-1">
                       <div class="text-xs font-medium">{$i18n.t(field.label)}</div>
