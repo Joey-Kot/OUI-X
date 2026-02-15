@@ -1182,7 +1182,9 @@ async def chat_completion_files_handler(
                 embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
                     query, prefix=prefix, user=user
                 ),
-                k=request.app.state.config.TOP_K,
+                # Keep chat retrieval using per-collection TOP_K unless an explicit
+                # override is provided by the caller.
+                k=None,
                 reranking_function=(
                     (
                         lambda query, documents: request.app.state.RERANKING_FUNCTION(

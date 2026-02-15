@@ -2654,7 +2654,11 @@ async def query_doc_handler(
             embedding_function=lambda query, prefix: embedding_function(
                 query, prefix=prefix, user=user
             ),
-            k=form_data.k if form_data.k else effective_config["TOP_K"],
+            k=(
+                form_data.k
+                if form_data.k is not None
+                else effective_config["TOP_K"]
+            ),
             reranking_function=(
                 (
                     lambda query, documents: reranking_function(
@@ -2715,14 +2719,21 @@ async def query_collection_handler(
     user=Depends(get_verified_user),
 ):
     try:
-        effective_base_k = form_data.k if form_data.k else request.app.state.config.TOP_K
+        explicit_k = form_data.k
         results = []
+        resolved_collection_ks = []
 
         for logical_collection_name in form_data.collection_names:
             physical_collection_name = get_physical_collection_name(logical_collection_name)
             effective_config = get_collection_effective_config(
                 request, logical_collection_name
             )
+            collection_k = (
+                explicit_k
+                if explicit_k is not None
+                else effective_config["TOP_K"]
+            )
+            resolved_collection_ks.append(collection_k)
             enable_bm25_search = (
                 form_data.enable_bm25_search
                 if form_data.enable_bm25_search is not None
@@ -2756,7 +2767,7 @@ async def query_collection_handler(
                 embedding_function=lambda query, prefix: embedding_function(
                     query, prefix=prefix, user=user
                 ),
-                k=effective_base_k,
+                k=collection_k,
                 reranking_function=(
                     (
                         lambda query, documents: reranking_function(
@@ -2792,7 +2803,24 @@ async def query_collection_handler(
             )
             results.append(query_result)
 
-        return merge_and_sort_query_results(results, k=effective_base_k)
+        final_merge_k = (
+            explicit_k
+            if explicit_k is not None
+            else (
+                max(resolved_collection_ks)
+                if resolved_collection_ks
+                else request.app.state.config.TOP_K
+            )
+        )
+        log.debug(
+            "query_collection_handler:resolved_top_k "
+            + f"explicit_k={explicit_k} "
+            + f"explicit_k_passed={explicit_k is not None} "
+            + f"collection_ks={resolved_collection_ks} "
+            + f"final_merge_k={final_merge_k}"
+        )
+
+        return merge_and_sort_query_results(results, k=final_merge_k)
 
     except Exception as e:
         log.exception(e)

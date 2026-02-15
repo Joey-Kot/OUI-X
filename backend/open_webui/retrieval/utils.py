@@ -1523,7 +1523,7 @@ async def get_sources_from_items(
     items,
     queries,
     embedding_function,
-    k,
+    k: Optional[int],
     reranking_function,
     k_reranker,
     r,
@@ -1818,13 +1818,19 @@ async def get_sources_from_items(
                     query_result = get_all_items_from_collections(collection_names)
                 else:
                     query_result = None
+                    merge_k = k if k is not None else request.app.state.config.TOP_K
                     try:
                         per_collection_results = []
+                        resolved_collection_ks = []
                         for collection_name in collection_names:
                             runtime = _build_collection_runtime_functions(
                                 request, collection_name
                             )
                             effective_config = runtime["effective_config"]
+                            collection_k = (
+                                k if k is not None else effective_config["TOP_K"]
+                            )
+                            resolved_collection_ks.append(collection_k)
                             physical_collection_name = runtime[
                                 "physical_collection_name"
                             ]
@@ -1857,7 +1863,7 @@ async def get_sources_from_items(
                                         prefix=prefix,
                                         user=user,
                                     ),
-                                    k=k,
+                                    k=collection_k,
                                     reranking_function=(
                                         (
                                             lambda q, documents, rf=collection_reranking_function: rf(
@@ -1884,8 +1890,24 @@ async def get_sources_from_items(
                                 )
                                 per_collection_results.append(result)
 
+                        merge_k = (
+                            k
+                            if k is not None
+                            else (
+                                max(resolved_collection_ks)
+                                if resolved_collection_ks
+                                else request.app.state.config.TOP_K
+                            )
+                        )
+                        log.debug(
+                            "get_sources_from_items:resolved_top_k "
+                            + f"explicit_k={k} "
+                            + f"explicit_k_passed={k is not None} "
+                            + f"collection_ks={resolved_collection_ks} "
+                            + f"final_merge_k={merge_k}"
+                        )
                         query_result = merge_and_sort_query_results(
-                            per_collection_results, k=k
+                            per_collection_results, k=merge_k
                         )
                     except Exception:
                         log.debug(
@@ -1903,7 +1925,7 @@ async def get_sources_from_items(
                             collection_names=physical_collection_names,
                             queries=queries,
                             embedding_function=embedding_function,
-                            k=k,
+                            k=merge_k,
                         )
             except Exception as e:
                 log.exception(e)
