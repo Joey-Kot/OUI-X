@@ -104,7 +104,33 @@ OUI-X 新增 Responses API 的适配层（在后端与前端均有接入）：
 
 #### 5.5 Collection 级别的 RAG 独立配置覆写
 
-OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta 里保存配置覆写**，从而让不同 collection 使用不同策略（embedding/rerank/阈值/top_k 等）。Collection Config 按 **Embedding / Retrieval / BM25 / Reranking / Other** 等大类别分组。
+OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta 里保存配置覆写**，从而让不同 collection 使用不同策略。
+Collection Config 按 **Embedding / Retrieval / BM25 / Reranking / Other** 等大类别分组。
+
+* **支持的 Collection 级覆写参数**
+  * **Embedding Config：**
+    * Embedding Model Engine：嵌入引擎
+    * Embedding Model：嵌入模型
+    * Text Splitter：分词器
+    * Voyage Tokenizer Model：指定 Voyage 模型专用分词器
+    * Chunk Size：块大小
+    * Chunk Overlap：块重叠大小
+    * Embedding Batch Size：批大小
+  * **Retrieval Config：**
+    * Top K：向量直出召回候选数量
+    * Retrieval Chunk Expansion：向前向后扩展 Chunk 数量
+  * **BM25 Config：**
+    * BM25 Search：开启 BM25 混合检索
+    * Enrich BM25 Text：开启增强检索
+    * BM25 Weight：BM25 权重
+  * **Reranking Config：**
+    * Reranking：开启重排
+    * Reranking Engine：重排引擎
+    * Reranking Model：重排模型
+    * Top K Reranker：重排返回数量
+    * Relevance Threshold：最低置信度阈值
+  * **Other Config**
+    * RAG Template：RAG 回复模板提示词
 
 实现层面：
 
