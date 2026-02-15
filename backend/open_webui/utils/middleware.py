@@ -29,6 +29,7 @@ from open_webui.models.chats import Chats
 from open_webui.models.folders import Folders
 from open_webui.models.users import Users
 from open_webui.models.files import Files
+from open_webui.models.knowledge import Knowledges
 from open_webui.socket.main import (
     get_event_call,
     get_event_emitter,
@@ -98,6 +99,7 @@ from open_webui.utils.filter import (
     process_filter_functions,
 )
 from open_webui.utils.code_interpreter import execute_code_jupyter
+from open_webui.utils.knowledge import resolve_collection_rag_config
 from open_webui.utils.payload import apply_system_prompt_to_body
 from open_webui.utils.tool_orchestrator import (
     execute_tool_calls_parallel,
@@ -1013,6 +1015,52 @@ async def chat_image_generation_handler(
     return form_data
 
 
+def _resolve_single_collection_rag_template(request: Request, files: list[dict]) -> str:
+    default_template = request.app.state.config.RAG_TEMPLATE
+    if not files:
+        return default_template
+
+    collection_candidates = set()
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+
+        if item.get("type") == "collection":
+            collection_id = item.get("id")
+            if isinstance(collection_id, str) and collection_id.strip():
+                collection_candidates.add(collection_id.strip())
+
+        file_meta = {}
+        file_data = item.get("file")
+        if isinstance(file_data, dict):
+            file_meta = file_data.get("meta") or {}
+
+        for candidate in (
+            item.get("conversation_upload_knowledge_id"),
+            file_meta.get("conversation_upload_knowledge_id")
+            if isinstance(file_meta, dict)
+            else None,
+            item.get("collection_name"),
+            file_meta.get("collection_name") if isinstance(file_meta, dict) else None,
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                collection_candidates.add(candidate.strip())
+
+    resolved_knowledges = []
+    for collection_id in collection_candidates:
+        knowledge = Knowledges.get_knowledge_by_id(collection_id)
+        if knowledge:
+            resolved_knowledges.append(knowledge)
+
+    if len(resolved_knowledges) != 1:
+        return default_template
+
+    effective_config = resolve_collection_rag_config(
+        resolved_knowledges[0].meta, request.app.state.config
+    )["effective"]
+    return effective_config["RAG_TEMPLATE"]
+
+
 async def chat_completion_files_handler(
     request: Request, body: dict, extra_params: dict, user: UserModel
 ) -> tuple[dict, dict[str, list]]:
@@ -1669,9 +1717,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             raise Exception("No user message found")
 
         if context_string != "":
+            files = form_data.get("metadata", {}).get("files", [])
+            template = _resolve_single_collection_rag_template(request, files)
             form_data["messages"] = add_or_update_user_message(
                 rag_template(
-                    request.app.state.config.RAG_TEMPLATE,
+                    template,
                     context_string,
                     prompt,
                 ),

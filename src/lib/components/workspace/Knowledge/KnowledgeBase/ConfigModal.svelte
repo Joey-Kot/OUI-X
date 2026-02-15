@@ -1,6 +1,8 @@
 <script lang="ts">
   import { getContext } from 'svelte';
   import Modal from '$lib/components/common/Modal.svelte';
+  import Switch from '$lib/components/common/Switch.svelte';
+  import Textarea from '$lib/components/common/Textarea.svelte';
 
   const i18n = getContext('i18n');
 
@@ -15,7 +17,7 @@
   type FieldDef = {
     key: string;
     label: string;
-    type: 'text' | 'number' | 'select';
+    type: 'text' | 'number' | 'select' | 'boolean' | 'textarea';
     hint?: string;
     options?: Array<{ value: string; label: string }>;
     step?: string;
@@ -59,6 +61,11 @@
       step: '1'
     },
     {
+      key: 'ENABLE_RAG_RERANKING',
+      label: 'Reranking',
+      type: 'boolean'
+    },
+    {
       key: 'RAG_RERANKING_ENGINE',
       label: 'Reranking Engine',
       type: 'select',
@@ -76,12 +83,25 @@
       type: 'number',
       min: 0,
       step: '0.01'
-    }
+    },
+    { key: 'ENABLE_RAG_BM25_SEARCH', label: 'BM25 Search', type: 'boolean' },
+    { key: 'ENABLE_RAG_BM25_ENRICHED_TEXTS', label: 'Enrich BM25 Text', type: 'boolean' },
+    { key: 'BM25_WEIGHT', label: 'BM25 Weight', type: 'number', min: 0, max: 1, step: '0.05' },
+    {
+      key: 'RETRIEVAL_CHUNK_EXPANSION',
+      label: 'Retrieval Chunk Expansion',
+      type: 'number',
+      min: 0,
+      max: 100,
+      step: '1'
+    },
+    { key: 'RAG_TEMPLATE', label: 'RAG Template', type: 'textarea' }
   ];
 
   let localMode: 'default' | 'custom' = 'default';
   let fieldModes: Record<string, FieldMode> = {};
   let localValues: Record<string, any> = {};
+  let initializedForOpen = false;
 
   const effectiveValue = (key: string) => {
     if (fieldModes[key] === 'custom') {
@@ -91,14 +111,27 @@
     return globalDefaults[key];
   };
 
+  const normalizeBoolean = (value: any) => {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return value !== 0;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      return ['true', '1', 'yes', 'on'].includes(normalized);
+    }
+    return false;
+  };
+
+  const effectiveBoolean = (key: string) => {
+    return normalizeBoolean(effectiveValue(key));
+  };
+
   const isVisible = (key: string) => {
     if (key === 'VOYAGE_TOKENIZER_MODEL') {
       return effectiveValue('TEXT_SPLITTER') === 'token_voyage';
-    }
-
-    if (key === 'TOP_K_RERANKER' || key === 'RELEVANCE_THRESHOLD') {
-      const model = effectiveValue('RAG_RERANKING_MODEL');
-      return typeof model === 'string' && model.trim() !== '';
     }
 
     return true;
@@ -113,15 +146,20 @@
     for (const field of fields) {
       const hasOverride = overrides[field.key] !== undefined;
       nextFieldModes[field.key] = hasOverride ? 'custom' : 'default';
-      nextLocalValues[field.key] = hasOverride ? overrides[field.key] : globalDefaults[field.key];
+      const value = hasOverride ? overrides[field.key] : globalDefaults[field.key];
+      nextLocalValues[field.key] = field.type === 'boolean' ? normalizeBoolean(value) : value;
     }
 
     fieldModes = nextFieldModes;
     localValues = nextLocalValues;
   };
 
-  $: if (show) {
+  $: if (show && !initializedForOpen) {
     initFields();
+    initializedForOpen = true;
+  }
+  $: if (!show) {
+    initializedForOpen = false;
   }
 
   const setFieldValue = (key: string, value: any) => {
@@ -141,9 +179,9 @@
     };
 
     if (next === 'default') {
-      setFieldValue(key, globalDefaults[key]);
+      setFieldValue(key, fields.find((field) => field.key === key)?.type === 'boolean' ? normalizeBoolean(globalDefaults[key]) : globalDefaults[key]);
     } else if (localValues[key] === undefined) {
-      setFieldValue(key, globalDefaults[key]);
+      setFieldValue(key, fields.find((field) => field.key === key)?.type === 'boolean' ? normalizeBoolean(globalDefaults[key]) : globalDefaults[key]);
     }
   };
 
@@ -224,15 +262,26 @@
             <div>
               <div class="flex justify-between items-center mb-1">
                 <div class="text-xs font-medium">{$i18n.t(field.label)}</div>
-                <button
-                  type="button"
-                  class="text-xs px-2 py-0.5 rounded {fieldModes[field.key] === 'custom'
-                    ? 'bg-gray-900 text-white dark:bg-white dark:text-black'
-                    : 'bg-gray-100 text-gray-500 dark:bg-gray-850 dark:text-gray-400'}"
-                  on:click={() => toggleFieldMode(field.key)}
-                >
-                  {$i18n.t(fieldModes[field.key] === 'custom' ? 'Custom' : 'Default')}
-                </button>
+                <div class="flex items-center gap-2 pr-1">
+                  {#if field.type === 'boolean'}
+                    <Switch
+                      state={effectiveBoolean(field.key)}
+                      disabled={fieldModes[field.key] === 'default'}
+                      on:change={(e) => {
+                        setFieldValue(field.key, normalizeBoolean(e.detail));
+                      }}
+                    />
+                  {/if}
+                  <button
+                    type="button"
+                    class="text-xs px-2 py-0.5 rounded {fieldModes[field.key] === 'custom'
+                      ? 'bg-gray-900 text-white dark:bg-white dark:text-black'
+                      : 'bg-gray-100 text-gray-500 dark:bg-gray-850 dark:text-gray-400'}"
+                    on:click={() => toggleFieldMode(field.key)}
+                  >
+                    {$i18n.t(fieldModes[field.key] === 'custom' ? 'Custom' : 'Default')}
+                  </button>
+                </div>
               </div>
 
               {#if field.type === 'select'}
@@ -248,6 +297,18 @@
                     <option value={option.value}>{$i18n.t(option.label)}</option>
                   {/each}
                 </select>
+              {:else if field.type === 'boolean'}
+              {:else if field.type === 'textarea'}
+                <Textarea
+                  value={localValues[field.key] ?? ''}
+                  className="w-full rounded-lg px-3.5 py-2 text-sm outline-hidden {fieldModes[field.key] === 'custom'
+                    ? 'bg-white dark:bg-gray-900'
+                    : 'bg-gray-50 text-gray-500 dark:bg-gray-850 dark:text-gray-400'}"
+                  readonly={fieldModes[field.key] === 'default'}
+                  onInput={(e) =>
+                    setFieldValue(field.key, (e.target as HTMLTextAreaElement)?.value ?? '')
+                  }
+                />
               {:else}
                 <input
                   class="w-full rounded-lg py-2 px-3 text-sm outline-hidden {fieldModes[field.key] === 'custom'

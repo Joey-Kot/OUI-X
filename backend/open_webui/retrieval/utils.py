@@ -1696,6 +1696,9 @@ async def get_sources_from_items(
                     )
                     collection_embedding_function = runtime["embedding_function"]
                     collection_reranking_function = runtime.get("reranking_function")
+                    collection_enable_reranking = effective_config[
+                        "ENABLE_RAG_RERANKING"
+                    ]
 
                     scoped_results = []
                     for query in queries:
@@ -1717,13 +1720,16 @@ async def get_sources_from_items(
                                         user=user,
                                     )
                                 )
-                                if collection_reranking_function and enable_reranking
+                                if collection_reranking_function
+                                and collection_enable_reranking
                                 else None
                             ),
                             k_reranker=effective_config["TOP_K_RERANKER"],
                             r=effective_config["RELEVANCE_THRESHOLD"],
-                            enable_reranking=enable_reranking,
-                            retrieval_chunk_expansion=retrieval_chunk_expansion,
+                            enable_reranking=collection_enable_reranking,
+                            retrieval_chunk_expansion=effective_config[
+                                "RETRIEVAL_CHUNK_EXPANSION"
+                            ],
                         )
                         if scoped_result is not None:
                             scoped_results.append(scoped_result)
@@ -1828,9 +1834,15 @@ async def get_sources_from_items(
                             collection_reranking_function = runtime.get(
                                 "reranking_function"
                             )
+                            collection_enable_reranking = effective_config[
+                                "ENABLE_RAG_RERANKING"
+                            ]
 
                             collection_result = None
-                            if enable_bm25_search:
+                            collection_enable_bm25_search = effective_config[
+                                "ENABLE_RAG_BM25_SEARCH"
+                            ]
+                            if collection_enable_bm25_search:
                                 collection_result = VECTOR_DB_CLIENT.get(
                                     collection_name=physical_collection_name
                                 )
@@ -1855,16 +1867,20 @@ async def get_sources_from_items(
                                             )
                                         )
                                         if collection_reranking_function
-                                        and enable_reranking
+                                        and collection_enable_reranking
                                         else None
                                     ),
                                     k_reranker=effective_config["TOP_K_RERANKER"],
                                     r=effective_config["RELEVANCE_THRESHOLD"],
-                                    bm25_weight=bm25_weight,
-                                    enable_bm25_search=enable_bm25_search,
-                                    enable_reranking=enable_reranking,
-                                    enable_bm25_enriched_texts=enable_bm25_enriched_texts,
-                                    retrieval_chunk_expansion=retrieval_chunk_expansion,
+                                    bm25_weight=effective_config["BM25_WEIGHT"],
+                                    enable_bm25_search=collection_enable_bm25_search,
+                                    enable_reranking=collection_enable_reranking,
+                                    enable_bm25_enriched_texts=effective_config[
+                                        "ENABLE_RAG_BM25_ENRICHED_TEXTS"
+                                    ],
+                                    retrieval_chunk_expansion=effective_config[
+                                        "RETRIEVAL_CHUNK_EXPANSION"
+                                    ],
                                 )
                                 per_collection_results.append(result)
 

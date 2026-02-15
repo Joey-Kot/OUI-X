@@ -2628,12 +2628,12 @@ async def query_doc_handler(
         enable_bm25_search = (
             form_data.enable_bm25_search
             if form_data.enable_bm25_search is not None
-            else request.app.state.config.ENABLE_RAG_BM25_SEARCH
+            else effective_config["ENABLE_RAG_BM25_SEARCH"]
         )
         enable_reranking = (
             form_data.enable_reranking
             if form_data.enable_reranking is not None
-            else request.app.state.config.ENABLE_RAG_RERANKING
+            else effective_config["ENABLE_RAG_RERANKING"]
         )
         reranking_function = (
             build_reranking_function_from_effective_config(request, effective_config)
@@ -2664,25 +2664,29 @@ async def query_doc_handler(
                 if reranking_function
                 else None
             ),
-            k_reranker=form_data.k_reranker or effective_config["TOP_K_RERANKER"],
+            k_reranker=(
+                form_data.k_reranker
+                if form_data.k_reranker is not None
+                else effective_config["TOP_K_RERANKER"]
+            ),
             r=(
                 form_data.r
-                if form_data.r
+                if form_data.r is not None
                 else effective_config["RELEVANCE_THRESHOLD"]
             ),
             bm25_weight=(
                 form_data.bm25_weight
                 if form_data.bm25_weight is not None
-                else request.app.state.config.BM25_WEIGHT
+                else effective_config["BM25_WEIGHT"]
             ),
             enable_bm25_search=enable_bm25_search,
             enable_reranking=enable_reranking,
             enable_bm25_enriched_texts=(
                 form_data.enable_bm25_enriched_texts
                 if form_data.enable_bm25_enriched_texts is not None
-                else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
+                else effective_config["ENABLE_RAG_BM25_ENRICHED_TEXTS"]
             ),
-            retrieval_chunk_expansion=request.app.state.config.RETRIEVAL_CHUNK_EXPANSION,
+            retrieval_chunk_expansion=effective_config["RETRIEVAL_CHUNK_EXPANSION"],
         )
     except Exception as e:
         log.exception(e)
@@ -2712,22 +2716,22 @@ async def query_collection_handler(
 ):
     try:
         effective_base_k = form_data.k if form_data.k else request.app.state.config.TOP_K
-        enable_bm25_search = (
-            form_data.enable_bm25_search
-            if form_data.enable_bm25_search is not None
-            else request.app.state.config.ENABLE_RAG_BM25_SEARCH
-        )
-        enable_reranking = (
-            form_data.enable_reranking
-            if form_data.enable_reranking is not None
-            else request.app.state.config.ENABLE_RAG_RERANKING
-        )
         results = []
 
         for logical_collection_name in form_data.collection_names:
             physical_collection_name = get_physical_collection_name(logical_collection_name)
             effective_config = get_collection_effective_config(
                 request, logical_collection_name
+            )
+            enable_bm25_search = (
+                form_data.enable_bm25_search
+                if form_data.enable_bm25_search is not None
+                else effective_config["ENABLE_RAG_BM25_SEARCH"]
+            )
+            enable_reranking = (
+                form_data.enable_reranking
+                if form_data.enable_reranking is not None
+                else effective_config["ENABLE_RAG_RERANKING"]
             )
 
             embedding_function = build_embedding_function_from_effective_config(
@@ -2775,16 +2779,16 @@ async def query_collection_handler(
                 bm25_weight=(
                     form_data.bm25_weight
                     if form_data.bm25_weight is not None
-                    else request.app.state.config.BM25_WEIGHT
+                    else effective_config["BM25_WEIGHT"]
                 ),
                 enable_bm25_search=enable_bm25_search,
                 enable_reranking=enable_reranking,
                 enable_bm25_enriched_texts=(
                     form_data.enable_bm25_enriched_texts
                     if form_data.enable_bm25_enriched_texts is not None
-                    else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
+                    else effective_config["ENABLE_RAG_BM25_ENRICHED_TEXTS"]
                 ),
-                retrieval_chunk_expansion=request.app.state.config.RETRIEVAL_CHUNK_EXPANSION,
+                retrieval_chunk_expansion=effective_config["RETRIEVAL_CHUNK_EXPANSION"],
             )
             results.append(query_result)
 
