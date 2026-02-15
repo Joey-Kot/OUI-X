@@ -28,6 +28,7 @@
 	export let top = true;
 	export let attributes = {};
 	export let sourceIds = [];
+	export let sourceLabels = [];
 
 	export let done = true;
 
@@ -100,6 +101,7 @@
 				tokens={token.tokens}
 				{done}
 				{sourceIds}
+				{sourceLabels}
 				{onSourceClick}
 			/>
 		</svelte:element>
@@ -152,6 +154,7 @@
 												tokens={header.tokens}
 												{done}
 												{sourceIds}
+												{sourceLabels}
 												{onSourceClick}
 											/>
 										</div>
@@ -178,6 +181,7 @@
 												tokens={cell.tokens}
 												{done}
 												{sourceIds}
+												{sourceLabels}
 												{onSourceClick}
 											/>
 										</div>
@@ -221,17 +225,18 @@
 			<AlertRenderer {token} {alert} />
 		{:else}
 			<blockquote dir="auto">
-				<svelte:self
-					id={`${id}-${tokenIdx}`}
-					tokens={token.tokens}
-					{done}
-					{editCodeBlock}
-					{onTaskClick}
-					{sourceIds}
-					{onSourceClick}
-					{onToolCallContextInjectionChange}
-					{toolCallContextInjectionToggleEnabled}
-				/>
+					<svelte:self
+						id={`${id}-${tokenIdx}`}
+						tokens={token.tokens}
+						{done}
+						{editCodeBlock}
+						{onTaskClick}
+						{sourceIds}
+						{sourceLabels}
+						{onSourceClick}
+						{onToolCallContextInjectionChange}
+						{toolCallContextInjectionToggleEnabled}
+					/>
 			</blockquote>
 		{/if}
 	{:else if token.type === 'list'}
@@ -265,6 +270,7 @@
 							{editCodeBlock}
 							{onTaskClick}
 							{sourceIds}
+							{sourceLabels}
 							{onSourceClick}
 							{onToolCallContextInjectionChange}
 							{toolCallContextInjectionToggleEnabled}
@@ -302,6 +308,7 @@
 									{editCodeBlock}
 									{onTaskClick}
 									{sourceIds}
+									{sourceLabels}
 									{onSourceClick}
 									{onToolCallContextInjectionChange}
 									{toolCallContextInjectionToggleEnabled}
@@ -316,6 +323,7 @@
 								{editCodeBlock}
 								{onTaskClick}
 								{sourceIds}
+								{sourceLabels}
 								{onSourceClick}
 								{onToolCallContextInjectionChange}
 								{toolCallContextInjectionToggleEnabled}
@@ -344,6 +352,7 @@
 					{editCodeBlock}
 					{onTaskClick}
 					{sourceIds}
+					{sourceLabels}
 					{onSourceClick}
 					{onToolCallContextInjectionChange}
 					{toolCallContextInjectionToggleEnabled}
@@ -373,6 +382,7 @@
 					tokens={token.tokens ?? []}
 					{done}
 					{sourceIds}
+					{sourceLabels}
 					{onSourceClick}
 				/>
 			</span>
@@ -383,6 +393,7 @@
 					tokens={token.tokens ?? []}
 					{done}
 					{sourceIds}
+					{sourceLabels}
 					{onSourceClick}
 				/>
 			</p>
@@ -396,6 +407,7 @@
 						tokens={token.tokens}
 						{done}
 						{sourceIds}
+						{sourceLabels}
 						{onSourceClick}
 					/>
 				{:else}
@@ -408,6 +420,7 @@
 				tokens={token.tokens ?? []}
 				{done}
 				{sourceIds}
+				{sourceLabels}
 				{onSourceClick}
 			/>
 		{:else}

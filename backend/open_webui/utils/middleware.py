@@ -1640,18 +1640,25 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 for document_text, document_metadata in zip(
                     source["document"], source["metadata"]
                 ):
+                    document_metadata = document_metadata or {}
                     source_name = source.get("source", {}).get("name", None)
                     source_id = (
                         document_metadata.get("source", None)
                         or source.get("source", {}).get("id", None)
                         or "N/A"
                     )
+                    page = document_metadata.get("page", "")
+                    start_index = document_metadata.get("start_index", "")
+                    content_hash = hashlib.sha1(
+                        str(document_text).encode("utf-8", errors="ignore")
+                    ).hexdigest()
+                    chunk_key = f"{source_id}|{page}|{start_index}|{content_hash}"
 
-                    if source_id not in citation_idx_map:
-                        citation_idx_map[source_id] = len(citation_idx_map) + 1
+                    if chunk_key not in citation_idx_map:
+                        citation_idx_map[chunk_key] = len(citation_idx_map) + 1
 
                     context_string += (
-                        f'<source id="{citation_idx_map[source_id]}"'
+                        f'<source id="{citation_idx_map[chunk_key]}"'
                         + (f' name="{source_name}"' if source_name else "")
                         + f">{document_text}</source>\n"
                     )

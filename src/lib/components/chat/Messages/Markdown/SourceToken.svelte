@@ -6,6 +6,7 @@
 	export let id;
 	export let token;
 	export let sourceIds = [];
+	export let sourceLabels = [];
 	export let onClick: Function = () => {};
 
 	let containerElement;
@@ -37,12 +38,41 @@
 		}
 		return title;
 	};
+
+	function getSourceLabel(sourceId: number) {
+		const id = Number(sourceId);
+		const fromLabels = sourceLabels?.[id - 1];
+		const fromIds = sourceIds?.[id - 1];
+
+		if (fromLabels && typeof fromLabels === 'object') {
+			return {
+				title: fromLabels.title ?? fromIds ?? 'Source',
+				index: Number(fromLabels.index) || id,
+				disabled: false
+			};
+		}
+
+		if (typeof fromIds === 'string' && fromIds.length > 0) {
+			return { title: fromIds, index: id, disabled: false };
+		}
+
+		console.warn(`Citation source label is missing for id ${id}`);
+		return { title: 'Source', index: id, disabled: true };
+	}
 </script>
 
-{#if sourceIds}
-	{#if (token?.ids ?? []).length == 1}
-		<Source id={token.ids[0] - 1} title={sourceIds[token.ids[0] - 1]} {onClick} />
+{#if (sourceIds ?? []).length > 0}
+	{#if (token?.ids ?? []).length === 1}
+		{@const source = getSourceLabel(token.ids[0])}
+		<Source
+			id={token.ids[0] - 1}
+			title={source.title}
+			refIndex={source.index}
+			disabled={source.disabled}
+			{onClick}
+		/>
 	{:else}
+		{@const firstSource = getSourceLabel(token.ids[0])}
 		<LinkPreview.Root openDelay={0} bind:open={openPreview}>
 			<LinkPreview.Trigger>
 				<button
@@ -52,7 +82,7 @@
 					}}
 				>
 					<span class="line-clamp-1">
-						{getDisplayTitle(formattedTitle(decodeString(sourceIds[token.ids[0] - 1])))}
+						{getDisplayTitle(formattedTitle(decodeString(firstSource.title)))}[{firstSource.index}]
 						<span class="dark:text-white/50 text-black/50">+{(token?.ids ?? []).length - 1}</span>
 					</span>
 				</button>
@@ -66,8 +96,15 @@
 			>
 				<div class="bg-gray-50 dark:bg-gray-850 rounded-xl p-1 cursor-pointer">
 					{#each token.ids as sourceId}
+						{@const source = getSourceLabel(sourceId)}
 						<div class="">
-							<Source id={sourceId - 1} title={sourceIds[sourceId - 1]} {onClick} />
+							<Source
+								id={sourceId - 1}
+								title={source.title}
+								refIndex={source.index}
+								disabled={source.disabled}
+								{onClick}
+							/>
 						</div>
 					{/each}
 				</div>

@@ -147,7 +147,7 @@
 		{topPadding}
 		sourceIds={(sources ?? []).reduce((acc, source) => {
 			let ids = [];
-			source.document.forEach((document, index) => {
+			(source.document ?? []).forEach((document, index) => {
 				if (model?.info?.meta?.capabilities?.citations == false) {
 					ids.push('N/A');
 					return ids;
@@ -170,10 +170,31 @@
 				return ids;
 			});
 
-			acc = [...acc, ...ids];
+			return [...acc, ...ids];
+		}, [])}
+		sourceLabels={(sources ?? []).reduce((acc, source) => {
+			let labels = [];
+			(source.document ?? []).forEach((document, index) => {
+				if (model?.info?.meta?.capabilities?.citations == false) {
+					labels.push({ title: 'N/A', index: acc.length + labels.length + 1 });
+					return labels;
+				}
 
-			// remove duplicates
-			return acc.filter((item, index) => acc.indexOf(item) === index);
+				const metadata = source.metadata?.[index];
+				const id = metadata?.source ?? 'N/A';
+				let title = source?.source?.name ?? id;
+
+				if (metadata?.name) {
+					title = metadata.name;
+				} else if (id.startsWith('http://') || id.startsWith('https://')) {
+					title = id;
+				}
+
+				labels.push({ title, index: acc.length + labels.length + 1 });
+				return labels;
+			});
+
+			return [...acc, ...labels];
 		}, [])}
 		{onSourceClick}
 		{onTaskClick}
