@@ -344,6 +344,26 @@ def _validate_collection_rag_overrides(overrides: dict):
             detail="RELEVANCE_THRESHOLD must be between 0.0 and 1.0",
         )
 
+    if "BM25_WEIGHT" in overrides and not (0.0 <= overrides["BM25_WEIGHT"] <= 1.0):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="BM25_WEIGHT must be between 0.0 and 1.0",
+        )
+
+    if "RETRIEVAL_CHUNK_EXPANSION" in overrides and not (
+        0 <= overrides["RETRIEVAL_CHUNK_EXPANSION"] <= 100
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RETRIEVAL_CHUNK_EXPANSION must be between 0 and 100",
+        )
+
+    if "RAG_TEMPLATE" in overrides and not isinstance(overrides["RAG_TEMPLATE"], str):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RAG_TEMPLATE must be a string",
+        )
+
 
 def _ensure_knowledge_create_permission(request: Request, user):
     if user.role != "admin" and not has_permission(

@@ -12,62 +12,68 @@
 	export let sources = [];
 	export let readOnly = false;
 
-	let citations = [];
+	let flatCitations = [];
+	let groupedCitations = [];
 	let showPercentage = false;
 	let showRelevance = true;
-
-	let citationModal = null;
 
 	let showCitations = false;
 	let showCitationModal = false;
 
 	let selectedCitation: any = null;
 
-	export const showSourceModal = (sourceIdx) => {
-		if (citations[sourceIdx]) {
-			console.log('Showing citation modal for:', citations[sourceIdx]);
+	const openCitation = (citation) => {
+		if (!citation) {
+			return;
+		}
 
-			if (citations[sourceIdx]?.source?.embed_url) {
-				const embedUrl = citations[sourceIdx].source.embed_url;
-				if (embedUrl) {
-					if (readOnly) {
-						// Open in new tab if readOnly
-						window.open(embedUrl, '_blank');
-						return;
-					} else {
-						showControls.set(true);
-						showEmbeds.set(true);
-						embed.set({
-							url: embedUrl,
-							title: citations[sourceIdx]?.source?.name || 'Embedded Content',
-							source: citations[sourceIdx],
-							chatId: chatId,
-							messageId: id
-						});
-					}
+		if (citation?.source?.embed_url) {
+			const embedUrl = citation.source.embed_url;
+			if (embedUrl) {
+				if (readOnly) {
+					// Open in new tab if readOnly
+					window.open(embedUrl, '_blank');
+					return;
 				} else {
-					selectedCitation = citations[sourceIdx];
-					showCitationModal = true;
+					showControls.set(true);
+					showEmbeds.set(true);
+					embed.set({
+						url: embedUrl,
+						title: citation?.source?.name || 'Embedded Content',
+						source: citation,
+						chatId: chatId,
+						messageId: id
+					});
 				}
 			} else {
-				selectedCitation = citations[sourceIdx];
+				selectedCitation = citation;
 				showCitationModal = true;
 			}
+		} else {
+			selectedCitation = citation;
+			showCitationModal = true;
 		}
+	};
+
+	export const showSourceModal = (sourceIdx) => {
+		const citation = flatCitations[sourceIdx];
+		console.log('Showing citation modal for:', citation);
+		openCitation(citation);
 	};
 
 	function calculateShowRelevance(sources: any[]) {
 		const distances = sources.flatMap((citation) => citation.distances ?? []);
-		const inRange = distances.filter((d) => d !== undefined && d >= -1 && d <= 1).length;
-		const outOfRange = distances.filter((d) => d !== undefined && (d < -1 || d > 1)).length;
+		const numericDistances = distances.filter((d) => typeof d === 'number' && !Number.isNaN(d));
+		const inRange = numericDistances.filter((d) => d >= -1 && d <= 1).length;
+		const outOfRange = numericDistances.filter((d) => d < -1 || d > 1).length;
 
-		if (distances.length === 0) {
+		if (numericDistances.length === 0) {
 			return false;
 		}
 
 		if (
-			(inRange === distances.length - 1 && outOfRange === 1) ||
-			(outOfRange === distances.length - 1 && inRange === 1)
+			(inRange === numericDistances.length - 1 && outOfRange === 1) ||
+			(outOfRange === numericDistances.length - 1 && inRange === 1)
 		) {
 			return false;
 		}
@@ -76,12 +82,20 @@
 	}
 
 	function shouldShowPercentage(sources: any[]) {
-		const distances = sources.flatMap((citation) => citation.distances ?? []);
-		return distances.every((d) => d !== undefined && d >= -1 && d <= 1);
+		const normalDistances = sources
+			.filter((citation) => !citation?.metadata?.[0]?.retrieval_chunk_expanded)
+			.flatMap((citation) => citation.distances ?? [])
+			.filter((d) => typeof d === 'number' && !Number.isNaN(d));
+
+		if (normalDistances.length === 0) {
+			return false;
+		}
+
+		return normalDistances.every((d) => d >= -1 && d <= 1);
 	}
 
 	$: {
-		citations = sources.reduce((acc, source) => {
+		flatCitations = sources.reduce((acc, source) => {
 			if (Object.keys(source).length === 0) {
 				return acc;
 			}
@@ -90,7 +104,6 @@
 				const metadata = source?.metadata?.[index];
 				const distance = source?.distances?.[index];
 
-				// Within the same citation there could be multiple documents
 				const id = metadata?.source ?? source?.source?.id ?? 'N/A';
 				let _source = source?.source;
 
@@ -102,29 +115,43 @@
 					_source = { ..._source, name: id, url: id };
 				}
 
-				const existingSource = acc.find((item) => item.id === id);
-
-				if (existingSource) {
-					existingSource.document.push(document);
-					existingSource.metadata.push(metadata);
-					if (distance !== undefined) existingSource.distances.push(distance);
-				} else {
-					acc.push({
-						id: id,
-						source: _source,
-						document: [document],
-						metadata: metadata ? [metadata] : [],
-						distances: distance !== undefined ? [distance] : []
-					});
-				}
+				acc.push({
+					id: `${id}-${index}-${acc.length}`,
+					source: _source,
+					document: [document],
+					metadata: metadata ? [metadata] : [],
+					distances: distance !== undefined ? [distance] : []
+				});
 			});
 
 			return acc;
 		}, []);
-		console.log('citations', citations);
+		console.log('flat citations', flatCitations);
 
-		showRelevance = calculateShowRelevance(citations);
-		showPercentage = shouldShowPercentage(citations);
+		groupedCitations = flatCitations.reduce((acc, citation) => {
+			const metadata = citation?.metadata?.[0];
+			const sourceId = metadata?.source ?? citation?.source?.id ?? 'N/A';
+			const existingSource = acc.find((item) => item.id === sourceId);
+
+			if (existingSource) {
+				existingSource.document.push(...(citation.document ?? []));
+				existingSource.metadata.push(...(citation.metadata ?? []));
+				existingSource.distances.push(...(citation.distances ?? []));
+			} else {
+				acc.push({
+					id: sourceId,
+					source: citation.source,
+					document: [...(citation.document ?? [])],
+					metadata: [...(citation.metadata ?? [])],
+					distances: [...(citation.distances ?? [])]
+				});
+			}
+
+			return acc;
+		}, []);
+
+		showRelevance = calculateShowRelevance(flatCitations);
+		showPercentage = shouldShowPercentage(flatCitations);
 	}
 
 	const decodeString = (str: string) => {
@@ -143,8 +170,8 @@
 	{showRelevance}
 />
 
-{#if citations.length > 0}
-	{@const urlCitations = citations.filter((c) => c?.source?.name?.startsWith('http'))}
+{#if groupedCitations.length > 0}
+	{@const urlCitations = groupedCitations.filter((c) => c?.source?.name?.startsWith('http'))}
 	<div class=" py-1 -mx-0.5 w-full flex gap-1 items-center flex-wrap">
 		<button
 			class="text-xs font-medium text-gray-600 dark:text-gray-300 px-3.5 h-8 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition flex items-center gap-1 border border-gray-50 dark:border-gray-850/30"
@@ -164,11 +191,11 @@
 				</div>
 			{/if}
 			<div>
-				{#if citations.length === 1}
+				{#if groupedCitations.length === 1}
 					{$i18n.t('1 Source')}
 				{:else}
 					{$i18n.t('{{COUNT}} Sources', {
-						COUNT: citations.length
+						COUNT: groupedCitations.length
 					})}
 				{/if}
 			</div>
@@ -179,13 +206,12 @@
 {#if showCitations}
 	<div class="py-1.5">
 		<div class="text-xs gap-2 flex flex-col">
-			{#each citations as citation, idx}
+			{#each groupedCitations as citation, idx}
 				<button
 					id={`source-${id}-${idx + 1}`}
 					class="no-toggle outline-hidden flex dark:text-gray-300 bg-transparent text-gray-600 rounded-xl gap-1.5 items-center"
 					on:click={() => {
-						showCitationModal = true;
-						selectedCitation = citation;
+						openCitation(citation);
 					}}
 				>
 					<div class=" font-medium bg-gray-50 dark:bg-gray-850 rounded-md px-1">

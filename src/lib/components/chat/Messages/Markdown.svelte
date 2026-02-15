@@ -24,6 +24,7 @@
 	export let topPadding = false;
 
 	export let sourceIds = [];
+	export let sourceLabels = [];
 
 	export let onSave = () => {};
 	export let onUpdate = () => {};
@@ -70,6 +71,7 @@
 		{paragraphTag}
 		{editCodeBlock}
 		{sourceIds}
+		{sourceLabels}
 		{topPadding}
 		{onTaskClick}
 		{onSourceClick}

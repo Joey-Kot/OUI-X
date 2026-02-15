@@ -1,6 +1,7 @@
 import logging
 import os
 import math
+from collections import defaultdict
 from typing import Awaitable, Optional, Union
 
 import requests
@@ -16,7 +17,6 @@ from dataclasses import dataclass, field
 from urllib.parse import quote
 from huggingface_hub import snapshot_download
 from langchain_classic.retrievers import (
-    ContextualCompressionRetriever,
     EnsembleRetriever,
 )
 from langchain_community.retrievers import BM25Retriever
@@ -65,6 +65,169 @@ from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.retrievers import BaseRetriever
+
+
+def normalize_doc_text(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    return re.sub(r"\s+", " ", text.strip())
+
+
+def build_dedup_key(doc: Document) -> str:
+    metadata = doc.metadata if isinstance(doc.metadata, dict) else {}
+
+    source_id = None
+    for key in ("file_id", "source", "id"):
+        value = metadata.get(key)
+        if value is not None and str(value).strip():
+            source_id = str(value).strip()
+            break
+
+    start_index = metadata.get("start_index")
+    if source_id is not None and start_index is not None:
+        return f"meta:{source_id}:{start_index}"
+
+    normalized_text = normalize_doc_text(doc.page_content)
+    text_hash = hashlib.sha256(normalized_text.encode()).hexdigest()
+    return f"text:{text_hash}"
+
+
+def dedupe_documents_before_rerank(docs: list[Document]) -> list[Document]:
+    deduped_docs: list[Document] = []
+    seen_keys: set[str] = set()
+
+    for doc in docs:
+        key = build_dedup_key(doc)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped_docs.append(doc)
+
+    return deduped_docs
+
+
+def _get_source_key(metadata: dict) -> Optional[str]:
+    for key in ("file_id", "source", "id"):
+        value = metadata.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _parse_start_index(metadata: dict) -> Optional[int]:
+    start_index = metadata.get("start_index")
+    if start_index is None:
+        return None
+
+    try:
+        return int(start_index)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_source_windows(
+    collection_result: Optional[GetResult],
+) -> dict[str, list[tuple[int, Document]]]:
+    source_windows: dict[str, dict[int, Document]] = defaultdict(dict)
+    if not has_collection_documents(collection_result):
+        return {}
+
+    documents = collection_result.documents[0]
+    metadatas = collection_result.metadatas[0] if collection_result.metadatas else []
+
+    for idx, document in enumerate(documents):
+        metadata = metadatas[idx] if idx < len(metadatas) else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        source_key = _get_source_key(metadata)
+        start_index = _parse_start_index(metadata)
+        if source_key is None or start_index is None:
+            continue
+
+        source_windows[source_key].setdefault(
+            start_index,
+            Document(page_content=document, metadata=metadata),
+        )
+
+    return {
+        source_key: sorted(start_map.items(), key=lambda item: item[0])
+        for source_key, start_map in source_windows.items()
+    }
+
+
+def expand_documents_by_window(
+    docs: list[Document],
+    collection_result: Optional[GetResult],
+    window_size: int,
+) -> list[Document]:
+    if window_size <= 0 or len(docs) == 0:
+        return docs
+
+    source_windows = _build_source_windows(collection_result)
+    if not source_windows:
+        return docs
+
+    source_positions = {
+        source_key: {start_index: idx for idx, (start_index, _) in enumerate(entries)}
+        for source_key, entries in source_windows.items()
+    }
+
+    expanded_docs: list[Document] = []
+    for doc in docs:
+        expanded_docs.append(doc)
+
+        metadata = doc.metadata if isinstance(doc.metadata, dict) else {}
+        inherited_score = metadata.get("score")
+        inherited_score = (
+            float(inherited_score)
+            if isinstance(inherited_score, (int, float))
+            else None
+        )
+        source_key = _get_source_key(metadata)
+        start_index = _parse_start_index(metadata)
+        if source_key is None or start_index is None:
+            continue
+
+        entries = source_windows.get(source_key)
+        positions = source_positions.get(source_key)
+        if not entries or not positions:
+            continue
+
+        center_idx = positions.get(start_index)
+        if center_idx is None:
+            continue
+
+        for distance in range(1, window_size + 1):
+            left_idx = center_idx - distance
+            right_idx = center_idx + distance
+
+            if left_idx >= 0:
+                left_doc = entries[left_idx][1]
+                left_metadata = (
+                    dict(left_doc.metadata) if isinstance(left_doc.metadata, dict) else {}
+                )
+                left_metadata["retrieval_chunk_expanded"] = True
+                if inherited_score is not None:
+                    left_metadata["score"] = inherited_score
+                expanded_docs.append(
+                    Document(page_content=left_doc.page_content, metadata=left_metadata)
+                )
+            if right_idx < len(entries):
+                right_doc = entries[right_idx][1]
+                right_metadata = (
+                    dict(right_doc.metadata)
+                    if isinstance(right_doc.metadata, dict)
+                    else {}
+                )
+                right_metadata["retrieval_chunk_expanded"] = True
+                if inherited_score is not None:
+                    right_metadata["score"] = inherited_score
+                expanded_docs.append(
+                    Document(page_content=right_doc.page_content, metadata=right_metadata)
+                )
+
+    return expanded_docs
 
 
 def is_youtube_url(url: str) -> bool:
@@ -464,6 +627,7 @@ async def query_doc_with_rag_pipeline(
     enable_reranking: bool,
     collection_result: Optional[GetResult] = None,
     enable_bm25_enriched_texts: bool = False,
+    retrieval_chunk_expansion: int = 0,
 ) -> dict:
     try:
         vector_search_retriever = VectorSearchRetriever(
@@ -498,6 +662,12 @@ async def query_doc_with_rag_pipeline(
                         weights=[bm25_weight, 1.0 - bm25_weight],
                     )
 
+        retrieved_docs = await base_retriever.ainvoke(query)
+        retrieved_count = len(retrieved_docs)
+        deduped_docs = dedupe_documents_before_rerank(retrieved_docs)
+        deduped_count = len(deduped_docs)
+        rerank_input_count = deduped_count if enable_reranking else 0
+
         if enable_reranking:
             compressor = RerankCompressor(
                 embedding_function=embedding_function,
@@ -505,12 +675,9 @@ async def query_doc_with_rag_pipeline(
                 reranking_function=reranking_function,
                 r_score=r,
             )
-
-            compression_retriever = ContextualCompressionRetriever(
-                base_compressor=compressor,
-                base_retriever=base_retriever,
+            result_docs = list(
+                await compressor.acompress_documents(deduped_docs, query)
             )
-            result_docs = await compression_retriever.ainvoke(query)
 
             if k < k_reranker:
                 result_docs = sorted(
@@ -519,21 +686,45 @@ async def query_doc_with_rag_pipeline(
                     reverse=True,
                 )[:k]
         else:
-            result_docs = await base_retriever.ainvoke(query)
+            result_docs = deduped_docs
             result_docs = result_docs[:k]
 
-        ranked = [
-            (
-                (
-                    float(doc.metadata.get("score"))
-                    if isinstance(doc.metadata.get("score"), (int, float))
-                    else float(len(result_docs) - idx)
-                ),
-                doc.page_content,
-                doc.metadata,
+        rerank_output_count = len(result_docs)
+
+        if retrieval_chunk_expansion > 0 and len(result_docs) > 0:
+            collection_result_for_expansion = collection_result
+            if not has_collection_documents(collection_result_for_expansion):
+                collection_result_for_expansion = VECTOR_DB_CLIENT.get(
+                    collection_name=collection_name
+                )
+
+            result_docs = expand_documents_by_window(
+                result_docs,
+                collection_result_for_expansion,
+                retrieval_chunk_expansion,
             )
-            for idx, doc in enumerate(result_docs)
-        ]
+            result_docs = dedupe_documents_before_rerank(result_docs)
+
+            final_limit = max(k, k * (2 * retrieval_chunk_expansion + 1))
+            if final_limit > 0:
+                result_docs = result_docs[:final_limit]
+
+        expanded_output_count = len(result_docs)
+
+        ranked = []
+        for idx, doc in enumerate(result_docs):
+            metadata = doc.metadata if isinstance(doc.metadata, dict) else {}
+            score = metadata.get("score")
+            is_expanded = metadata.get("retrieval_chunk_expanded") is True
+
+            if isinstance(score, (int, float)):
+                distance = float(score)
+            elif is_expanded:
+                distance = None
+            else:
+                distance = float(len(result_docs) - idx)
+
+            ranked.append((distance, doc.page_content, metadata))
 
         distances = [item[0] for item in ranked]
         documents = [item[1] for item in ranked]
@@ -545,6 +736,14 @@ async def query_doc_with_rag_pipeline(
             "metadatas": [metadatas],
         }
 
+        log.info(
+            "query_doc_with_rag_pipeline:counts "
+            + f"retrieved_count={retrieved_count} "
+            + f"deduped_count={deduped_count} "
+            + f"rerank_input_count={rerank_input_count} "
+            + f"rerank_output_count={rerank_output_count} "
+            + f"expanded_output_count={expanded_output_count}"
+        )
         log.info(
             "query_doc_with_rag_pipeline:result "
             + f'{result["metadatas"]} {result["distances"]}'
@@ -604,9 +803,42 @@ def merge_get_results(get_results: list[dict]) -> dict:
     return result
 
 
+def normalize_merge_distance(distance: Optional[float]) -> float:
+    if isinstance(distance, (int, float)):
+        return float(distance)
+    return float("-inf")
+
+
+def resolve_expansion_aware_merge_k(
+    explicit_k: Optional[int],
+    collection_ks: list[int],
+    collection_expansions: list[int],
+    default_k: int,
+) -> int:
+    if explicit_k is not None:
+        return explicit_k
+
+    if not collection_ks:
+        return default_k
+
+    expansion_aware_ks: list[int] = []
+    for idx, base_k in enumerate(collection_ks):
+        expansion = (
+            collection_expansions[idx] if idx < len(collection_expansions) else 0
+        )
+        normalized_base_k = max(0, int(base_k))
+        normalized_expansion = max(0, int(expansion))
+        expansion_aware_ks.append(
+            normalized_base_k * (2 * normalized_expansion + 1)
+        )
+
+    return max(expansion_aware_ks) if expansion_aware_ks else default_k
+
+
 def merge_and_sort_query_results(query_results: list[dict], k: int) -> dict:
     # Initialize lists to store combined data
     combined = dict()  # To store documents with unique document hashes
+    has_none_distance = False
 
     for data in query_results:
         if (
@@ -621,33 +853,60 @@ def merge_and_sort_query_results(query_results: list[dict], k: int) -> dict:
         metadatas = data["metadatas"][0]
 
         for distance, document, metadata in zip(distances, documents, metadatas):
+            normalized_distance = normalize_merge_distance(distance)
+            has_none_distance = has_none_distance or distance is None
             if isinstance(document, str):
                 doc_hash = hashlib.sha256(
                     document.encode()
                 ).hexdigest()  # Compute a hash for uniqueness
 
                 if doc_hash not in combined.keys():
-                    combined[doc_hash] = (distance, document, metadata)
+                    combined[doc_hash] = (
+                        normalized_distance,
+                        distance,
+                        document,
+                        metadata,
+                    )
                     continue  # if doc is new, no further comparison is needed
 
                 # if doc is alredy in, but new distance is better, update
-                if distance > combined[doc_hash][0]:
-                    combined[doc_hash] = (distance, document, metadata)
+                if normalized_distance > combined[doc_hash][0]:
+                    combined[doc_hash] = (
+                        normalized_distance,
+                        distance,
+                        document,
+                        metadata,
+                    )
 
     combined = list(combined.values())
     # Sort the list based on distances
     combined.sort(key=lambda x: x[0], reverse=True)
+    if combined:
+        log.debug(
+            "merge_and_sort_query_results:counts "
+            + f"input_results={len(query_results)} "
+            + f"deduped_count={len(combined)} "
+            + f"merge_limit={k} "
+            + f"has_none_distance={has_none_distance}"
+        )
 
     # Slice to keep only the top k elements
+    sorted_rows = combined[:k] if k > 0 else []
     sorted_distances, sorted_documents, sorted_metadatas = (
-        zip(*combined[:k]) if combined else ([], [], [])
+        (
+            [row[1] for row in sorted_rows],
+            [row[2] for row in sorted_rows],
+            [row[3] for row in sorted_rows],
+        )
+        if sorted_rows
+        else ([], [], [])
     )
 
     # Create and return the output dictionary
     return {
-        "distances": [list(sorted_distances)],
-        "documents": [list(sorted_documents)],
-        "metadatas": [list(sorted_metadatas)],
+        "distances": [sorted_distances],
+        "documents": [sorted_documents],
+        "metadatas": [sorted_metadatas],
     }
 
 
@@ -842,6 +1101,7 @@ async def query_doc_with_file_scope(
     k_reranker: int,
     r: float,
     enable_reranking: bool,
+    retrieval_chunk_expansion: int = 0,
 ) -> Optional[dict]:
     try:
         scoped_result = VECTOR_DB_CLIENT.query(
@@ -868,6 +1128,12 @@ async def query_doc_with_file_scope(
         base_retriever = BM25Retriever.from_documents(scoped_docs)
         base_retriever.k = max(k, k_reranker)
 
+        retrieved_docs = await base_retriever.ainvoke(query)
+        retrieved_count = len(retrieved_docs)
+        deduped_docs = dedupe_documents_before_rerank(retrieved_docs)
+        deduped_count = len(deduped_docs)
+        rerank_input_count = deduped_count if enable_reranking else 0
+
         if enable_reranking:
             compressor = RerankCompressor(
                 embedding_function=embedding_function,
@@ -875,11 +1141,9 @@ async def query_doc_with_file_scope(
                 reranking_function=reranking_function,
                 r_score=r,
             )
-            compression_retriever = ContextualCompressionRetriever(
-                base_compressor=compressor,
-                base_retriever=base_retriever,
+            result_docs = list(
+                await compressor.acompress_documents(deduped_docs, query)
             )
-            result_docs = await compression_retriever.ainvoke(query)
             if k < k_reranker:
                 result_docs = sorted(
                     result_docs,
@@ -887,27 +1151,54 @@ async def query_doc_with_file_scope(
                     reverse=True,
                 )[:k]
         else:
-            result_docs = await base_retriever.ainvoke(query)
+            result_docs = deduped_docs
             result_docs = result_docs[:k]
 
-        ranked = [
-            (
-                (
-                    float(doc.metadata.get("score"))
-                    if isinstance(doc.metadata.get("score"), (int, float))
-                    else float(len(result_docs) - idx)
-                ),
-                doc.page_content,
-                doc.metadata,
-            )
-            for idx, doc in enumerate(result_docs)
-        ]
+        rerank_output_count = len(result_docs)
 
-        return {
+        if retrieval_chunk_expansion > 0 and len(result_docs) > 0:
+            result_docs = expand_documents_by_window(
+                result_docs,
+                scoped_result,
+                retrieval_chunk_expansion,
+            )
+            result_docs = dedupe_documents_before_rerank(result_docs)
+
+            final_limit = max(k, k * (2 * retrieval_chunk_expansion + 1))
+            if final_limit > 0:
+                result_docs = result_docs[:final_limit]
+
+        expanded_output_count = len(result_docs)
+
+        ranked = []
+        for idx, doc in enumerate(result_docs):
+            metadata = doc.metadata if isinstance(doc.metadata, dict) else {}
+            score = metadata.get("score")
+            is_expanded = metadata.get("retrieval_chunk_expanded") is True
+
+            if isinstance(score, (int, float)):
+                distance = float(score)
+            elif is_expanded:
+                distance = None
+            else:
+                distance = float(len(result_docs) - idx)
+
+            ranked.append((distance, doc.page_content, metadata))
+
+        result = {
             "distances": [[item[0] for item in ranked]],
             "documents": [[item[1] for item in ranked]],
             "metadatas": [[item[2] for item in ranked]],
         }
+        log.info(
+            "query_doc_with_file_scope:counts "
+            + f"retrieved_count={retrieved_count} "
+            + f"deduped_count={deduped_count} "
+            + f"rerank_input_count={rerank_input_count} "
+            + f"rerank_output_count={rerank_output_count} "
+            + f"expanded_output_count={expanded_output_count}"
+        )
+        return result
     except Exception as e:
         log.exception(
             f"Error querying file-scoped docs from {collection_name} with file_id={file_id}: {e}"
@@ -1292,7 +1583,7 @@ async def get_sources_from_items(
     items,
     queries,
     embedding_function,
-    k,
+    k: Optional[int],
     reranking_function,
     k_reranker,
     r,
@@ -1300,6 +1591,7 @@ async def get_sources_from_items(
     enable_bm25_search,
     enable_reranking,
     enable_bm25_enriched_texts,
+    retrieval_chunk_expansion=0,
     full_context=False,
     user: Optional[UserModel] = None,
 ):
@@ -1464,6 +1756,9 @@ async def get_sources_from_items(
                     )
                     collection_embedding_function = runtime["embedding_function"]
                     collection_reranking_function = runtime.get("reranking_function")
+                    collection_enable_reranking = effective_config[
+                        "ENABLE_RAG_RERANKING"
+                    ]
 
                     scoped_results = []
                     for query in queries:
@@ -1485,20 +1780,39 @@ async def get_sources_from_items(
                                         user=user,
                                     )
                                 )
-                                if collection_reranking_function and enable_reranking
+                                if collection_reranking_function
+                                and collection_enable_reranking
                                 else None
                             ),
                             k_reranker=effective_config["TOP_K_RERANKER"],
                             r=effective_config["RELEVANCE_THRESHOLD"],
-                            enable_reranking=enable_reranking,
+                            enable_reranking=collection_enable_reranking,
+                            retrieval_chunk_expansion=effective_config[
+                                "RETRIEVAL_CHUNK_EXPANSION"
+                            ],
                         )
                         if scoped_result is not None:
                             scoped_results.append(scoped_result)
 
                     if scoped_results:
+                        scoped_merge_k = resolve_expansion_aware_merge_k(
+                            explicit_k=None,
+                            collection_ks=[effective_config["TOP_K"]],
+                            collection_expansions=[
+                                effective_config["RETRIEVAL_CHUNK_EXPANSION"]
+                            ],
+                            default_k=effective_config["TOP_K"],
+                        )
+                        log.debug(
+                            "get_sources_from_items:file_scope_merge_k "
+                            + f"top_k={effective_config['TOP_K']} "
+                            + "explicit_k_passed=False "
+                            + f"retrieval_chunk_expansion={effective_config['RETRIEVAL_CHUNK_EXPANSION']} "
+                            + f"final_merge_k={scoped_merge_k}"
+                        )
                         query_result = merge_and_sort_query_results(
                             scoped_results,
-                            k=effective_config["TOP_K"],
+                            k=scoped_merge_k,
                         )
                 elif not request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING:
                     # When disabled, chat uploads only participate via full-context mode.
@@ -1579,13 +1893,23 @@ async def get_sources_from_items(
                     query_result = get_all_items_from_collections(collection_names)
                 else:
                     query_result = None
+                    merge_k = k if k is not None else request.app.state.config.TOP_K
                     try:
                         per_collection_results = []
+                        resolved_collection_ks = []
+                        resolved_collection_expansions = []
                         for collection_name in collection_names:
                             runtime = _build_collection_runtime_functions(
                                 request, collection_name
                             )
                             effective_config = runtime["effective_config"]
+                            collection_k = (
+                                k if k is not None else effective_config["TOP_K"]
+                            )
+                            resolved_collection_ks.append(collection_k)
+                            resolved_collection_expansions.append(
+                                effective_config["RETRIEVAL_CHUNK_EXPANSION"]
+                            )
                             physical_collection_name = runtime[
                                 "physical_collection_name"
                             ]
@@ -1595,9 +1919,15 @@ async def get_sources_from_items(
                             collection_reranking_function = runtime.get(
                                 "reranking_function"
                             )
+                            collection_enable_reranking = effective_config[
+                                "ENABLE_RAG_RERANKING"
+                            ]
 
                             collection_result = None
-                            if enable_bm25_search:
+                            collection_enable_bm25_search = effective_config[
+                                "ENABLE_RAG_BM25_SEARCH"
+                            ]
+                            if collection_enable_bm25_search:
                                 collection_result = VECTOR_DB_CLIENT.get(
                                     collection_name=physical_collection_name
                                 )
@@ -1612,7 +1942,7 @@ async def get_sources_from_items(
                                         prefix=prefix,
                                         user=user,
                                     ),
-                                    k=k,
+                                    k=collection_k,
                                     reranking_function=(
                                         (
                                             lambda q, documents, rf=collection_reranking_function: rf(
@@ -1622,20 +1952,39 @@ async def get_sources_from_items(
                                             )
                                         )
                                         if collection_reranking_function
-                                        and enable_reranking
+                                        and collection_enable_reranking
                                         else None
                                     ),
                                     k_reranker=effective_config["TOP_K_RERANKER"],
                                     r=effective_config["RELEVANCE_THRESHOLD"],
-                                    bm25_weight=bm25_weight,
-                                    enable_bm25_search=enable_bm25_search,
-                                    enable_reranking=enable_reranking,
-                                    enable_bm25_enriched_texts=enable_bm25_enriched_texts,
+                                    bm25_weight=effective_config["BM25_WEIGHT"],
+                                    enable_bm25_search=collection_enable_bm25_search,
+                                    enable_reranking=collection_enable_reranking,
+                                    enable_bm25_enriched_texts=effective_config[
+                                        "ENABLE_RAG_BM25_ENRICHED_TEXTS"
+                                    ],
+                                    retrieval_chunk_expansion=effective_config[
+                                        "RETRIEVAL_CHUNK_EXPANSION"
+                                    ],
                                 )
                                 per_collection_results.append(result)
 
+                        merge_k = resolve_expansion_aware_merge_k(
+                            explicit_k=k,
+                            collection_ks=resolved_collection_ks,
+                            collection_expansions=resolved_collection_expansions,
+                            default_k=request.app.state.config.TOP_K,
+                        )
+                        log.debug(
+                            "get_sources_from_items:resolved_top_k "
+                            + f"explicit_k={k} "
+                            + f"explicit_k_passed={k is not None} "
+                            + f"collection_ks={resolved_collection_ks} "
+                            + f"collection_expansions={resolved_collection_expansions} "
+                            + f"final_merge_k={merge_k}"
+                        )
                         query_result = merge_and_sort_query_results(
-                            per_collection_results, k=k
+                            per_collection_results, k=merge_k
                         )
                     except Exception:
                         log.debug(
@@ -1653,7 +2002,7 @@ async def get_sources_from_items(
                             collection_names=physical_collection_names,
                             queries=queries,
                             embedding_function=embedding_function,
-                            k=k,
+                            k=merge_k,
                         )
             except Exception as e:
                 log.exception(e)

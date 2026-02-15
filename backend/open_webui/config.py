@@ -2574,6 +2574,11 @@ RAG_BM25_WEIGHT = PersistentConfig(
     "rag.bm25_weight",
     float(os.environ.get("RAG_BM25_WEIGHT", "0.5")),
 )
+RETRIEVAL_CHUNK_EXPANSION = PersistentConfig(
+    "RETRIEVAL_CHUNK_EXPANSION",
+    "rag.retrieval_chunk_expansion",
+    int(os.environ.get("RETRIEVAL_CHUNK_EXPANSION", "0")),
+)
 
 ENABLE_RAG_BM25_SEARCH = PersistentConfig(
     "ENABLE_RAG_BM25_SEARCH",

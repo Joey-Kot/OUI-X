@@ -84,6 +84,7 @@ from open_webui.retrieval.utils import (
     query_doc,
     query_doc_with_rag_pipeline,
     merge_and_sort_query_results,
+    resolve_expansion_aware_merge_k,
 )
 from open_webui.retrieval.vector.utils import filter_metadata
 from open_webui.utils.misc import (
@@ -512,6 +513,7 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         "TOP_K_RERANKER": request.app.state.config.TOP_K_RERANKER,
         "RELEVANCE_THRESHOLD": request.app.state.config.RELEVANCE_THRESHOLD,
         "BM25_WEIGHT": request.app.state.config.BM25_WEIGHT,
+        "RETRIEVAL_CHUNK_EXPANSION": request.app.state.config.RETRIEVAL_CHUNK_EXPANSION,
         # Content extraction settings
         "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
         "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
@@ -698,6 +700,7 @@ class ConfigForm(BaseModel):
     TOP_K_RERANKER: Optional[int] = None
     RELEVANCE_THRESHOLD: Optional[float] = None
     BM25_WEIGHT: Optional[float] = None
+    RETRIEVAL_CHUNK_EXPANSION: Optional[int] = None
 
     # Content extraction settings
     CONTENT_EXTRACTION_ENGINE: Optional[str] = None
@@ -825,6 +828,10 @@ async def update_rag_config(
         if form_data.BM25_WEIGHT is not None
         else request.app.state.config.BM25_WEIGHT
     )
+    if form_data.RETRIEVAL_CHUNK_EXPANSION is not None:
+        request.app.state.config.RETRIEVAL_CHUNK_EXPANSION = max(
+            0, min(100, int(form_data.RETRIEVAL_CHUNK_EXPANSION))
+        )
 
     # Content extraction settings
     request.app.state.config.CONTENT_EXTRACTION_ENGINE = (
@@ -1304,6 +1311,7 @@ async def update_rag_config(
         "TOP_K_RERANKER": request.app.state.config.TOP_K_RERANKER,
         "RELEVANCE_THRESHOLD": request.app.state.config.RELEVANCE_THRESHOLD,
         "BM25_WEIGHT": request.app.state.config.BM25_WEIGHT,
+        "RETRIEVAL_CHUNK_EXPANSION": request.app.state.config.RETRIEVAL_CHUNK_EXPANSION,
         # Content extraction settings
         "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
         "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
@@ -2621,12 +2629,12 @@ async def query_doc_handler(
         enable_bm25_search = (
             form_data.enable_bm25_search
             if form_data.enable_bm25_search is not None
-            else request.app.state.config.ENABLE_RAG_BM25_SEARCH
+            else effective_config["ENABLE_RAG_BM25_SEARCH"]
         )
         enable_reranking = (
             form_data.enable_reranking
             if form_data.enable_reranking is not None
-            else request.app.state.config.ENABLE_RAG_RERANKING
+            else effective_config["ENABLE_RAG_RERANKING"]
         )
         reranking_function = (
             build_reranking_function_from_effective_config(request, effective_config)
@@ -2647,7 +2655,11 @@ async def query_doc_handler(
             embedding_function=lambda query, prefix: embedding_function(
                 query, prefix=prefix, user=user
             ),
-            k=form_data.k if form_data.k else effective_config["TOP_K"],
+            k=(
+                form_data.k
+                if form_data.k is not None
+                else effective_config["TOP_K"]
+            ),
             reranking_function=(
                 (
                     lambda query, documents: reranking_function(
@@ -2657,24 +2669,29 @@ async def query_doc_handler(
                 if reranking_function
                 else None
             ),
-            k_reranker=form_data.k_reranker or effective_config["TOP_K_RERANKER"],
+            k_reranker=(
+                form_data.k_reranker
+                if form_data.k_reranker is not None
+                else effective_config["TOP_K_RERANKER"]
+            ),
             r=(
                 form_data.r
-                if form_data.r
+                if form_data.r is not None
                 else effective_config["RELEVANCE_THRESHOLD"]
             ),
             bm25_weight=(
                 form_data.bm25_weight
                 if form_data.bm25_weight is not None
-                else request.app.state.config.BM25_WEIGHT
+                else effective_config["BM25_WEIGHT"]
             ),
             enable_bm25_search=enable_bm25_search,
             enable_reranking=enable_reranking,
             enable_bm25_enriched_texts=(
                 form_data.enable_bm25_enriched_texts
                 if form_data.enable_bm25_enriched_texts is not None
-                else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
+                else effective_config["ENABLE_RAG_BM25_ENRICHED_TEXTS"]
             ),
+            retrieval_chunk_expansion=effective_config["RETRIEVAL_CHUNK_EXPANSION"],
         )
     except Exception as e:
         log.exception(e)
@@ -2703,23 +2720,34 @@ async def query_collection_handler(
     user=Depends(get_verified_user),
 ):
     try:
-        effective_base_k = form_data.k if form_data.k else request.app.state.config.TOP_K
-        enable_bm25_search = (
-            form_data.enable_bm25_search
-            if form_data.enable_bm25_search is not None
-            else request.app.state.config.ENABLE_RAG_BM25_SEARCH
-        )
-        enable_reranking = (
-            form_data.enable_reranking
-            if form_data.enable_reranking is not None
-            else request.app.state.config.ENABLE_RAG_RERANKING
-        )
+        explicit_k = form_data.k
         results = []
+        resolved_collection_ks = []
+        resolved_collection_expansions = []
 
         for logical_collection_name in form_data.collection_names:
             physical_collection_name = get_physical_collection_name(logical_collection_name)
             effective_config = get_collection_effective_config(
                 request, logical_collection_name
+            )
+            collection_k = (
+                explicit_k
+                if explicit_k is not None
+                else effective_config["TOP_K"]
+            )
+            resolved_collection_ks.append(collection_k)
+            resolved_collection_expansions.append(
+                effective_config["RETRIEVAL_CHUNK_EXPANSION"]
+            )
+            enable_bm25_search = (
+                form_data.enable_bm25_search
+                if form_data.enable_bm25_search is not None
+                else effective_config["ENABLE_RAG_BM25_SEARCH"]
+            )
+            enable_reranking = (
+                form_data.enable_reranking
+                if form_data.enable_reranking is not None
+                else effective_config["ENABLE_RAG_RERANKING"]
             )
 
             embedding_function = build_embedding_function_from_effective_config(
@@ -2744,7 +2772,7 @@ async def query_collection_handler(
                 embedding_function=lambda query, prefix: embedding_function(
                     query, prefix=prefix, user=user
                 ),
-                k=effective_base_k,
+                k=collection_k,
                 reranking_function=(
                     (
                         lambda query, documents: reranking_function(
@@ -2767,19 +2795,35 @@ async def query_collection_handler(
                 bm25_weight=(
                     form_data.bm25_weight
                     if form_data.bm25_weight is not None
-                    else request.app.state.config.BM25_WEIGHT
+                    else effective_config["BM25_WEIGHT"]
                 ),
                 enable_bm25_search=enable_bm25_search,
                 enable_reranking=enable_reranking,
                 enable_bm25_enriched_texts=(
                     form_data.enable_bm25_enriched_texts
                     if form_data.enable_bm25_enriched_texts is not None
-                    else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
+                    else effective_config["ENABLE_RAG_BM25_ENRICHED_TEXTS"]
                 ),
+                retrieval_chunk_expansion=effective_config["RETRIEVAL_CHUNK_EXPANSION"],
             )
             results.append(query_result)
 
-        return merge_and_sort_query_results(results, k=effective_base_k)
+        final_merge_k = resolve_expansion_aware_merge_k(
+            explicit_k=explicit_k,
+            collection_ks=resolved_collection_ks,
+            collection_expansions=resolved_collection_expansions,
+            default_k=request.app.state.config.TOP_K,
+        )
+        log.debug(
+            "query_collection_handler:resolved_top_k "
+            + f"explicit_k={explicit_k} "
+            + f"explicit_k_passed={explicit_k is not None} "
+            + f"collection_ks={resolved_collection_ks} "
+            + f"collection_expansions={resolved_collection_expansions} "
+            + f"final_merge_k={final_merge_k}"
+        )
+
+        return merge_and_sort_query_results(results, k=final_merge_k)
 
     except Exception as e:
         log.exception(e)

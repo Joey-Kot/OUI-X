@@ -49,6 +49,14 @@
 		}
 	}
 
+	const isExtendedChunk = (document: any) =>
+		document?.metadata?.retrieval_chunk_expanded === true;
+
+	const hasRerankScore = (document: any) => typeof document?.metadata?.score === 'number';
+
+	const shouldShowRetrievalBadge = (document: any) =>
+		!isExtendedChunk(document) && !hasRerankScore(document);
+
 	const decodeString = (str: string) => {
 		try {
 			return decodeURIComponent(str);
@@ -125,7 +133,23 @@
 							>
 								{$i18n.t('Content')}
 
-								{#if showRelevance && document.distance !== undefined}
+								{#if isExtendedChunk(document)}
+									<div class="text-sm my-1 dark:text-gray-400 flex items-center gap-2 w-fit">
+										<span
+											class="px-1 rounded-sm font-medium bg-yellow-200 dark:bg-yellow-800 text-yellow-800 dark:text-yellow-200"
+										>
+											{$i18n.t('Extended')}
+										</span>
+									</div>
+								{:else if shouldShowRetrievalBadge(document)}
+									<div class="text-sm my-1 dark:text-gray-400 flex items-center gap-2 w-fit">
+										<span
+											class="px-1 rounded-sm font-medium bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-200"
+										>
+											{$i18n.t('Retrieval')}
+										</span>
+									</div>
+								{:else if showRelevance && document.distance !== undefined}
 									<Tooltip
 										className="w-fit"
 										content={$i18n.t('Relevance')}

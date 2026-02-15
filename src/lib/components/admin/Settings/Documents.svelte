@@ -1029,6 +1029,33 @@
 								</div>
 							{/if}
 
+							<div class=" mb-2.5 py-0.5 w-full justify-between">
+								<Tooltip
+									content={$i18n.t(
+										'Independent post-processing step: after retrieval and optional reranking, each selected chunk expands to up to N previous and N next chunks. Set 0 to disable.'
+									)}
+									placement="top-start"
+									className="inline-tooltip"
+								>
+									<div class="flex w-full justify-between">
+										<div class=" self-center text-xs font-medium">
+											{$i18n.t('Retrieval Chunk Expansion')}
+										</div>
+
+										<div class="">
+											<input
+												bind:value={RAGConfig.RETRIEVAL_CHUNK_EXPANSION}
+												type="number"
+												class=" bg-transparent text-center w-14 outline-none"
+												min="0"
+												max="100"
+												step="1"
+											/>
+										</div>
+									</div>
+								</Tooltip>
+							</div>
+
 							<div class="  mb-2.5 flex w-full justify-between">
 								<div class=" self-center text-xs font-medium">{$i18n.t('Reranking')}</div>
 								<div class="flex items-center relative">
