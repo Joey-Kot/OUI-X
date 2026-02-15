@@ -1150,6 +1150,7 @@ async def chat_completion_files_handler(
                 enable_bm25_search=request.app.state.config.ENABLE_RAG_BM25_SEARCH,
                 enable_reranking=request.app.state.config.ENABLE_RAG_RERANKING,
                 enable_bm25_enriched_texts=request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS,
+                retrieval_chunk_expansion=request.app.state.config.RETRIEVAL_CHUNK_EXPANSION,
                 full_context=all_full_context
                 or request.app.state.config.RAG_FULL_CONTEXT,
                 user=user,

@@ -1,6 +1,7 @@
 import logging
 import os
 import math
+from collections import defaultdict
 from typing import Awaitable, Optional, Union
 
 import requests
@@ -103,6 +104,130 @@ def dedupe_documents_before_rerank(docs: list[Document]) -> list[Document]:
         deduped_docs.append(doc)
 
     return deduped_docs
+
+
+def _get_source_key(metadata: dict) -> Optional[str]:
+    for key in ("file_id", "source", "id"):
+        value = metadata.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _parse_start_index(metadata: dict) -> Optional[int]:
+    start_index = metadata.get("start_index")
+    if start_index is None:
+        return None
+
+    try:
+        return int(start_index)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_source_windows(
+    collection_result: Optional[GetResult],
+) -> dict[str, list[tuple[int, Document]]]:
+    source_windows: dict[str, dict[int, Document]] = defaultdict(dict)
+    if not has_collection_documents(collection_result):
+        return {}
+
+    documents = collection_result.documents[0]
+    metadatas = collection_result.metadatas[0] if collection_result.metadatas else []
+
+    for idx, document in enumerate(documents):
+        metadata = metadatas[idx] if idx < len(metadatas) else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        source_key = _get_source_key(metadata)
+        start_index = _parse_start_index(metadata)
+        if source_key is None or start_index is None:
+            continue
+
+        source_windows[source_key].setdefault(
+            start_index,
+            Document(page_content=document, metadata=metadata),
+        )
+
+    return {
+        source_key: sorted(start_map.items(), key=lambda item: item[0])
+        for source_key, start_map in source_windows.items()
+    }
+
+
+def expand_documents_by_window(
+    docs: list[Document],
+    collection_result: Optional[GetResult],
+    window_size: int,
+) -> list[Document]:
+    if window_size <= 0 or len(docs) == 0:
+        return docs
+
+    source_windows = _build_source_windows(collection_result)
+    if not source_windows:
+        return docs
+
+    source_positions = {
+        source_key: {start_index: idx for idx, (start_index, _) in enumerate(entries)}
+        for source_key, entries in source_windows.items()
+    }
+
+    expanded_docs: list[Document] = []
+    for doc in docs:
+        expanded_docs.append(doc)
+
+        metadata = doc.metadata if isinstance(doc.metadata, dict) else {}
+        inherited_score = metadata.get("score")
+        inherited_score = (
+            float(inherited_score)
+            if isinstance(inherited_score, (int, float))
+            else None
+        )
+        source_key = _get_source_key(metadata)
+        start_index = _parse_start_index(metadata)
+        if source_key is None or start_index is None:
+            continue
+
+        entries = source_windows.get(source_key)
+        positions = source_positions.get(source_key)
+        if not entries or not positions:
+            continue
+
+        center_idx = positions.get(start_index)
+        if center_idx is None:
+            continue
+
+        for distance in range(1, window_size + 1):
+            left_idx = center_idx - distance
+            right_idx = center_idx + distance
+
+            if left_idx >= 0:
+                left_doc = entries[left_idx][1]
+                left_metadata = (
+                    dict(left_doc.metadata) if isinstance(left_doc.metadata, dict) else {}
+                )
+                left_metadata["retrieval_chunk_expanded"] = True
+                if inherited_score is not None:
+                    left_metadata["score"] = inherited_score
+                expanded_docs.append(
+                    Document(page_content=left_doc.page_content, metadata=left_metadata)
+                )
+            if right_idx < len(entries):
+                right_doc = entries[right_idx][1]
+                right_metadata = (
+                    dict(right_doc.metadata)
+                    if isinstance(right_doc.metadata, dict)
+                    else {}
+                )
+                right_metadata["retrieval_chunk_expanded"] = True
+                if inherited_score is not None:
+                    right_metadata["score"] = inherited_score
+                expanded_docs.append(
+                    Document(page_content=right_doc.page_content, metadata=right_metadata)
+                )
+
+    return expanded_docs
 
 
 def is_youtube_url(url: str) -> bool:
@@ -502,6 +627,7 @@ async def query_doc_with_rag_pipeline(
     enable_reranking: bool,
     collection_result: Optional[GetResult] = None,
     enable_bm25_enriched_texts: bool = False,
+    retrieval_chunk_expansion: int = 0,
 ) -> dict:
     try:
         vector_search_retriever = VectorSearchRetriever(
@@ -563,18 +689,42 @@ async def query_doc_with_rag_pipeline(
             result_docs = deduped_docs
             result_docs = result_docs[:k]
 
-        ranked = [
-            (
-                (
-                    float(doc.metadata.get("score"))
-                    if isinstance(doc.metadata.get("score"), (int, float))
-                    else float(len(result_docs) - idx)
-                ),
-                doc.page_content,
-                doc.metadata,
+        rerank_output_count = len(result_docs)
+
+        if retrieval_chunk_expansion > 0 and len(result_docs) > 0:
+            collection_result_for_expansion = collection_result
+            if not has_collection_documents(collection_result_for_expansion):
+                collection_result_for_expansion = VECTOR_DB_CLIENT.get(
+                    collection_name=collection_name
+                )
+
+            result_docs = expand_documents_by_window(
+                result_docs,
+                collection_result_for_expansion,
+                retrieval_chunk_expansion,
             )
-            for idx, doc in enumerate(result_docs)
-        ]
+            result_docs = dedupe_documents_before_rerank(result_docs)
+
+            final_limit = max(k, k * (2 * retrieval_chunk_expansion + 1))
+            if final_limit > 0:
+                result_docs = result_docs[:final_limit]
+
+        expanded_output_count = len(result_docs)
+
+        ranked = []
+        for idx, doc in enumerate(result_docs):
+            metadata = doc.metadata if isinstance(doc.metadata, dict) else {}
+            score = metadata.get("score")
+            is_expanded = metadata.get("retrieval_chunk_expanded") is True
+
+            if isinstance(score, (int, float)):
+                distance = float(score)
+            elif is_expanded:
+                distance = None
+            else:
+                distance = float(len(result_docs) - idx)
+
+            ranked.append((distance, doc.page_content, metadata))
 
         distances = [item[0] for item in ranked]
         documents = [item[1] for item in ranked]
@@ -588,7 +738,11 @@ async def query_doc_with_rag_pipeline(
 
         log.info(
             "query_doc_with_rag_pipeline:counts "
-            + f"retrieved_count={retrieved_count} deduped_count={deduped_count} rerank_input_count={rerank_input_count}"
+            + f"retrieved_count={retrieved_count} "
+            + f"deduped_count={deduped_count} "
+            + f"rerank_input_count={rerank_input_count} "
+            + f"rerank_output_count={rerank_output_count} "
+            + f"expanded_output_count={expanded_output_count}"
         )
         log.info(
             "query_doc_with_rag_pipeline:result "
@@ -887,6 +1041,7 @@ async def query_doc_with_file_scope(
     k_reranker: int,
     r: float,
     enable_reranking: bool,
+    retrieval_chunk_expansion: int = 0,
 ) -> Optional[dict]:
     try:
         scoped_result = VECTOR_DB_CLIENT.query(
@@ -939,18 +1094,36 @@ async def query_doc_with_file_scope(
             result_docs = deduped_docs
             result_docs = result_docs[:k]
 
-        ranked = [
-            (
-                (
-                    float(doc.metadata.get("score"))
-                    if isinstance(doc.metadata.get("score"), (int, float))
-                    else float(len(result_docs) - idx)
-                ),
-                doc.page_content,
-                doc.metadata,
+        rerank_output_count = len(result_docs)
+
+        if retrieval_chunk_expansion > 0 and len(result_docs) > 0:
+            result_docs = expand_documents_by_window(
+                result_docs,
+                scoped_result,
+                retrieval_chunk_expansion,
             )
-            for idx, doc in enumerate(result_docs)
-        ]
+            result_docs = dedupe_documents_before_rerank(result_docs)
+
+            final_limit = max(k, k * (2 * retrieval_chunk_expansion + 1))
+            if final_limit > 0:
+                result_docs = result_docs[:final_limit]
+
+        expanded_output_count = len(result_docs)
+
+        ranked = []
+        for idx, doc in enumerate(result_docs):
+            metadata = doc.metadata if isinstance(doc.metadata, dict) else {}
+            score = metadata.get("score")
+            is_expanded = metadata.get("retrieval_chunk_expanded") is True
+
+            if isinstance(score, (int, float)):
+                distance = float(score)
+            elif is_expanded:
+                distance = None
+            else:
+                distance = float(len(result_docs) - idx)
+
+            ranked.append((distance, doc.page_content, metadata))
 
         result = {
             "distances": [[item[0] for item in ranked]],
@@ -959,7 +1132,11 @@ async def query_doc_with_file_scope(
         }
         log.info(
             "query_doc_with_file_scope:counts "
-            + f"retrieved_count={retrieved_count} deduped_count={deduped_count} rerank_input_count={rerank_input_count}"
+            + f"retrieved_count={retrieved_count} "
+            + f"deduped_count={deduped_count} "
+            + f"rerank_input_count={rerank_input_count} "
+            + f"rerank_output_count={rerank_output_count} "
+            + f"expanded_output_count={expanded_output_count}"
         )
         return result
     except Exception as e:
@@ -1354,6 +1531,7 @@ async def get_sources_from_items(
     enable_bm25_search,
     enable_reranking,
     enable_bm25_enriched_texts,
+    retrieval_chunk_expansion=0,
     full_context=False,
     user: Optional[UserModel] = None,
 ):
@@ -1545,6 +1723,7 @@ async def get_sources_from_items(
                             k_reranker=effective_config["TOP_K_RERANKER"],
                             r=effective_config["RELEVANCE_THRESHOLD"],
                             enable_reranking=enable_reranking,
+                            retrieval_chunk_expansion=retrieval_chunk_expansion,
                         )
                         if scoped_result is not None:
                             scoped_results.append(scoped_result)
@@ -1685,6 +1864,7 @@ async def get_sources_from_items(
                                     enable_bm25_search=enable_bm25_search,
                                     enable_reranking=enable_reranking,
                                     enable_bm25_enriched_texts=enable_bm25_enriched_texts,
+                                    retrieval_chunk_expansion=retrieval_chunk_expansion,
                                 )
                                 per_collection_results.append(result)
 

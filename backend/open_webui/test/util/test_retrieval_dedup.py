@@ -77,6 +77,13 @@ class _FakeSearchResult:
         self.documents = [documents]
 
 
+class _FakeGetResult:
+    def __init__(self, ids, metadatas, documents):
+        self.ids = [ids]
+        self.metadatas = [metadatas]
+        self.documents = [documents]
+
+
 class _FakeVectorClient:
     def search(self, collection_name, vectors, limit):
         del collection_name, vectors, limit
@@ -89,6 +96,57 @@ class _FakeVectorClient:
             ],
             documents=["alpha", "alpha duplicate", "beta"],
         )
+
+
+class _FakeVectorClientWithExpansion:
+    def __init__(self):
+        self._all_docs = _FakeGetResult(
+            ids=["0", "10", "20", "30"],
+            metadatas=[
+                {"file_id": "file-1", "start_index": 0},
+                {"file_id": "file-1", "start_index": 10},
+                {"file_id": "file-1", "start_index": 20},
+                {"file_id": "file-1", "start_index": 30},
+            ],
+            documents=["A", "B", "C", "D"],
+        )
+
+    def search(self, collection_name, vectors, limit):
+        del collection_name, vectors, limit
+        return _FakeSearchResult(
+            ids=["10", "20"],
+            metadatas=[
+                {"file_id": "file-1", "start_index": 10},
+                {"file_id": "file-1", "start_index": 20},
+            ],
+            documents=["B", "C"],
+        )
+
+    def get(self, collection_name):
+        del collection_name
+        return self._all_docs
+
+    def query(self, collection_name, filter, limit=None):
+        del collection_name, limit
+        if filter == {"file_id": "file-1"}:
+            return self._all_docs
+        return _FakeGetResult(ids=[], metadatas=[], documents=[])
+
+
+class _FakeFileScopeRetriever:
+    def __init__(self, docs):
+        self.docs = docs
+        self.k = 0
+
+    async def ainvoke(self, query):
+        del query
+        return [self.docs[1]]
+
+
+class _FakeBM25Retriever:
+    @classmethod
+    def from_documents(cls, docs):
+        return _FakeFileScopeRetriever(docs)
 
 
 @pytest.mark.asyncio
@@ -121,6 +179,75 @@ async def test_query_doc_with_rag_pipeline_dedupes_before_rerank(monkeypatch):
 
     assert rerank_input_counts == [2]
     assert result["documents"][0] == ["alpha", "beta"]
+
+
+@pytest.mark.asyncio
+async def test_query_doc_with_rag_pipeline_expands_neighbors_after_rerank(monkeypatch):
+    monkeypatch.setattr(
+        retrieval_utils, "VECTOR_DB_CLIENT", _FakeVectorClientWithExpansion()
+    )
+    rerank_inputs = []
+
+    async def embedding_function(_query, _prefix):
+        return [0.1, 0.2]
+
+    def reranking_function(_query, documents):
+        rerank_inputs.append([doc.page_content for doc in documents])
+        return [1.0 - i * 0.1 for i in range(len(documents))]
+
+    result = await retrieval_utils.query_doc_with_rag_pipeline(
+        collection_name="test-collection",
+        query="query",
+        embedding_function=embedding_function,
+        k=10,
+        reranking_function=reranking_function,
+        k_reranker=10,
+        r=0.0,
+        bm25_weight=0.5,
+        enable_bm25_search=False,
+        enable_reranking=True,
+        collection_result=None,
+        enable_bm25_enriched_texts=False,
+        retrieval_chunk_expansion=1,
+    )
+
+    assert rerank_inputs == [["B", "C"]]
+    assert result["documents"][0] == ["B", "A", "C", "D"]
+    assert result["metadatas"][0][1]["retrieval_chunk_expanded"] is True
+    assert result["metadatas"][0][3]["retrieval_chunk_expanded"] is True
+    assert result["distances"][0][1] == 1.0
+    assert result["distances"][0][3] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_query_doc_with_file_scope_expands_neighbors(monkeypatch):
+    monkeypatch.setattr(
+        retrieval_utils, "VECTOR_DB_CLIENT", _FakeVectorClientWithExpansion()
+    )
+    monkeypatch.setattr(retrieval_utils, "BM25Retriever", _FakeBM25Retriever)
+
+    async def embedding_function(_query, _prefix):
+        return [0.1, 0.2]
+
+    result = await retrieval_utils.query_doc_with_file_scope(
+        collection_name="test-collection",
+        file_id="file-1",
+        query="query",
+        embedding_function=embedding_function,
+        k=10,
+        reranking_function=None,
+        k_reranker=10,
+        r=0.0,
+        enable_reranking=False,
+        retrieval_chunk_expansion=1,
+    )
+
+    assert result is not None
+    assert result["documents"][0] == ["B", "A", "C"]
+    assert result["metadatas"][0][1]["retrieval_chunk_expanded"] is True
+    assert result["metadatas"][0][2]["retrieval_chunk_expanded"] is True
+    assert result["distances"][0][1] is None
+    assert result["distances"][0][2] is None
 
 
 @pytest.mark.asyncio

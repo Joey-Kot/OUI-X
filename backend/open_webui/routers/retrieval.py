@@ -512,6 +512,7 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         "TOP_K_RERANKER": request.app.state.config.TOP_K_RERANKER,
         "RELEVANCE_THRESHOLD": request.app.state.config.RELEVANCE_THRESHOLD,
         "BM25_WEIGHT": request.app.state.config.BM25_WEIGHT,
+        "RETRIEVAL_CHUNK_EXPANSION": request.app.state.config.RETRIEVAL_CHUNK_EXPANSION,
         # Content extraction settings
         "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
         "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
@@ -698,6 +699,7 @@ class ConfigForm(BaseModel):
     TOP_K_RERANKER: Optional[int] = None
     RELEVANCE_THRESHOLD: Optional[float] = None
     BM25_WEIGHT: Optional[float] = None
+    RETRIEVAL_CHUNK_EXPANSION: Optional[int] = None
 
     # Content extraction settings
     CONTENT_EXTRACTION_ENGINE: Optional[str] = None
@@ -825,6 +827,10 @@ async def update_rag_config(
         if form_data.BM25_WEIGHT is not None
         else request.app.state.config.BM25_WEIGHT
     )
+    if form_data.RETRIEVAL_CHUNK_EXPANSION is not None:
+        request.app.state.config.RETRIEVAL_CHUNK_EXPANSION = max(
+            0, min(100, int(form_data.RETRIEVAL_CHUNK_EXPANSION))
+        )
 
     # Content extraction settings
     request.app.state.config.CONTENT_EXTRACTION_ENGINE = (
@@ -1304,6 +1310,7 @@ async def update_rag_config(
         "TOP_K_RERANKER": request.app.state.config.TOP_K_RERANKER,
         "RELEVANCE_THRESHOLD": request.app.state.config.RELEVANCE_THRESHOLD,
         "BM25_WEIGHT": request.app.state.config.BM25_WEIGHT,
+        "RETRIEVAL_CHUNK_EXPANSION": request.app.state.config.RETRIEVAL_CHUNK_EXPANSION,
         # Content extraction settings
         "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
         "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
@@ -2675,6 +2682,7 @@ async def query_doc_handler(
                 if form_data.enable_bm25_enriched_texts is not None
                 else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
             ),
+            retrieval_chunk_expansion=request.app.state.config.RETRIEVAL_CHUNK_EXPANSION,
         )
     except Exception as e:
         log.exception(e)
@@ -2776,6 +2784,7 @@ async def query_collection_handler(
                     if form_data.enable_bm25_enriched_texts is not None
                     else request.app.state.config.ENABLE_RAG_BM25_ENRICHED_TEXTS
                 ),
+                retrieval_chunk_expansion=request.app.state.config.RETRIEVAL_CHUNK_EXPANSION,
             )
             results.append(query_result)
 

@@ -63,16 +63,17 @@
 
 	function calculateShowRelevance(sources: any[]) {
 		const distances = sources.flatMap((citation) => citation.distances ?? []);
-		const inRange = distances.filter((d) => d !== undefined && d >= -1 && d <= 1).length;
-		const outOfRange = distances.filter((d) => d !== undefined && (d < -1 || d > 1)).length;
+		const numericDistances = distances.filter((d) => typeof d === 'number' && !Number.isNaN(d));
+		const inRange = numericDistances.filter((d) => d >= -1 && d <= 1).length;
+		const outOfRange = numericDistances.filter((d) => d < -1 || d > 1).length;
 
-		if (distances.length === 0) {
+		if (numericDistances.length === 0) {
 			return false;
 		}
 
 		if (
-			(inRange === distances.length - 1 && outOfRange === 1) ||
-			(outOfRange === distances.length - 1 && inRange === 1)
+			(inRange === numericDistances.length - 1 && outOfRange === 1) ||
+			(outOfRange === numericDistances.length - 1 && inRange === 1)
 		) {
 			return false;
 		}
@@ -81,8 +82,16 @@
 	}
 
 	function shouldShowPercentage(sources: any[]) {
-		const distances = sources.flatMap((citation) => citation.distances ?? []);
-		return distances.every((d) => d !== undefined && d >= -1 && d <= 1);
+		const normalDistances = sources
+			.filter((citation) => !citation?.metadata?.[0]?.retrieval_chunk_expanded)
+			.flatMap((citation) => citation.distances ?? [])
+			.filter((d) => typeof d === 'number' && !Number.isNaN(d));
+
+		if (normalDistances.length === 0) {
+			return false;
+		}
+
+		return normalDistances.every((d) => d >= -1 && d <= 1);
 	}
 
 	$: {
