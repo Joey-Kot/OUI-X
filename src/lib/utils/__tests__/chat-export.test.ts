@@ -146,7 +146,7 @@ describe('serializeChatToMarkdown', () => {
 							parentId: null,
 							childrenIds: [],
 							role: 'assistant',
-							content: 'Result [1] and [2]',
+							content: 'Result [[1]] and [[2]]',
 							sources: [{ document: ['a', 'b'] }]
 						}
 					}
@@ -168,7 +168,7 @@ describe('serializeChatToMarkdown', () => {
 							parentId: null,
 							childrenIds: [],
 							role: 'assistant',
-							content: 'Result [1] and [2]',
+							content: 'Result [[1]] and [[2]]',
 							sources: [{ document: ['a', 'b'] }]
 						}
 					}
@@ -177,7 +177,7 @@ describe('serializeChatToMarkdown', () => {
 		};
 
 		expect(serializeChatToMarkdown(chat, { excludeCitations: false })).toBe(
-			'### ASSISTANT\nResult [1] and [2]'
+			'### ASSISTANT\nResult [[1]] and [[2]]'
 		);
 	});
 });

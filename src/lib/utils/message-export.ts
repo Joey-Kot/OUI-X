@@ -18,25 +18,31 @@ const parseCitationGroup = (
 	content: string,
 	start: number
 ): { end: number; ids: number[] } | null => {
-	const open = content[start];
-	const isSquare = open === '[';
-	const isFullWidth = open === '【';
+	let openLength = 0;
+	let closeToken = '';
 
-	if (!isSquare && !isFullWidth) {
+	if (content.slice(start, start + 2) === '[[') {
+		openLength = 2;
+		closeToken = ']]';
+	} else if (content.slice(start, start + 2) === '【【') {
+		openLength = 2;
+		closeToken = '】】';
+	}
+
+	if (openLength === 0) {
 		return null;
 	}
 
-	if (isSquare && content[start + 1] === '^') {
+	if (closeToken === ']]' && content[start + openLength] === '^') {
 		return null;
 	}
 
-	const close = isSquare ? ']' : '】';
-	const closeIndex = content.indexOf(close, start + 1);
+	const closeIndex = content.indexOf(closeToken, start + openLength);
 	if (closeIndex === -1) {
 		return null;
 	}
 
-	const raw = content.slice(start + 1, closeIndex);
+	const raw = content.slice(start + openLength, closeIndex);
 	if (!/^\d[\d,\s]*$/.test(raw)) {
 		return null;
 	}
@@ -51,7 +57,7 @@ const parseCitationGroup = (
 	}
 
 	return {
-		end: closeIndex + 1,
+		end: closeIndex + closeToken.length,
 		ids
 	};
 };
