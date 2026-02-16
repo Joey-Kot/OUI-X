@@ -340,6 +340,12 @@ input[type='number'] {
 	@apply rounded-md dark:bg-gray-800 bg-gray-100 mx-0.5;
 }
 
+.citation-chip {
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-touch-callout: none;
+}
+
 .svelte-flow {
 	background-color: transparent !important;
 }

@@ -25,7 +25,8 @@ export const addChatToCollection = async ({
 }: AddChatToCollectionParams): Promise<{ fileId: string; knowledgeId: string }> => {
 	const markdown = serializeChatToMarkdown(chat, {
 		includeThinkingContent,
-		includeToolCallingContent
+		includeToolCallingContent,
+		excludeCitations: true
 	});
 	if (!markdown.trim()) {
 		throw new Error('Chat is empty or unavailable.');

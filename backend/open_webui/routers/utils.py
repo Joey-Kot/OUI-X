@@ -1,22 +1,17 @@
 import black
-import logging
 import markdown
 
-from open_webui.models.chats import ChatTitleMessagesForm
-from open_webui.config import DATA_DIR, ENABLE_ADMIN_EXPORT
+from open_webui.config import ENABLE_ADMIN_EXPORT
 from open_webui.constants import ERROR_MESSAGES
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from starlette.responses import FileResponse
 
 
 from open_webui.utils.misc import get_gravatar_url
-from open_webui.utils.pdf_generator import PDFGenerator
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.code_interpreter import execute_code_jupyter
 
-
-log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -79,28 +74,6 @@ async def get_html_from_markdown(
     form_data: MarkdownForm, user=Depends(get_verified_user)
 ):
     return {"html": markdown.markdown(form_data.md)}
-
-
-class ChatForm(BaseModel):
-    title: str
-    messages: list[dict]
-
-
-@router.post("/pdf")
-async def download_chat_as_pdf(
-    form_data: ChatTitleMessagesForm, user=Depends(get_verified_user)
-):
-    try:
-        pdf_bytes = PDFGenerator(form_data).generate_chat_pdf()
-
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": "attachment;filename=chat.pdf"},
-        )
-    except Exception as e:
-        log.exception(f"Error generating PDF: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/db/download")

@@ -31,6 +31,7 @@
 		removeDetails,
 		removeAllDetails
 	} from '$lib/utils';
+	import { buildMessageExportText } from '$lib/utils/message-export';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 
 	import Name from './Name.svelte';
@@ -80,7 +81,7 @@
 		};
 		done: boolean;
 		error?: boolean | { content: string };
-		sources?: string[];
+		sources?: Array<Record<string, unknown>>;
 		code_executions?: {
 			uuid: string;
 			name: string;
@@ -166,17 +167,32 @@
 	let loadingSpeech = false;
 	let generatingImage = false;
 
-	const copyToClipboard = async (text) => {
-		text = removeAllDetails(text);
-
-		if (($config?.ui?.response_watermark ?? '').trim() !== '') {
-			text = `${text}\n\n${$config?.ui?.response_watermark}`;
-		}
+	const copyToClipboard = async () => {
+		const text = buildMessageExportText(message, {
+			removeDetails: true,
+			excludeCitations: true,
+			includeWatermark: true,
+			watermark: $config?.ui?.response_watermark ?? ''
+		});
 
 		const res = await _copyToClipboard(text, null, $settings?.copyFormatted ?? false);
 		if (res) {
 			toast.success($i18n.t('Copying to clipboard was successful!'));
 		}
+	};
+
+	const stripCitationElements = (root: HTMLElement) => {
+		root.querySelectorAll('.citation-chip').forEach((node) => {
+			node.remove();
+		});
+
+		root
+			.querySelectorAll('a[data-link-preview-trigger],a[data-melt-hover-card-trigger]')
+			.forEach((node) => {
+				if (!(node.textContent ?? '').trim()) {
+					node.remove();
+				}
+			});
 	};
 
 	const stopAudio = () => {
@@ -468,14 +484,18 @@
 
 	const contentCopyHandler = (e) => {
 		if (contentContainerElement) {
-			e.preventDefault();
-			// Get the selected HTML
 			const selection = window.getSelection();
+			if (!selection || selection.rangeCount === 0) {
+				return;
+			}
+
+			e.preventDefault();
 			const range = selection.getRangeAt(0);
 			const tempDiv = document.createElement('div');
 
 			// Remove background, color, and font styles
 			tempDiv.appendChild(range.cloneContents());
+			stripCitationElements(tempDiv);
 
 			tempDiv.querySelectorAll('table').forEach((table) => {
 				table.style.borderCollapse = 'collapse';
@@ -490,7 +510,7 @@
 
 			// Put cleaned HTML + plain text into clipboard
 			e.clipboardData.setData('text/html', tempDiv.innerHTML);
-			e.clipboardData.setData('text/plain', selection.toString());
+			e.clipboardData.setData('text/plain', (tempDiv.textContent ?? '').replace(/\u00a0/g, ' '));
 		}
 	};
 
@@ -911,7 +931,7 @@
 											? 'visible'
 											: 'invisible group-hover:visible'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-white hover:text-black transition copy-response-button"
 										on:click={() => {
-											copyToClipboard(message.content);
+											copyToClipboard();
 										}}
 									>
 										<svg

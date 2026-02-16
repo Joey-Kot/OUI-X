@@ -134,6 +134,52 @@ describe('serializeChatToMarkdown', () => {
 			})
 		).toBe('### ASSISTANT\nplain content');
 	});
+
+	it('removes citations by default when sources exist', () => {
+		const chat = {
+			chat: {
+				history: {
+					currentId: 'assistant-1',
+					messages: {
+						'assistant-1': {
+							id: 'assistant-1',
+							parentId: null,
+							childrenIds: [],
+							role: 'assistant',
+							content: 'Result [[1]] and [[2]]',
+							sources: [{ document: ['a', 'b'] }]
+						}
+					}
+				}
+			}
+		};
+
+		expect(serializeChatToMarkdown(chat)).toBe('### ASSISTANT\nResult and');
+	});
+
+	it('preserves citations when excludeCitations is false', () => {
+		const chat = {
+			chat: {
+				history: {
+					currentId: 'assistant-1',
+					messages: {
+						'assistant-1': {
+							id: 'assistant-1',
+							parentId: null,
+							childrenIds: [],
+							role: 'assistant',
+							content: 'Result [[1]] and [[2]]',
+							sources: [{ document: ['a', 'b'] }]
+						}
+					}
+				}
+			}
+		};
+
+		expect(serializeChatToMarkdown(chat, { excludeCitations: false })).toBe(
+			'### ASSISTANT\nResult [[1]] and [[2]]'
+		);
+	});
 });
 
 describe('buildChatMarkdownFileName', () => {

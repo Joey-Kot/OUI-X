@@ -45,10 +45,13 @@
 
 {#if title !== 'N/A'}
 	<button
-		class="text-[10px] w-fit translate-y-[2px] px-2 py-0.5 dark:bg-white/5 dark:text-white/80 dark:hover:text-white bg-gray-50 text-black/80 hover:text-black transition rounded-xl {disabled
+		class="citation-chip select-none text-[10px] w-fit translate-y-[2px] px-2 py-0.5 dark:bg-white/5 dark:text-white/80 dark:hover:text-white bg-gray-50 text-black/80 hover:text-black transition rounded-xl {disabled
 			? 'opacity-60 cursor-not-allowed'
 			: ''}"
 		on:click={handleClick}
+		on:copy|preventDefault
+		on:cut|preventDefault
+		on:dragstart|preventDefault
 	>
 		<span class="inline-flex items-center gap-0.5">
 			{getDisplayTitle(formattedTitle(decodeString(title)))}

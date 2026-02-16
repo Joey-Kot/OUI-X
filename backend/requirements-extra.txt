@@ -12,7 +12,6 @@ opensearch-py==3.1.0
 transformers==4.57.3
 ftfy==6.3.1
 pypdf==6.5.0
-fpdf2==2.8.5
 pymdown-extensions==10.19.1
 docx2txt==0.9
 python-pptx==1.0.2
