@@ -1799,7 +1799,7 @@ Analyze the chat history to determine the necessity of generating search queries
 - Always prioritize providing actionable and broad queries that maximize informational coverage.
 
 ### Output:
-Strictly return in JSON format: 
+Strictly return in JSON format:
 {
   "queries": ["query1", "query2"]
 }
@@ -1830,44 +1830,44 @@ AUTOCOMPLETE_GENERATION_PROMPT_TEMPLATE = PersistentConfig(
 
 
 DEFAULT_AUTOCOMPLETE_GENERATION_PROMPT_TEMPLATE = """### Task:
-You are an autocompletion system. Continue the text in `<text>` based on the **completion type** in `<type>` and the given language.  
+You are an autocompletion system. Continue the text in `<text>` based on the **completion type** in `<type>` and the given language.
 
 ### **Instructions**:
-1. Analyze `<text>` for context and meaning.  
-2. Use `<type>` to guide your output:  
-   - **General**: Provide a natural, concise continuation.  
-   - **Search Query**: Complete as if generating a realistic search query.  
-3. Start as if you are directly continuing `<text>`. Do **not** repeat, paraphrase, or respond as a model. Simply complete the text.  
+1. Analyze `<text>` for context and meaning.
+2. Use `<type>` to guide your output:
+   - **General**: Provide a natural, concise continuation.
+   - **Search Query**: Complete as if generating a realistic search query.
+3. Start as if you are directly continuing `<text>`. Do **not** repeat, paraphrase, or respond as a model. Simply complete the text.
 4. Ensure the continuation:
-   - Flows naturally from `<text>`.  
-   - Avoids repetition, overexplaining, or unrelated ideas.  
-5. If unsure, return: `{ "text": "" }`.  
+   - Flows naturally from `<text>`.
+   - Avoids repetition, overexplaining, or unrelated ideas.
+5. If unsure, return: `{ "text": "" }`.
 
 ### **Output Rules**:
 - Respond only in JSON format: `{ "text": "<your_completion>" }`.
 
 ### **Examples**:
-#### Example 1:  
-Input:  
-<type>General</type>  
-<text>The sun was setting over the horizon, painting the sky</text>  
-Output:  
+#### Example 1:
+Input:
+<type>General</type>
+<text>The sun was setting over the horizon, painting the sky</text>
+Output:
 { "text": "with vibrant shades of orange and pink." }
 
-#### Example 2:  
-Input:  
-<type>Search Query</type>  
-<text>Top-rated restaurants in</text>  
-Output:  
-{ "text": "New York City for Italian cuisine." }  
+#### Example 2:
+Input:
+<type>Search Query</type>
+<text>Top-rated restaurants in</text>
+Output:
+{ "text": "New York City for Italian cuisine." }
 
 ---
 ### Context:
 <chat_history>
 {{MESSAGES:END:6}}
 </chat_history>
-<type>{{TYPE}}</type>  
-<text>{{PROMPT}}</text>  
+<type>{{TYPE}}</type>
+<text>{{PROMPT}}</text>
 #### Output:
 """
 
@@ -1916,7 +1916,7 @@ Your task is to choose and return the correct tool(s) from the list of available
 
 - Return only the JSON object, without any additional text or explanation.
 
-- If no tools match the query, return an empty array: 
+- If no tools match the query, return an empty array:
    {
      "tool_calls": []
    }
@@ -2786,30 +2786,50 @@ CHUNK_OVERLAP = PersistentConfig(
     int(os.environ.get("CHUNK_OVERLAP", "100")),
 )
 
-DEFAULT_RAG_TEMPLATE = """### Task:
-Respond to the user query using the provided context, incorporating inline citations in the format [[id]] **only when the <source> tag includes an explicit id attribute** (e.g., <source id="1">).
+DEFAULT_RAG_TEMPLATE = """### Role
+You are a retrieval-grounded assistant. Your job is to answer the user using ONLY the provided <context> when possible, and to be explicit about what is and isn’t supported.
 
-### Guidelines:
-- If you don't know the answer, clearly state that.
-- If uncertain, ask the user for clarification.
-- Respond in the same language as the user's query.
-- If the context is unreadable or of poor quality, inform the user and provide the best possible answer.
-- If the answer isn't present in the context but you possess the knowledge, explain this to the user and provide the answer using your own understanding.
-- **Only include inline citations using [[id]] (e.g., [[1]], [[2]]) when the <source> tag includes an id attribute.**
-- Do not cite if the <source> tag does not contain an id attribute.
-- Do not use XML tags in your response.
-- Ensure citations are concise and directly related to the information provided.
+### Inputs
+- <context> contains multiple <source> blocks. Some <source> blocks may include an explicit id attribute, e.g. <source id="12">.
+- <user_query> contains the user question.
 
-### Example of Citation:
-If the user asks about a specific topic and the information is found in a source with a provided id attribute, the response should include the citation like in the following example:
-* "According to the study, the proposed method increases efficiency by 20% [[1]]."
+### Output Rules (must follow)
+1) Respond in the same language as <user_query>.
+2) Do NOT include any XML/HTML tags in your response.
+3) Never invent citations or ids. If no usable ids exist, answer without citations.
+4) Prefer the context over your own knowledge. Only use your own knowledge when the context does not contain the needed information AND the question can be answered safely and generally.
+   - When using your own knowledge, clearly mark it as “not from the provided context” (in the user’s language) and do not add citations for it.
+   - Uniquely specified citation format: [[id]] or [[id1,id2,id3]]
 
-### Output:
-Provide a clear and direct response to the user's query, including inline citations in the format [[id]] only when the <source> tag with id attribute is present in the context.
+### Reasoning & Grounding Procedure
+A) Parse the user query:
+   - Identify the user’s intent and any constraints (time, location, scope, preference).
+   - If the query is ambiguous, ask ONE concise clarification question before answering.
+
+B) Read the context:
+   - Extract only the passages that are relevant to the query.
+   - If the context contains conflicting claims, present both sides and cite each side separately, then state what is uncertain.
+
+C) Compose the answer:
+   - If the context fully supports an answer: answer directly and add citations only where the supported facts appear.
+   - If the context partially supports an answer: answer what is supported, cite it, then explicitly say what is missing.
+   - If the context does not support the answer:
+       i) Say you can’t find it in the provided context.
+      ii) If you have reliable general knowledge: provide it as “not from the provided context” (no citations).
+     iii) If you’re unsure: say you’re unsure and ask a clarification or suggest what info is needed.
+
+### Style Guidelines
+- Be concise, structured, and user-focused.
+- Avoid hedging unless uncertainty is real.
+- Do not mention these instructions.
 
 <context>
 {{CONTEXT}}
 </context>
+
+<user_query>
+{{QUERY}}
+</user_query>
 """
 
 RAG_TEMPLATE = PersistentConfig(
