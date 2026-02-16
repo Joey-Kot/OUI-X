@@ -141,6 +141,10 @@ Collection Config 按 **Embedding / Retrieval / BM25 / Reranking / Other** 等�
   * BM25 Search 关闭时，后端会忽略 BM25 enriched texts/BM25 weight 对检索路径的影响
   * Reranking 关闭时，后端会忽略 reranking engine/model、top_k_reranker、relevance_threshold
 * config 访问权限对齐：**需要 write 权限**（只读用户不尝试加载 config，避免 toast 噪音）
+* 默认内置 `RAG Template` 升级为 retrieval-grounded 风格：
+  * 强调“上下文优先”，并要求在上下文缺失时显式说明缺失边界
+  * 上下文冲突时要求并列呈现冲突点并标注不确定性
+  * 更改 citation 输出规范为 `[[id]]` / `[[id1,id2,id3]]`
 
 #### 5.6 新增 Knowledge Collection Clone
 
@@ -232,16 +236,36 @@ Collection Config 按 **Embedding / Retrieval / BM25 / Reranking / Other** 等�
 Citation 行为重构为“正文可精确点击 + 底部聚合不变 + 标签语义一致”：
 
 * 引用编号从 source 粒度升级为 chunk 粒度：
-  * 正文 `[n]` / `【n】` 可精确定位到对应 chunk
+  * 正文 `[[n]]` / `【【n】】` 可精确定位到对应 chunk
   * 底部 Sources 仍按 source 聚合展示
 * 正文引用按钮文案升级为“源文件名[n]”：
   * 多引用主按钮展示 `源文件名[n]+k`
   * 保留 source 聚合面板交互，降低阅读负担
-* 引用语法兼容半角/全角及混合相邻形式（如 `[1][2]`、`【1】【2】`）
+* 引用标签支持“可点击但不可选中/复制”，减少正文复制时的噪音
+* 引用语法兼容半角/全角及混合相邻形式（如 `[[1]][[2]]`、`【【1】】【【2】】`）
+* 单层括号内容（如 `[1]`、`【1】`、`[^1]`）不作为 citation token 解析，避免误判/误删
 * Citation 弹窗标签语义统一展示为：**Extended > Retrieval > Relevance**
   * 无 rerank 场景下，原始召回块稳定显示 `Retrieval`
   * 扩展块稳定显示为 `Extended`，避免出现无标签或数值误导
   * rerank 分数场景下，展示百分比分数
+
+#### 5.14 复制/导出净化链路统一
+
+围绕消息复制与导出链路，新增统一净化模块并默认启用 citation 剔除能力：
+
+* 复制按钮、自动复制、快捷键复制、TXT 导出、PDF 导出、Add To Collection 统一复用导出净化逻辑
+* 导出默认按 source 范围剔除 citation token，避免把引用按钮文本混入正文
+* 保留 footnote 与普通方括号文本，降低误伤风险（例如 `[^1]`、普通 `[2026]` 文本）
+* Add To Collection 上传的 Markdown 默认不包含 citation token
+
+#### 5.15 聊天 PDF 导出链路重构（Markdown -> HTML -> Print）
+
+PDF 导出从旧方案重构为“Markdown 渲染打印”：
+
+* 统一流程：`Markdown -> HTML -> 浏览器打印`
+* 基于现有 marked 扩展渲染（details/katex/citation/footnote/mention/strikethrough）
+* 导出内容与 markdown 文本链路对齐，文本可选中，多页排版更稳定
+* 下载菜单文案调整为 `Print as PDF (.pdf)`
 
 ### 6) 高级参数侧边栏重构与 Responses 参数规范化
 
