@@ -76,10 +76,13 @@
 		<LinkPreview.Root openDelay={0} bind:open={openPreview}>
 			<LinkPreview.Trigger>
 				<button
-					class="text-[10px] w-fit translate-y-[2px] px-2 py-0.5 dark:bg-white/5 dark:text-white/80 dark:hover:text-white bg-gray-50 text-black/80 hover:text-black transition rounded-xl"
+					class="citation-chip select-none text-[10px] w-fit translate-y-[2px] px-2 py-0.5 dark:bg-white/5 dark:text-white/80 dark:hover:text-white bg-gray-50 text-black/80 hover:text-black transition rounded-xl"
 					on:click={() => {
 						openPreview = !openPreview;
 					}}
+					on:copy|preventDefault
+					on:cut|preventDefault
+					on:dragstart|preventDefault
 				>
 					<span class="line-clamp-1">
 						{getDisplayTitle(formattedTitle(decodeString(firstSource.title)))}[{firstSource.index}]
