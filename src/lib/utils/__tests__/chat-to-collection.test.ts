@@ -36,7 +36,8 @@ describe('addChatToCollection', () => {
 						parentId: 'user-1',
 						childrenIds: [],
 						role: 'assistant',
-						content: 'Hi'
+						content: 'Hi [1]',
+						sources: [{ document: ['doc-1'] }]
 					}
 				}
 			}
@@ -65,6 +66,10 @@ describe('addChatToCollection', () => {
 		expect((uploadFileMock.mock.calls[0]?.[1] as File)?.name).toBe(
 			'chat-20260211-0905-Collection Chat.md'
 		);
+		await expect(((uploadFileMock.mock.calls[0]?.[1] as File).text())).resolves.toContain(
+			'### ASSISTANT\nHi'
+		);
+		await expect(((uploadFileMock.mock.calls[0]?.[1] as File).text())).resolves.not.toContain('[1]');
 		expect(addFileToKnowledgeByIdMock).toHaveBeenCalledWith(token, knowledgeId, 'file-1');
 		expect(deleteFileByIdMock).not.toHaveBeenCalled();
 		expect(result).toEqual({ fileId: 'file-1', knowledgeId });

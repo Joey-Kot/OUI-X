@@ -1,4 +1,5 @@
 import { createMessagesList } from '$lib/utils';
+import { getCitationSourceCount, stripCitationTokens } from '$lib/utils/message-export';
 
 export type SerializableChat = {
 	chat?: {
@@ -13,6 +14,7 @@ export type SerializableChat = {
 type SerializeChatToMarkdownOptions = {
 	includeThinkingContent?: boolean;
 	includeToolCallingContent?: boolean;
+	excludeCitations?: boolean;
 };
 
 const stripTrailingDots = (value: string): string => {
@@ -51,7 +53,8 @@ export const serializeChatToMarkdown = (
 	chat: SerializableChat,
 	{
 		includeThinkingContent = true,
-		includeToolCallingContent = true
+		includeToolCallingContent = true,
+		excludeCitations = true
 	}: SerializeChatToMarkdownOptions = {}
 ): string => {
 	const history = chat?.chat?.history;
@@ -62,6 +65,7 @@ export const serializeChatToMarkdown = (
 	const messages = createMessagesList(history, history.currentId);
 	return messages
 		.reduce((acc, message) => {
+			const messageWithSources = message as { sources?: Array<unknown> };
 			const role = String(message?.role ?? '').toUpperCase();
 			let content = String(message?.content ?? '');
 
@@ -71,6 +75,10 @@ export const serializeChatToMarkdown = (
 
 			if (!includeToolCallingContent) {
 				content = removeDetailsByType(content, 'tool_calls');
+			}
+
+			if (excludeCitations) {
+				content = stripCitationTokens(content, getCitationSourceCount(messageWithSources.sources));
 			}
 
 			return acc + '### ' + role + '\n' + content + '\n\n';

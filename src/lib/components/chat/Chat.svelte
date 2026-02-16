@@ -55,6 +55,7 @@
 		getCodeBlockContents,
 		isYoutubeUrl
 	} from '$lib/utils';
+	import { buildMessageExportText } from '$lib/utils/message-export';
 	import { AudioQueue } from '$lib/utils/audio';
 
 	import {
@@ -1570,7 +1571,14 @@
 			message.done = true;
 
 			if ($settings.responseAutoCopy) {
-				copyToClipboard(message.content);
+				copyToClipboard(
+					buildMessageExportText(message, {
+						removeDetails: true,
+						excludeCitations: true,
+						includeWatermark: true,
+						watermark: $config?.ui?.response_watermark ?? ''
+					})
+				);
 			}
 
 			if ($settings.responseAutoPlayback && !$showCallOverlay) {

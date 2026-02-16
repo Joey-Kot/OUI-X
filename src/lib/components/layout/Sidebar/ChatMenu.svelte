@@ -64,7 +64,19 @@
 	};
 
 	const getChatAsText = async (chat) => {
-		return serializeChatToMarkdown(chat);
+		return serializeChatToMarkdown(chat, { excludeCitations: true });
+	};
+
+	const stripCitationElements = (root: HTMLElement) => {
+		root.querySelectorAll('.citation-chip').forEach((node) => node.remove());
+
+		root
+			.querySelectorAll('a[data-link-preview-trigger],a[data-melt-hover-card-trigger]')
+			.forEach((node) => {
+				if (!(node.textContent ?? '').trim()) {
+					node.remove();
+				}
+			});
 	};
 
 	const canAddToCollection = () => {
@@ -135,6 +147,7 @@
 					clonedElement.style.position = 'absolute';
 					clonedElement.style.left = '-9999px';
 					clonedElement.style.height = 'auto';
+					stripCitationElements(clonedElement as HTMLElement);
 					document.body.appendChild(clonedElement);
 
 					// Wait for DOM update/layout
