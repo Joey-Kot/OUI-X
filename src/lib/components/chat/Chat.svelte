@@ -2418,6 +2418,21 @@
 			toast.error($i18n.t('Failed to move chat'));
 		}
 	};
+
+	const normalizeBackgroundImageOpacity = (value) => {
+		const numericValue = Number(value);
+		if (!Number.isFinite(numericValue)) {
+			return 1;
+		}
+
+		return Math.min(1, Math.max(0, Math.round(numericValue * 100) / 100));
+	};
+
+	let backgroundImageOpacity = 1;
+	$: backgroundImageOpacity = normalizeBackgroundImageOpacity($settings?.backgroundImageOpacity ?? 1);
+
+	let backgroundOverlayOpacity = 1;
+	$: backgroundOverlayOpacity = normalizeBackgroundImageOpacity($settings?.backgroundOverlayOpacity ?? 1);
 </script>
 
 <svelte:head>
@@ -2470,11 +2485,12 @@
 				<div
 					class="absolute top-0 left-0 w-full h-full bg-cover bg-center bg-no-repeat"
 					style="background-image: url({$settings?.backgroundImageUrl ??
-						$config?.license_metadata?.background_image_url})  "
+						$config?.license_metadata?.background_image_url}); opacity: {backgroundImageOpacity};"
 				/>
 
 				<div
 					class="absolute top-0 left-0 w-full h-full bg-linear-to-t from-white to-white/85 dark:from-gray-900 dark:to-gray-900/90 z-0"
+					style="opacity: {backgroundOverlayOpacity};"
 				/>
 			{/if}
 
