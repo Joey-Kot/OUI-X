@@ -20,6 +20,8 @@
 	export let saveSettings: Function;
 
 	let backgroundImageUrl = null;
+	let backgroundImageOpacity = 1;
+	let backgroundOverlayOpacity = 1;
 	let inputFiles = null;
 	let filesInputElement;
 
@@ -190,6 +192,25 @@
 		saveSettings({ textScale });
 	};
 
+	const normalizeBackgroundImageOpacity = (value) => {
+		const numericValue = Number(value);
+		if (!Number.isFinite(numericValue)) {
+			return 1;
+		}
+
+		return Math.min(1, Math.max(0, Math.round(numericValue * 100) / 100));
+	};
+
+	const setBackgroundImageOpacityHandler = (value) => {
+		backgroundImageOpacity = normalizeBackgroundImageOpacity(value);
+		saveSettings({ backgroundImageOpacity });
+	};
+
+	const setBackgroundOverlayOpacityHandler = (value) => {
+		backgroundOverlayOpacity = normalizeBackgroundImageOpacity(value);
+		saveSettings({ backgroundOverlayOpacity });
+	};
+
 	onMount(async () => {
 		titleAutoGenerate = $settings?.title?.auto ?? true;
 		autoTags = $settings?.autoTags ?? true;
@@ -259,6 +280,8 @@
 		}
 
 		backgroundImageUrl = $settings?.backgroundImageUrl ?? null;
+		backgroundImageOpacity = normalizeBackgroundImageOpacity($settings?.backgroundImageOpacity ?? 1);
+		backgroundOverlayOpacity = normalizeBackgroundImageOpacity($settings?.backgroundOverlayOpacity ?? 1);
 		webSearch = $settings?.webSearch ?? null;
 
 		textScale = $settings?.textScale ?? null;
@@ -305,14 +328,17 @@
 				saveSettings({ backgroundImageUrl });
 			};
 
-			if (
-				inputFiles &&
-				inputFiles.length > 0 &&
-				['image/gif', 'image/webp', 'image/jpeg', 'image/png'].includes(inputFiles[0]['type'])
-			) {
-				reader.readAsDataURL(inputFiles[0]);
+			const file = inputFiles?.[0];
+			const isSupportedImageType =
+				file &&
+				['image/gif', 'image/webp', 'image/jpeg', 'image/png', 'image/svg+xml'].includes(file.type);
+			const isSvgByExtensionFallback =
+				file && file.type === '' && file.name.toLowerCase().endsWith('.svg');
+
+			if (file && (isSupportedImageType || isSvgByExtensionFallback)) {
+				reader.readAsDataURL(file);
 			} else {
-				console.log(`Unsupported File Type '${inputFiles[0]['type']}'.`);
+				console.log(`Unsupported File Type '${file?.type ?? 'unknown'}'.`);
 				inputFiles = null;
 			}
 		}}
@@ -604,6 +630,130 @@
 						<span class="ml-2 self-center" id="background-image-url-state"
 							>{backgroundImageUrl !== null ? $i18n.t('Reset') : $i18n.t('Upload')}</span
 						>
+					</button>
+				</div>
+			</div>
+
+			<div>
+				<div class=" py-0.5 flex w-full justify-between">
+					<label
+						id="chat-background-opacity-label"
+						for="chat-background-opacity-slider"
+						class=" self-center text-xs"
+					>
+						{$i18n.t('Chat Background Opacity')}
+					</label>
+
+					<div class="flex items-center gap-2 p-1">
+						<span class="text-xs" aria-live="polite">{backgroundImageOpacity.toFixed(2)}</span>
+					</div>
+				</div>
+
+				<div class=" flex items-center gap-2 px-1 pb-1">
+					<button
+						type="button"
+						class="rounded-lg p-1 transition outline-gray-200 hover:bg-gray-100 dark:outline-gray-700 dark:hover:bg-gray-800"
+						on:click={() => {
+							setBackgroundImageOpacityHandler(backgroundImageOpacity - 0.01);
+						}}
+						aria-labelledby="chat-background-opacity-label"
+						aria-label={$i18n.t('Decrease chat background opacity')}
+					>
+						<Minus className="h-3.5 w-3.5" />
+					</button>
+
+					<div class="flex-1 flex items-center">
+						<input
+							id="chat-background-opacity-slider"
+							class="w-full"
+							type="range"
+							min="0"
+							max="1"
+							step={0.01}
+							bind:value={backgroundImageOpacity}
+							on:input={() => {
+								setBackgroundImageOpacityHandler(backgroundImageOpacity);
+							}}
+							aria-labelledby="chat-background-opacity-label"
+							aria-valuemin="0"
+							aria-valuemax="1"
+							aria-valuenow={backgroundImageOpacity}
+							aria-valuetext={backgroundImageOpacity.toFixed(2)}
+						/>
+					</div>
+
+					<button
+						type="button"
+						class="rounded-lg p-1 transition outline-gray-200 hover:bg-gray-100 dark:outline-gray-700 dark:hover:bg-gray-800"
+						on:click={() => {
+							setBackgroundImageOpacityHandler(backgroundImageOpacity + 0.01);
+						}}
+						aria-labelledby="chat-background-opacity-label"
+						aria-label={$i18n.t('Increase chat background opacity')}
+					>
+						<Plus className="h-3.5 w-3.5" />
+					</button>
+				</div>
+			</div>
+
+			<div>
+				<div class=" py-0.5 flex w-full justify-between">
+					<label
+						id="chat-background-overlay-label"
+						for="chat-background-overlay-slider"
+						class=" self-center text-xs"
+					>
+						{$i18n.t('Chat Background Overlay')}
+					</label>
+
+					<div class="flex items-center gap-2 p-1">
+						<span class="text-xs" aria-live="polite">{backgroundOverlayOpacity.toFixed(2)}</span>
+					</div>
+				</div>
+
+				<div class=" flex items-center gap-2 px-1 pb-1">
+					<button
+						type="button"
+						class="rounded-lg p-1 transition outline-gray-200 hover:bg-gray-100 dark:outline-gray-700 dark:hover:bg-gray-800"
+						on:click={() => {
+							setBackgroundOverlayOpacityHandler(backgroundOverlayOpacity - 0.01);
+						}}
+						aria-labelledby="chat-background-overlay-label"
+						aria-label={$i18n.t('Decrease chat background overlay')}
+					>
+						<Minus className="h-3.5 w-3.5" />
+					</button>
+
+					<div class="flex-1 flex items-center">
+						<input
+							id="chat-background-overlay-slider"
+							class="w-full"
+							type="range"
+							min="0"
+							max="1"
+							step={0.01}
+							bind:value={backgroundOverlayOpacity}
+							on:input={() => {
+								setBackgroundOverlayOpacityHandler(backgroundOverlayOpacity);
+							}}
+							aria-labelledby="chat-background-overlay-label"
+							aria-valuemin="0"
+							aria-valuemax="1"
+							aria-valuenow={backgroundOverlayOpacity}
+							aria-valuetext={backgroundOverlayOpacity.toFixed(2)}
+						/>
+					</div>
+
+					<button
+						type="button"
+						class="rounded-lg p-1 transition outline-gray-200 hover:bg-gray-100 dark:outline-gray-700 dark:hover:bg-gray-800"
+						on:click={() => {
+							setBackgroundOverlayOpacityHandler(backgroundOverlayOpacity + 0.01);
+						}}
+						aria-labelledby="chat-background-overlay-label"
+						aria-label={$i18n.t('Increase chat background overlay')}
+					>
+						<Plus className="h-3.5 w-3.5" />
 					</button>
 				</div>
 			</div>
