@@ -282,6 +282,22 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * 前端UI展示标准化为 Title Case，统一移除下划线
 * 每个模型预配置中的 Advanced Params 优先级从最高级降为“仅 fallback”，用户请求参数始终优先
 
+### 7) Chat 背景与代码块视觉增强
+
+围绕聊天界面的背景可控性与代码块细节样式，新增以下能力：
+
+* 背景上传能力增强：
+  * 支持 `image/svg+xml` 类型作为聊天背景上传
+  * 当浏览器未提供 MIME（`type === ''`）时，新增基于 `.svg` 后缀的兜底识别
+* 双透明度控制（UI）：
+  * 新增 `Chat Background Opacity` 与 `Chat Background Overlay` 两个控件
+  * 两个控件均支持减号 / 滑杆 / 加号操作，步进为 `0.01`
+* 渲染生效范围：
+  * 背景图层透明度与背景蒙层透明度相互解耦，可分别调节
+  * 仅作用于全局背景分支（用户设置或 license 背景），不影响 folder 专属背景分支
+* CodeBlock 样式微调：
+  * 对内层代码块容器圆角进行微调，外层容器保持不变
+
 ## 移除了什么？
 
 ### 1) 移除 Ollama 相关组件与“内置绑定”
@@ -316,6 +332,9 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * Chat UI quick actions（浮动按钮）修复：
   * 请求体更标准化、stream 解析更稳、错误信息更可诊断
   * 后端对 `parent_message` 做了类型兜底防崩
+* Chat 视觉细节增强：
+  * 聊天背景新增双透明度控制（背景图层/蒙层解耦）并补充 SVG 上传兼容兜底
+  * CodeBlock 内层圆角收敛为 `0.7rem`，在不扩大视觉影响面的前提下统一细节
 * Retrieval/Citation 一致性修复：
   * 非 rerank 场景下的 Chunk Expansion、Citation 标签与 TopK 解析行为已统一
   * Collection override 在向量直出链路可稳定生效，减少上下文膨胀风险
