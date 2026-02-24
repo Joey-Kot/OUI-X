@@ -1074,6 +1074,42 @@ async def chat_completion_files_handler(
         file_sources = []
         remaining_files = list(files)
         if not request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING:
+            def _ingest_mode_from_item(item: dict, file_object) -> Optional[str]:
+                if isinstance(item.get("ingest_mode"), str):
+                    return item["ingest_mode"]
+
+                item_meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+                item_meta_data = (
+                    item_meta.get("data") if isinstance(item_meta.get("data"), dict) else {}
+                )
+                if isinstance(item_meta_data.get("conversation_ingest_mode"), str):
+                    return item_meta_data["conversation_ingest_mode"]
+
+                item_file = item.get("file") if isinstance(item.get("file"), dict) else {}
+                item_file_meta = (
+                    item_file.get("meta") if isinstance(item_file.get("meta"), dict) else {}
+                )
+                item_file_meta_data = (
+                    item_file_meta.get("data")
+                    if isinstance(item_file_meta.get("data"), dict)
+                    else {}
+                )
+                if isinstance(item_file_meta_data.get("conversation_ingest_mode"), str):
+                    return item_file_meta_data["conversation_ingest_mode"]
+
+                file_meta = (
+                    (file_object.meta or {})
+                    if file_object and isinstance(getattr(file_object, "meta", None), dict)
+                    else {}
+                )
+                file_meta_data = (
+                    file_meta.get("data") if isinstance(file_meta.get("data"), dict) else {}
+                )
+                if isinstance(file_meta_data.get("conversation_ingest_mode"), str):
+                    return file_meta_data["conversation_ingest_mode"]
+
+                return None
+
             remaining_files = []
             for item in files:
                 item_type = item.get("type", "file")
@@ -1081,6 +1117,11 @@ async def chat_completion_files_handler(
                 if item_type == "file" and not content_type.startswith("image/"):
                     file_id = item.get("id")
                     file_object = Files.get_file_by_id(file_id) if file_id else None
+                    ingest_mode = _ingest_mode_from_item(item, file_object)
+                    if ingest_mode != "direct_context":
+                        remaining_files.append(item)
+                        continue
+
                     content = (
                         (file_object.data or {}).get("content")
                         if file_object and file_object.data
@@ -1102,6 +1143,8 @@ async def chat_completion_files_handler(
                                 ],
                             }
                         )
+                    else:
+                        remaining_files.append(item)
                 else:
                     remaining_files.append(item)
 

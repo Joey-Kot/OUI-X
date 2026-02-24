@@ -1728,19 +1728,29 @@ async def get_sources_from_items(
                             ],
                         }
             else:
-                file_meta = item.get("file", {}).get("meta", {})
+                item_meta = item.get("meta", {}) if isinstance(item.get("meta"), dict) else {}
+                file_meta = (
+                    item.get("file", {}).get("meta", {})
+                    if isinstance(item.get("file"), dict)
+                    else {}
+                )
                 item_id = item.get("id")
                 file_object = Files.get_file_by_id(item_id) if item_id else None
                 file_db_meta = (file_object.meta or {}) if file_object else {}
 
                 conversation_upload_knowledge_id = (
                     item.get("conversation_upload_knowledge_id")
+                    or item_meta.get("conversation_upload_knowledge_id")
                     or file_meta.get("conversation_upload_knowledge_id")
                     or file_db_meta.get("conversation_upload_knowledge_id")
                     or item.get("collection_name")
+                    or item_meta.get("collection_name")
+                    or file_meta.get("collection_name")
+                    or file_db_meta.get("collection_name")
                 )
                 active_collection_name = (
                     item.get("active_collection_name")
+                    or item_meta.get("active_collection_name")
                     or file_meta.get("active_collection_name")
                     or file_db_meta.get("active_collection_name")
                 )
