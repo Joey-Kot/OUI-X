@@ -306,12 +306,29 @@ async def get_model_profile_image(id: str, user=Depends(get_verified_user)):
                     header, base64_data = model.meta.profile_image_url.split(",", 1)
                     image_data = base64.b64decode(base64_data)
                     image_buffer = io.BytesIO(image_data)
+                    # Respect the original data URL MIME type (e.g., image/svg+xml).
+                    media_type = "image/png"
+                    mime_to_extension = {
+                        "image/png": "png",
+                        "image/jpeg": "jpg",
+                        "image/jpg": "jpg",
+                        "image/webp": "webp",
+                        "image/gif": "gif",
+                        "image/svg+xml": "svg",
+                    }
+
+                    if header.startswith("data:"):
+                        mime_part = header.split(";", 1)[0].split(":", 1)[1].lower()
+                        if mime_part.startswith("image/"):
+                            media_type = mime_part
+
+                    file_extension = mime_to_extension.get(media_type, "img")
 
                     return StreamingResponse(
                         image_buffer,
-                        media_type="image/png",
+                        media_type=media_type,
                         headers={
-                            "Content-Disposition": "inline; filename=image.png",
+                            "Content-Disposition": f"inline; filename=image.{file_extension}",
                             **cache_headers,
                         },
                     )

@@ -32,13 +32,13 @@ def test_custom_params_are_fallback_and_do_not_override_request_values():
     assert result["foo"] == "bar"
 
 
-def test_model_system_prompt_is_not_applied_when_request_already_has_system_message():
+def test_model_system_prompt_is_prepended_when_request_already_has_system_message():
     model_params = {"system": "model system"}
     payload = {"messages": [{"role": "system", "content": "request system"}]}
 
     result = apply_model_params_as_defaults_openai(model_params, payload)
 
-    assert result["messages"][0]["content"] == "request system"
+    assert result["messages"][0]["content"] == "model system\n\nrequest system"
 
 
 def test_model_system_prompt_is_applied_when_request_has_no_system_message():
@@ -49,6 +49,15 @@ def test_model_system_prompt_is_applied_when_request_has_no_system_message():
 
     assert result["messages"][0]["role"] == "system"
     assert result["messages"][0]["content"] == "model system"
+
+
+def test_request_system_prompt_is_unchanged_when_model_has_no_system_prompt():
+    model_params = {"temperature": 0.1}
+    payload = {"messages": [{"role": "system", "content": "request system"}]}
+
+    result = apply_model_params_as_defaults_openai(model_params, payload)
+
+    assert result["messages"][0]["content"] == "request system"
 
 
 def test_explicit_null_in_request_blocks_model_fallback_value():
