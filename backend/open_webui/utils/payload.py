@@ -2,7 +2,6 @@ from open_webui.utils.task import prompt_template, prompt_variables_template
 from open_webui.utils.misc import (
     deep_update,
     add_or_update_system_message,
-    get_system_message,
     replace_system_message_content,
 )
 
@@ -17,6 +16,8 @@ def apply_system_prompt_to_body(
     metadata: Optional[dict] = None,
     user=None,
     replace: bool = False,
+    append: bool = False,
+    separator: str = "\n",
 ) -> dict:
     if not system:
         return form_data
@@ -36,7 +37,10 @@ def apply_system_prompt_to_body(
         )
     else:
         form_data["messages"] = add_or_update_system_message(
-            system, form_data.get("messages", [])
+            system,
+            form_data.get("messages", []),
+            append=append,
+            separator=separator,
         )
 
     return form_data
@@ -147,8 +151,16 @@ def apply_model_params_as_defaults_openai(
         if key not in form_data:
             form_data[key] = value
 
-    # Model system prompt is only a fallback when request has no system message.
-    if system and not get_system_message(form_data.get("messages", [])):
-        form_data = apply_system_prompt_to_body(system, form_data, metadata, user)
+    # Model system prompt always participates and is prepended when a request
+    # system prompt already exists.
+    if system:
+        form_data = apply_system_prompt_to_body(
+            system,
+            form_data,
+            metadata,
+            user,
+            append=False,
+            separator="\n\n",
+        )
 
     return form_data

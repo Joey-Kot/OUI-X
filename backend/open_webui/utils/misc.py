@@ -164,19 +164,21 @@ def pop_system_message(messages: list[dict]) -> tuple[Optional[dict], list[dict]
     return get_system_message(messages), remove_system_message(messages)
 
 
-def update_message_content(message: dict, content: str, append: bool = True) -> dict:
+def update_message_content(
+    message: dict, content: str, append: bool = True, separator: str = "\n"
+) -> dict:
     if isinstance(message["content"], list):
         for item in message["content"]:
             if item["type"] == "text":
                 if append:
-                    item["text"] = f"{item['text']}\n{content}"
+                    item["text"] = f"{item['text']}{separator}{content}"
                 else:
-                    item["text"] = f"{content}\n{item['text']}"
+                    item["text"] = f"{content}{separator}{item['text']}"
     else:
         if append:
-            message["content"] = f"{message['content']}\n{content}"
+            message["content"] = f"{message['content']}{separator}{content}"
         else:
-            message["content"] = f"{content}\n{message['content']}"
+            message["content"] = f"{content}{separator}{message['content']}"
     return message
 
 
@@ -189,7 +191,10 @@ def replace_system_message_content(content: str, messages: list[dict]) -> dict:
 
 
 def add_or_update_system_message(
-    content: str, messages: list[dict], append: bool = False
+    content: str,
+    messages: list[dict],
+    append: bool = False,
+    separator: str = "\n",
 ):
     """
     Adds a new system message at the beginning of the messages list
@@ -201,7 +206,7 @@ def add_or_update_system_message(
     """
 
     if messages and messages[0].get("role") == "system":
-        messages[0] = update_message_content(messages[0], content, append)
+        messages[0] = update_message_content(messages[0], content, append, separator)
     else:
         # Insert at the beginning
         messages.insert(0, {"role": "system", "content": content})
