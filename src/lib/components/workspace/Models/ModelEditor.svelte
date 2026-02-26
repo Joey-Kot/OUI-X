@@ -426,9 +426,20 @@
 			hidden
 			accept="image/*"
 			on:change={() => {
+				const selectedFile = inputFiles?.[0] as any;
+				const selectedFileType = selectedFile?.type;
+
 				let reader = new FileReader();
 				reader.onload = (event) => {
 					let originalImageUrl = `${event.target?.result}`;
+
+					if (selectedFileType === 'image/svg+xml') {
+						// Preserve SVG as-is so it can be rendered with its original MIME type.
+						info.meta.profile_image_url = originalImageUrl;
+						inputFiles = null;
+						filesInputElement.value = '';
+						return;
+					}
 
 					const img = new Image();
 					img.src = originalImageUrl;
@@ -473,15 +484,14 @@
 				};
 
 				if (
-					inputFiles &&
-					inputFiles.length > 0 &&
+					selectedFile &&
 					['image/gif', 'image/webp', 'image/jpeg', 'image/png', 'image/svg+xml'].includes(
-						(inputFiles[0] as any)?.['type']
+						selectedFileType
 					)
 				) {
-					reader.readAsDataURL(inputFiles[0]);
+					reader.readAsDataURL(selectedFile);
 				} else {
-					console.log(`Unsupported File Type '${(inputFiles[0] as any)?.['type']}'.`);
+					console.log(`Unsupported File Type '${selectedFileType}'.`);
 					inputFiles = null;
 				}
 			}}
