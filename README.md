@@ -41,6 +41,11 @@ OUI-X 新增 Responses API 的适配层（在后端与前端均有接入）：
 * tool calls / tool followups 在 Responses 结构里的表达与回放
 * reasoning/thinking 的提取与展示（同时避免把不合适的 summary 混入 UI）
 * UI 展示层对 content blocks 做了重排：**thinking 在正文之前展示**（仅展示顺序调整）
+* 缓存命中功能增强（仅 `provider_type = openai_responses`），大幅提升缓存命中率：
+  * 请求未显式传 `prompt_cache_key` 时，服务端自动注入会话级 key，无需前端/用户手动传
+  * 新会话自动生成 key，同会话稳定复用，跨会话隔离
+  * 显式透传 `prompt_cache_key` 优先，不会被自动注入逻辑覆盖（便于灰度/调试）
+  * 临时会话使用稳定派生 key，不写入数据库，持久会话将 key 写入会话元数据
 
 ### 3) Native-Only 工具调用流水线重构
 

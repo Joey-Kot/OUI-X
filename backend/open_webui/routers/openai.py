@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import uuid
 from typing import Any, Optional
 
 import aiohttp
@@ -21,6 +22,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from open_webui.models.models import Models
+from open_webui.models.chats import Chats
 from open_webui.config import (
     CACHE_DIR,
 )
@@ -130,6 +132,97 @@ def get_provider_type(api_config: Optional[dict]) -> str:
 
 def is_responses_provider(api_config: Optional[dict]) -> bool:
     return get_provider_type(api_config) == "openai_responses"
+
+
+def _mask_prompt_cache_key(prompt_cache_key: Optional[str]) -> str:
+    if not isinstance(prompt_cache_key, str) or not prompt_cache_key:
+        return "<none>"
+    if len(prompt_cache_key) <= 8:
+        return prompt_cache_key
+    return f"{prompt_cache_key[:8]}..."
+
+
+def _resolve_prompt_cache_key_for_responses(
+    payload: dict, metadata: Optional[dict], user: UserModel
+) -> Optional[str]:
+    explicit_key = payload.get("prompt_cache_key")
+    if isinstance(explicit_key, str) and explicit_key.strip():
+        resolved_key = explicit_key.strip()
+        log.debug(
+            "Responses prompt_cache_key source=explicit key=%s",
+            _mask_prompt_cache_key(resolved_key),
+        )
+        return resolved_key
+
+    chat_id = metadata.get("chat_id") if isinstance(metadata, dict) else None
+    if not isinstance(chat_id, str) or not chat_id:
+        log.debug("Responses prompt_cache_key source=none key=<none>")
+        return None
+
+    if chat_id.startswith("local:"):
+        derived_key = f"pc:v1:local:{hashlib.sha256(chat_id.encode()).hexdigest()[:16]}"
+        log.debug(
+            "Responses prompt_cache_key source=local_derived chat_id=%s key=%s",
+            chat_id,
+            _mask_prompt_cache_key(derived_key),
+        )
+        return derived_key
+
+    chat = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+    if chat is None and user.role == "admin":
+        chat = Chats.get_chat_by_id(chat_id)
+
+    if chat is None:
+        log.debug(
+            "Responses prompt_cache_key source=none chat_id=%s key=<none>", chat_id
+        )
+        return None
+
+    chat_meta = chat.meta if isinstance(chat.meta, dict) else {}
+    chat_meta_key = chat_meta.get("prompt_cache_key")
+    if isinstance(chat_meta_key, str) and chat_meta_key.strip():
+        resolved_key = chat_meta_key.strip()
+        log.debug(
+            "Responses prompt_cache_key source=chat_meta chat_id=%s key=%s",
+            chat_id,
+            _mask_prompt_cache_key(resolved_key),
+        )
+        return resolved_key
+
+    generated_key = f"pc:v1:{uuid.uuid4().hex}"
+    updated_chat = Chats.update_chat_metadata_by_id(
+        chat_id,
+        {
+            "prompt_cache_key": generated_key,
+            "prompt_cache_key_version": "v1",
+        },
+    )
+
+    log.debug(
+        "Responses prompt_cache_key source=generated_persisted chat_id=%s persisted=%s key=%s",
+        chat_id,
+        bool(updated_chat),
+        _mask_prompt_cache_key(generated_key),
+    )
+    return generated_key
+
+
+def _inject_prompt_cache_key_for_responses(
+    provider_type: str, payload: dict, metadata: Optional[dict], user: UserModel
+) -> None:
+    if provider_type != "openai_responses":
+        return
+
+    resolved_prompt_cache_key = _resolve_prompt_cache_key_for_responses(
+        payload, metadata, user
+    )
+    explicit_prompt_cache_key = payload.get("prompt_cache_key")
+    has_explicit_prompt_cache_key = (
+        isinstance(explicit_prompt_cache_key, str)
+        and bool(explicit_prompt_cache_key.strip())
+    )
+    if resolved_prompt_cache_key and not has_explicit_prompt_cache_key:
+        payload["prompt_cache_key"] = resolved_prompt_cache_key
 
 
 def _normalize_tool_choice_for_responses(tool_choice):
@@ -765,9 +858,20 @@ def chat_to_responses_payload(payload: dict, metadata: Optional[dict], api_confi
         "truncation",
         "text",
         "user",
+        "previous_response_id",
+        "conversation",
+        "prompt_cache_key",
+        "prompt_cache_retention",
     ]:
         if key in payload:
             responses_payload[key] = payload[key]
+
+    # Responses API does not allow both fields in a single request.
+    if (
+        responses_payload.get("previous_response_id") is not None
+        and responses_payload.get("conversation") is not None
+    ):
+        responses_payload.pop("conversation", None)
 
     # Only forward explicitly provided request metadata and drop non-JSON values.
     if "metadata" in payload:
@@ -1646,6 +1750,7 @@ async def generate_chat_completion(
         headers["api-version"] = api_version
         request_url = f"{request_url}/chat/completions?api-version={api_version}"
     elif provider_type == "openai_responses":
+        _inject_prompt_cache_key_for_responses(provider_type, payload, metadata, user)
         payload = chat_to_responses_payload(payload, metadata, api_config)
         request_url = f"{url}/responses"
     else:

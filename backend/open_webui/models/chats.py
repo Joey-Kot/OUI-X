@@ -322,6 +322,23 @@ class ChatTable:
         except Exception:
             return None
 
+    def update_chat_metadata_by_id(self, id: str, meta: dict) -> Optional[ChatModel]:
+        try:
+            with get_db() as db:
+                chat_item = db.get(Chat, id)
+                if chat_item is None:
+                    return None
+
+                existing_meta = chat_item.meta if isinstance(chat_item.meta, dict) else {}
+                chat_item.meta = {**existing_meta, **meta}
+                chat_item.updated_at = int(time.time())
+
+                db.commit()
+                db.refresh(chat_item)
+                return ChatModel.model_validate(chat_item)
+        except Exception:
+            return None
+
     def update_chat_title_by_id(self, id: str, title: str) -> Optional[ChatModel]:
         chat = self.get_chat_by_id(id)
         if chat is None:

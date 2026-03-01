@@ -257,6 +257,44 @@ def test_chat_to_responses_payload_does_not_forward_internal_runtime_metadata():
     json.dumps(adapted)
 
 
+def test_chat_to_responses_payload_forwards_state_and_cache_params():
+    payload = {
+        "model": "gpt-5",
+        "messages": [{"role": "user", "content": "hello"}],
+        "conversation": {"id": "conv_123"},
+        "prompt_cache_key": "tenant:chat:template-v1",
+        "prompt_cache_retention": "24h",
+    }
+
+    adapted = chat_to_responses_payload(
+        payload,
+        metadata=None,
+        api_config={"provider_type": "openai_responses"},
+    )
+
+    assert adapted["conversation"] == {"id": "conv_123"}
+    assert adapted["prompt_cache_key"] == "tenant:chat:template-v1"
+    assert adapted["prompt_cache_retention"] == "24h"
+
+
+def test_chat_to_responses_payload_prefers_previous_response_id_over_conversation():
+    payload = {
+        "model": "gpt-5",
+        "messages": [{"role": "user", "content": "hello"}],
+        "conversation": "conv_123",
+        "previous_response_id": "resp_456",
+    }
+
+    adapted = chat_to_responses_payload(
+        payload,
+        metadata=None,
+        api_config={"provider_type": "openai_responses"},
+    )
+
+    assert adapted["previous_response_id"] == "resp_456"
+    assert "conversation" not in adapted
+
+
 def test_responses_output_to_chat_tool_calls_preserves_call_id():
     output = [
         {

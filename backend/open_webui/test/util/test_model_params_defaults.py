@@ -68,3 +68,18 @@ def test_explicit_null_in_request_blocks_model_fallback_value():
 
     assert "temperature" in result
     assert result["temperature"] is None
+
+
+def test_model_default_custom_cache_params_apply_and_request_can_override():
+    model_params = {
+        "custom_params": {
+            "prompt_cache_key": "model-default-key",
+            "prompt_cache_retention": "24h",
+        }
+    }
+    payload = {"prompt_cache_key": "request-key"}
+
+    result = apply_model_params_as_defaults_openai(model_params, payload)
+
+    assert result["prompt_cache_key"] == "request-key"
+    assert result["prompt_cache_retention"] == "24h"
