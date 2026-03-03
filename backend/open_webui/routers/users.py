@@ -53,6 +53,40 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _normalize_tool_call_timeout(value: Any) -> int:
+    try:
+        normalized = int(value)
+    except Exception:
+        normalized = 60
+    return max(1, min(600, normalized))
+
+
+def _resolve_user_mcp_tool_call_timeout(request: Request, user: UserModel) -> int:
+    global_timeout = _normalize_tool_call_timeout(
+        getattr(request.app.state.config, "TOOL_CALL_TIMEOUT_SECONDS", 60)
+    )
+
+    try:
+        user_record = Users.get_user_by_id(user.id)
+        user_settings = user_record.settings if user_record else {}
+        if hasattr(user_settings, "model_dump"):
+            user_settings = user_settings.model_dump()
+
+        user_timeout = (
+            user_settings.get("ui", {})
+            .get("mcpToolCallingConfig", {})
+            .get("toolCallingTimeoutSeconds", None)
+            if isinstance(user_settings, dict)
+            else None
+        )
+        if user_timeout is None:
+            return global_timeout
+        return _normalize_tool_call_timeout(user_timeout)
+    except Exception as exc:
+        log.debug(f"Failed to resolve user MCP timeout override: {exc}")
+        return global_timeout
+
+
 ############################
 # GetUsers
 ############################
@@ -460,6 +494,7 @@ async def verify_user_mcp_tool_server(
 
     client = MCPClient()
     try:
+        timeout_seconds = _resolve_user_mcp_tool_call_timeout(request, user)
         headers = await _get_connection_headers(
             request,
             user,
@@ -472,6 +507,8 @@ async def verify_user_mcp_tool_server(
             form_data.url,
             headers=headers,
             transport=form_data.transport,
+            connect_timeout=timeout_seconds,
+            initialize_timeout=timeout_seconds,
         )
         specs = await client.list_tool_specs()
 

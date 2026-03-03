@@ -10,6 +10,7 @@ from open_webui.utils.tools import get_tools
 log = logging.getLogger(__name__)
 
 ToolExecutor = Callable[..., Awaitable[Any]]
+DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = 60
 
 
 @dataclass
@@ -183,6 +184,41 @@ async def _resolve_auth_headers(request, extra_params: dict, user: UserModel, co
     return _merge_headers(headers, connection.get("headers", None))
 
 
+def _clamp_tool_timeout_seconds(value: Any) -> int:
+    try:
+        normalized = int(value)
+    except Exception:
+        normalized = DEFAULT_TOOL_CALL_TIMEOUT_SECONDS
+    return max(1, min(600, normalized))
+
+
+def _resolve_mcp_connect_timeout_seconds(request, user: UserModel, scope: str) -> int:
+    global_timeout = _clamp_tool_timeout_seconds(
+        getattr(request.app.state.config, "TOOL_CALL_TIMEOUT_SECONDS", 60)
+    )
+
+    if scope != "user":
+        return global_timeout
+
+    user_record = Users.get_user_by_id(user.id)
+    user_settings = user_record.settings if user_record else {}
+    if hasattr(user_settings, "model_dump"):
+        user_settings = user_settings.model_dump()
+
+    user_timeout = (
+        user_settings.get("ui", {})
+        .get("mcpToolCallingConfig", {})
+        .get("toolCallingTimeoutSeconds", None)
+        if isinstance(user_settings, dict)
+        else None
+    )
+
+    if user_timeout is None:
+        return global_timeout
+
+    return _clamp_tool_timeout_seconds(user_timeout)
+
+
 async def build_mcp_registry(
     request,
     tool_ids: list[str] | None,
@@ -230,6 +266,8 @@ async def build_mcp_registry(
             )
 
     for tool_id in tool_ids:
+        mcp_timeout_seconds: int | None = None
+        server_id = ""
         try:
             if tool_id.startswith("server:mcp:user:"):
                 server_id = tool_id[len("server:mcp:user:") :]
@@ -248,10 +286,15 @@ async def build_mcp_registry(
                 client_key = f"user_{server_id}"
                 client = MCPClient()
                 transport = connection.get("transport", "streamable_http")
+                mcp_timeout_seconds = _resolve_mcp_connect_timeout_seconds(
+                    request=request, user=user, scope="user"
+                )
                 await client.connect(
                     url=connection.get("url", ""),
                     headers=headers if headers else None,
                     transport=transport,
+                    connect_timeout=mcp_timeout_seconds,
+                    initialize_timeout=mcp_timeout_seconds,
                 )
                 mcp_clients[client_key] = client
                 await register_tool_specs(
@@ -288,10 +331,15 @@ async def build_mcp_registry(
 
                 client = MCPClient()
                 transport = connection.get("transport", "streamable_http")
+                mcp_timeout_seconds = _resolve_mcp_connect_timeout_seconds(
+                    request=request, user=user, scope="admin"
+                )
                 await client.connect(
                     url=connection.get("url", ""),
                     headers=headers if headers else None,
                     transport=transport,
+                    connect_timeout=mcp_timeout_seconds,
+                    initialize_timeout=mcp_timeout_seconds,
                 )
                 mcp_clients[server_id] = client
                 await register_tool_specs(
@@ -304,7 +352,13 @@ async def build_mcp_registry(
                     transport=transport,
                 )
         except Exception as exc:
-            log.debug(exc)
+            log.debug(
+                "Failed to build MCP registry entry tool_id=%s server_id=%s timeout_seconds=%s: %s",
+                tool_id,
+                server_id or "unknown",
+                mcp_timeout_seconds,
+                exc,
+            )
             if event_emitter:
                 message = (
                     f"Failed to connect to user MCP server {server_id}"
