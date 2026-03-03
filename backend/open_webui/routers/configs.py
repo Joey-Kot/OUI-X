@@ -342,6 +342,9 @@ async def verify_mcp_tool_servers_config(
 
     client = MCPClient()
     try:
+        timeout_seconds = _normalize_tool_call_timeout(
+            getattr(request.app.state.config, "TOOL_CALL_TIMEOUT_SECONDS", 60)
+        )
         headers = await _get_connection_headers(
             request,
             user,
@@ -354,6 +357,8 @@ async def verify_mcp_tool_servers_config(
             form_data.url,
             headers=headers,
             transport=form_data.transport,
+            connect_timeout=timeout_seconds,
+            initialize_timeout=timeout_seconds,
         )
         specs = await client.list_tool_specs()
 
