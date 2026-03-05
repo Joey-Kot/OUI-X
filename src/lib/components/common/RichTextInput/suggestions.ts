@@ -4,6 +4,18 @@ import { createClassComponent } from 'svelte/legacy';
 import tippy from 'tippy.js';
 
 export function getSuggestionRenderer(Component: any, ComponentProps = {}) {
+	const {
+		popupPlacement = 'top-start',
+		popupOffset = [-10, -2],
+		fallbackPlacements = ['top-end', 'bottom-start', 'bottom-end'],
+		...renderComponentProps
+	} = ComponentProps as {
+		popupPlacement?: string;
+		popupOffset?: [number, number];
+		fallbackPlacements?: string[];
+		[key: string]: any;
+	};
+
 	return function suggestionRenderer() {
 		let component = null;
 		let container: HTMLDivElement | null = null;
@@ -27,9 +39,9 @@ export function getSuggestionRenderer(Component: any, ComponentProps = {}) {
 						command: (item) => {
 							props.command({ id: item.id, label: item.label });
 						},
-						...ComponentProps
+						...renderComponentProps
 					},
-					context: new Map<string, any>([['i18n', ComponentProps?.i18n]])
+					context: new Map<string, any>([['i18n', renderComponentProps?.i18n]])
 				});
 
 				// Create a tiny reference element so outside taps are truly "outside"
@@ -50,8 +62,8 @@ export function getSuggestionRenderer(Component: any, ComponentProps = {}) {
 					interactive: true,
 					trigger: 'manual',
 					theme: 'transparent',
-					placement: 'top-start',
-					offset: [-10, -2],
+					placement: popupPlacement as any,
+					offset: popupOffset,
 					arrow: false,
 					popperOptions: {
 						strategy: 'fixed',
@@ -69,7 +81,7 @@ export function getSuggestionRenderer(Component: any, ComponentProps = {}) {
 								name: 'flip',
 								options: {
 									boundary: 'viewport',
-									fallbackPlacements: ['top-end', 'bottom-start', 'bottom-end']
+									fallbackPlacements
 								}
 							},
 							// Ensure transforms don’t cause layout widening in some browsers

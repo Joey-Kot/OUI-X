@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { createEventDispatcher, getContext } from 'svelte';
+	import { createEventDispatcher, getContext, tick } from 'svelte';
 	const dispatch = createEventDispatcher();
 	const i18n = getContext('i18n');
 
@@ -8,6 +8,9 @@
 	import Valves from '$lib/components/chat/Controls/Valves.svelte';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 	import Collapsible from '$lib/components/common/Collapsible.svelte';
+	import RichTextInput from '$lib/components/common/RichTextInput.svelte';
+	import { getSuggestionRenderer } from '$lib/components/common/RichTextInput/suggestions';
+	import CommandSuggestionList from '$lib/components/chat/MessageInput/CommandSuggestionList.svelte';
 
 	import { user, settings } from '$lib/stores';
 	export let models = [];
@@ -15,6 +18,40 @@
 	export let params = {};
 
 	let showValves = false;
+	let systemPromptInputElement;
+	let systemPromptCommand = '';
+
+	const updateSystemPromptCommand = () => {
+		systemPromptCommand = systemPromptInputElement?.getWordAtDocPos?.() ?? '';
+	};
+
+	const insertSystemPromptTextAtCursor = async (text: string) => {
+		if (!systemPromptInputElement) return;
+
+		if (systemPromptCommand?.startsWith('/')) {
+			systemPromptInputElement.replaceCommandWithText(text);
+		} else {
+			systemPromptInputElement.insertContent(text);
+		}
+
+		await tick();
+		systemPromptInputElement.focus();
+		updateSystemPromptCommand();
+	};
+
+	const systemPromptSuggestions = [
+		{
+			char: '/',
+			render: getSuggestionRenderer(CommandSuggestionList, {
+				i18n,
+				enabledChars: ['/'],
+				popupPlacement: 'bottom-start',
+				popupOffset: [-10, 8],
+				fallbackPlacements: ['bottom-end', 'top-start', 'top-end'],
+				insertTextHandler: insertSystemPromptTextAtCursor
+			})
+		}
+	];
 </script>
 
 <div class=" dark:text-white">
@@ -76,13 +113,25 @@
 			{#if $user?.role === 'admin' || ($user?.permissions.chat?.system_prompt ?? true)}
 				<Collapsible title={$i18n.t('System Prompt')} open={true} buttonClassName="w-full">
 					<div class="" slot="content">
-						<textarea
-							bind:value={params.system}
-							class="w-full text-xs outline-hidden resize-vertical {$settings.highContrastMode
+						<RichTextInput
+							bind:this={systemPromptInputElement}
+							id="system-prompt-input"
+							value={params.system ?? ''}
+							richText={false}
+							showFormattingToolbar={false}
+							shiftEnter={true}
+							className="w-full min-h-20 max-h-56 overflow-y-auto text-xs outline-hidden {$settings.highContrastMode
 								? 'border-2 border-gray-300 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800 p-2.5'
-								: 'py-1.5 bg-transparent'}"
-							rows="4"
+								: 'py-1.5 bg-transparent dark:text-gray-300'}"
 							placeholder={$i18n.t('Enter system prompt')}
+							suggestions={systemPromptSuggestions}
+							onSelectionUpdate={() => {
+								updateSystemPromptCommand();
+							}}
+							onChange={(content) => {
+								params.system = content.md;
+								updateSystemPromptCommand();
+							}}
 						/>
 					</div>
 				</Collapsible>
