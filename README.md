@@ -286,6 +286,8 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
     * summary：去空白并转小写；空值或 none 不下发
 * 前端UI展示标准化为 Title Case，统一移除下划线
 * 每个模型预配置中的 Advanced Params 优先级从最高级降为“仅 fallback”，用户请求参数始终优先
+* Chat Controls 侧栏 `System Prompt` 交互增强：
+    * `System Prompt` 输入区支持与对话输入框一致的 `/` Prompt 快捷建议，选中建议后会将当前命令位替换为对应内容，建议菜单在侧栏场景优先向下弹出，空间不足时自动翻转
 
 ### 7) Chat 背景与代码块视觉增强
 

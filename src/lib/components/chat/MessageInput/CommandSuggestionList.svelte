@@ -14,6 +14,7 @@
 	export let char = '';
 	export let query = '';
 	export let command: (payload: { id: string; label: string }) => void;
+	export let enabledChars: string[] = ['/', '#', '@'];
 
 	export let onSelect = (e) => {};
 	export let onUpload = (e) => {};
@@ -22,6 +23,11 @@
 	let suggestionElement = null;
 	let loading = false;
 	let filteredItems = [];
+
+	$: isCurrentCharEnabled = enabledChars.includes(char);
+	$: if (!isCurrentCharEnabled) {
+		filteredItems = [];
+	}
 
 	const init = async () => {
 		loading = true;
@@ -81,7 +87,7 @@
 >
 	<div class="overflow-y-auto scrollbar-thin max-h-60">
 		{#if !loading}
-			{#if char === '/'}
+			{#if char === '/' && isCurrentCharEnabled}
 				<Prompts
 					bind:this={suggestionElement}
 					{query}
@@ -95,7 +101,7 @@
 						}
 					}}
 				/>
-			{:else if char === '#'}
+			{:else if char === '#' && isCurrentCharEnabled}
 				<Knowledge
 					bind:this={suggestionElement}
 					{query}
@@ -120,7 +126,7 @@
 						}
 					}}
 				/>
-			{:else if char === '@'}
+			{:else if char === '@' && isCurrentCharEnabled}
 				<Models
 					bind:this={suggestionElement}
 					{query}
