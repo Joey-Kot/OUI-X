@@ -36,6 +36,39 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _is_mcp_connection_enabled(connection: dict) -> bool:
+    config = connection.get("config") or {}
+    return config.get("enable", True) is not False
+
+
+def _has_enabled_mcp_tools(connection: dict) -> bool:
+    verify_cache = connection.get("verify_cache") or {}
+    tool_specs = verify_cache.get("tools")
+    if not isinstance(tool_specs, list) or len(tool_specs) == 0:
+        return True
+
+    tools_config = (connection.get("config") or {}).get("tools") or {}
+
+    for tool_spec in tool_specs:
+        if not isinstance(tool_spec, dict):
+            return True
+
+        tool_name = tool_spec.get("name")
+        if not tool_name:
+            return True
+
+        if tools_config.get(tool_name, {}).get("enabled", True):
+            return True
+
+    return False
+
+
+def _should_expose_mcp_connection(connection: dict) -> bool:
+    return _is_mcp_connection_enabled(connection) and _has_enabled_mcp_tools(
+        connection
+    )
+
+
 def get_tool_module(request, tool_id, load_from_db=True):
     """
     Get the tool module by its ID.
@@ -67,6 +100,9 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
 
     # MCP Tool Servers
     for server in getattr(request.app.state.config, 'MCP_TOOL_SERVER_CONNECTIONS', []):
+        if not _should_expose_mcp_connection(server):
+            continue
+
         server_id = server.get("info", {}).get("id")
         auth_type = server.get("auth_type", "none")
 
@@ -111,6 +147,9 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
 
     user_mcp_servers = user_settings.get("ui", {}).get("mcpToolServers", [])
     for server in user_mcp_servers:
+        if not _should_expose_mcp_connection(server):
+            continue
+
         server_id = server.get("info", {}).get("id")
         if not server_id:
             continue
