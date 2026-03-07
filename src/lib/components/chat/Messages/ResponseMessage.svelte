@@ -32,6 +32,12 @@
 		removeAllDetails
 	} from '$lib/utils';
 	import { buildMessageExportText } from '$lib/utils/message-export';
+	import type { ToolCallDetails } from '$lib/utils/tool-call-context-injection';
+	import {
+		getToolCallDetailsFromContent,
+		updateAllToolCallContextInjectionStatesInContent,
+		updateToolCallContextInjectionStateInContent
+	} from '$lib/utils/tool-call-context-injection';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 
 	import Name from './Name.svelte';
@@ -145,6 +151,11 @@
 	export let readOnly = false;
 	export let editCodeBlock = true;
 	export let topPadding = false;
+
+	let toolCallDetails: ToolCallDetails[] = [];
+	let hasToolCalls = false;
+	let allToolCallsContextInjectionDisabled = false;
+	let toolResultsInjectionButtonDisabled = true;
 
 	let citationsElement: HTMLDivElement;
 
@@ -334,41 +345,41 @@
 	};
 
 	let preprocessedDetailsCache = [];
+	$: toolCallDetails = getToolCallDetailsFromContent(message?.content ?? '');
+	$: hasToolCalls = toolCallDetails.length > 0;
+	$: allToolCallsContextInjectionDisabled =
+		hasToolCalls && toolCallDetails.every((toolCall) => toolCall.contextInjectionDisabled);
+	$: toolResultsInjectionButtonDisabled =
+		readOnly || !chatId || chatId.startsWith('local:') || message?.done !== true;
 
-	const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const toggleAllToolCallContextInjection = () => {
+		const currentContent = history.messages[message.id].content ?? '';
+		const currentToolCallDetails = getToolCallDetailsFromContent(currentContent);
 
-	const updateToolCallContextInjectionStateInContent = (
-		content: string,
-		toolCallId: string,
-		disabled: boolean
-	) => {
-		if (!content || !toolCallId) {
-			return content;
+		if (
+			currentToolCallDetails.length === 0 ||
+			readOnly ||
+			!chatId ||
+			chatId.startsWith('local:') ||
+			message?.done !== true
+		) {
+			return;
 		}
 
-		const normalizedValue = disabled ? 'true' : 'false';
-		const toolCallIdPattern = escapeRegExp(toolCallId);
-		const detailsTagRegex = /<details\s+([^>]*)>/gis;
+		const targetDisabled = !currentToolCallDetails.every(
+			(toolCall) => toolCall.contextInjectionDisabled
+		);
+		const updatedContent = updateAllToolCallContextInjectionStatesInContent(
+			currentContent,
+			targetDisabled
+		);
 
-		return content.replace(detailsTagRegex, (match, attrs) => {
-			if (!/\btype="tool_calls"/i.test(attrs)) {
-				return match;
-			}
+		if (updatedContent === currentContent) {
+			return;
+		}
 
-			if (!new RegExp(`\\bid="${toolCallIdPattern}"`, 'i').test(attrs)) {
-				return match;
-			}
-
-			if (/\bcontext_injection_disabled="/i.test(attrs)) {
-				const updatedAttrs = attrs.replace(
-					/\bcontext_injection_disabled="(true|false)"/i,
-					`context_injection_disabled="${normalizedValue}"`
-				);
-				return `<details ${updatedAttrs}>`;
-			}
-
-			return `<details ${attrs} context_injection_disabled="${normalizedValue}">`;
-		});
+		history.messages[message.id].content = updatedContent;
+		updateChat();
 	};
 
 	function preprocessForEditing(content: string): string {
@@ -1185,11 +1196,44 @@
 														d="M15.91 11.672a.375.375 0 0 1 0 .656l-5.603 3.113a.375.375 0 0 1-.557-.328V8.887c0-.286.307-.466.557-.327l5.603 3.112Z"
 													/>
 												</svg>
-											</button>
-										</Tooltip>
-									{/if}
+									</button>
+								</Tooltip>
+							{/if}
 
-									{#if $user?.role === 'admin' || ($user?.permissions?.chat?.regenerate_response ?? true)}
+							{#if hasToolCalls}
+								<Tooltip content={$i18n.t('Tool Results Injection')} placement="bottom">
+									<button
+										type="button"
+										aria-label={$i18n.t('Tool Results Injection')}
+										aria-pressed={allToolCallsContextInjectionDisabled}
+										class="{isLastMessage
+											? 'visible'
+											: 'invisible group-hover:visible'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-white hover:text-black transition disabled:opacity-50 disabled:cursor-not-allowed"
+										disabled={toolResultsInjectionButtonDisabled}
+										on:click={() => {
+											toggleAllToolCallContextInjection();
+										}}
+									>
+										<svg
+											xmlns="http://www.w3.org/2000/svg"
+											fill="none"
+											viewBox="0 0 24 24"
+											stroke-width="2.3"
+											aria-hidden="true"
+											stroke="currentColor"
+											class="w-4 h-4"
+										>
+											<path
+												stroke-linecap="round"
+												stroke-linejoin="round"
+												d="M14.7 6.3a3 3 0 1 0-4.243 4.243l.3.3-5.864 5.864a1 1 0 0 0 0 1.414l.829.829a1 1 0 0 0 1.414 0L13 13.09l.3.3A3 3 0 0 0 17.543 9.15l-1.622 1.08a1 1 0 0 1-1.275-.126l-.6-.6a1 1 0 0 1-.126-1.275L14.7 6.3Z"
+											/>
+										</svg>
+									</button>
+								</Tooltip>
+							{/if}
+
+							{#if $user?.role === 'admin' || ($user?.permissions?.chat?.regenerate_response ?? true)}
 										{#if $settings?.regenerateMenu ?? true}
 											<button
 												type="button"
