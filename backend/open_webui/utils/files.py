@@ -18,6 +18,7 @@ from open_webui.storage.provider import Storage
 from open_webui.models.chats import Chats
 from open_webui.models.files import Files
 from open_webui.routers.files import upload_file_handler
+from open_webui.utils.image_mime import resolve_image_content_type
 
 import mimetypes
 import base64
@@ -52,7 +53,7 @@ def get_image_base64_from_url(url: str) -> Optional[str]:
             if file_path.is_file():
                 with open(file_path, "rb") as image_file:
                     encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-                    content_type, _ = mimetypes.guess_type(file_path.name)
+                    content_type = resolve_image_content_type(file_obj=file, file_path=file_path)
                     return f"data:{content_type};base64,{encoded_string}"
             else:
                 return None
@@ -169,7 +170,7 @@ def get_image_base64_from_file_id(id: str) -> Optional[str]:
 
             with open(file_path, "rb") as image_file:
                 encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-                content_type, _ = mimetypes.guess_type(file_path.name)
+                content_type = resolve_image_content_type(file_obj=file, file_path=file_path)
                 return f"data:{content_type};base64,{encoded_string}"
         else:
             return None

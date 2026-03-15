@@ -97,6 +97,8 @@ class FileForm(BaseModel):
 
 
 class FileUpdateForm(BaseModel):
+    filename: Optional[str] = None
+    path: Optional[str] = None
     hash: Optional[str] = None
     data: Optional[dict] = None
     meta: Optional[dict] = None
@@ -219,6 +221,12 @@ class FilesTable:
         with get_db() as db:
             try:
                 file = db.query(File).filter_by(id=id).first()
+
+                if form_data.filename is not None:
+                    file.filename = form_data.filename
+
+                if form_data.path is not None:
+                    file.path = form_data.path
 
                 if form_data.hash is not None:
                     file.hash = form_data.hash

@@ -8,8 +8,7 @@
 
 	import { config, mobile, settings, socket, user } from '$lib/stores';
 	import {
-		convertHeicToJpeg,
-		compressImage,
+		getImageCompressionMetadata,
 		extractInputVariables,
 		getAge,
 		getCurrentDateTime,
@@ -370,59 +369,7 @@
 			}
 
 			if (file['type'].startsWith('image/')) {
-				const compressImageHandler = async (imageUrl, settings = {}, config = {}) => {
-					// Quick shortcut so we don’t do unnecessary work.
-					const settingsCompression = settings?.imageCompression ?? false;
-					const configWidth = config?.file?.image_compression?.width ?? null;
-					const configHeight = config?.file?.image_compression?.height ?? null;
-
-					// If neither settings nor config wants compression, return original URL.
-					if (!settingsCompression && !configWidth && !configHeight) {
-						return imageUrl;
-					}
-
-					// Default to null (no compression unless set)
-					let width = null;
-					let height = null;
-
-					// If user/settings want compression, pick their preferred size.
-					if (settingsCompression) {
-						width = settings?.imageCompressionSize?.width ?? null;
-						height = settings?.imageCompressionSize?.height ?? null;
-					}
-
-					// Apply config limits as an upper bound if any
-					if (configWidth && (width === null || width > configWidth)) {
-						width = configWidth;
-					}
-					if (configHeight && (height === null || height > configHeight)) {
-						height = configHeight;
-					}
-
-					// Do the compression if required
-					if (width || height) {
-						return await compressImage(imageUrl, width, height);
-					}
-					return imageUrl;
-				};
-
-				let reader = new FileReader();
-
-				reader.onload = async (event) => {
-					let imageUrl = event.target.result;
-
-					// Compress the image if settings or config require it
-					if ($settings?.imageCompression && $settings?.imageCompressionInChannels) {
-						imageUrl = await compressImageHandler(imageUrl, $settings, $config);
-					}
-
-					const blob = await (await fetch(imageUrl)).blob();
-					const compressedFile = new File([blob], file.name, { type: file.type });
-
-					uploadFileHandler(compressedFile, false);
-				};
-
-				reader.readAsDataURL(file['type'] === 'image/heic' ? await convertHeicToJpeg(file) : file);
+				uploadFileHandler(file, false);
 			} else {
 				uploadFileHandler(file);
 			}
@@ -464,6 +411,13 @@
 						}
 					: {})
 			};
+
+			if (file.type.startsWith('image/')) {
+				metadata = {
+					...metadata,
+					...(getImageCompressionMetadata($settings) ?? {})
+				};
+			}
 
 			const uploadedFile = await uploadFile(localStorage.token, file, metadata, process);
 

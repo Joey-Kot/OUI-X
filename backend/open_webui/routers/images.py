@@ -19,9 +19,11 @@ from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import ENABLE_FORWARD_USER_INFO_HEADERS
 
 from open_webui.models.chats import Chats
+from open_webui.models.files import Files
 from open_webui.routers.files import upload_file_handler, get_file_content_by_id
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers
+from open_webui.utils.image_mime import resolve_image_content_type
 from open_webui.utils.images.comfyui import (
     ComfyUICreateImageForm,
     ComfyUIEditImageForm,
@@ -861,7 +863,7 @@ async def image_edits(
                     with open(file_path, "rb") as f:
                         file_bytes = f.read()
                         image_data = base64.b64encode(file_bytes).decode("utf-8")
-                        mime_type, _ = mimetypes.guess_type(file_path)
+                        mime_type = resolve_image_content_type(file_obj=Files.get_file_by_id(file_id), file_path=file_path)
 
                     return f"data:{mime_type};base64,{image_data}"
 

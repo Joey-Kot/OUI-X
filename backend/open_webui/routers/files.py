@@ -33,6 +33,7 @@ from open_webui.models.files import (
     FileForm,
     FileModel,
     FileModelResponse,
+    FileUpdateForm,
     Files,
 )
 from open_webui.models.chats import Chats
@@ -54,6 +55,14 @@ from open_webui.utils.file_upload_settings import (
 )
 from open_webui.utils.knowledge import get_active_vector_collection_name
 from open_webui.config import KNOWLEDGE_UPLOAD_DIR, UPLOAD_DIR
+from open_webui.utils.image_transcoding import (
+    DEFAULT_IMAGE_TRANSCODE_MAX_CONCURRENCY_PER_USER,
+    ImageTranscodeCapabilityError,
+    ImageTranscodeError,
+    get_user_transcode_semaphore,
+    parse_image_compression_metadata,
+    transcode_image_to_webp,
+)
 from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
@@ -125,6 +134,127 @@ def has_access_to_file(
         return True
 
     return False
+
+
+def get_image_compression_settings(file_metadata: dict) -> Optional[dict]:
+    try:
+        return parse_image_compression_metadata(file_metadata)
+    except ImageTranscodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(str(exc)),
+        ) from exc
+
+
+def is_image_transcoding_enabled(file_metadata: dict, is_image_upload: bool) -> bool:
+    if not is_image_upload:
+        return False
+    return get_image_compression_settings(file_metadata) is not None
+
+
+def _replace_file_with_transcoded_variant(
+    file_item: FileModel,
+    original_name: str,
+    original_path: str,
+    transcoded_path: str,
+    transcoded_size: int,
+    transcode_result: dict,
+):
+    base_name = Path(original_name).stem or original_name
+    final_name = f"{base_name}.webp"
+
+    with open(transcoded_path, "rb") as transcoded_file:
+        _, stored_path = Storage.upload_file(
+            transcoded_file,
+            Path(transcoded_path).name,
+            {"OpenWebUI-File-Id": file_item.id},
+        )
+
+    updated_file = Files.update_file_by_id(
+        file_item.id,
+        FileUpdateForm(
+            filename=final_name,
+            path=stored_path,
+            meta={
+                "name": final_name,
+                "content_type": "image/webp",
+                "size": transcoded_size,
+                "transcode": {
+                    "format": "webp",
+                    **transcode_result,
+                },
+            },
+        ),
+    )
+    if updated_file is None:
+        raise ImageTranscodeError("Failed to update transcoded file metadata.")
+    Storage.delete_file(original_path)
+    if stored_path != transcoded_path and Path(transcoded_path).is_file():
+        Path(transcoded_path).unlink()
+    return updated_file
+
+
+def transcode_uploaded_image(
+    request: Request,
+    file_item: FileModel,
+    file_metadata: dict,
+    user_id: str,
+):
+    Files.update_file_data_by_id(file_item.id, {"status": "processing", "error": None})
+    original_path = file_item.path
+    local_input_path = Storage.get_file(original_path)
+    local_input_path = str(Path(local_input_path))
+    compression_settings = get_image_compression_settings(file_metadata)
+    if compression_settings is None:
+        Files.update_file_data_by_id(file_item.id, {"status": "completed", "error": None})
+        return Files.get_file_by_id(file_item.id)
+
+    concurrency_limit = getattr(
+        request.app.state.config,
+        "IMAGE_TRANSCODE_MAX_CONCURRENCY_PER_USER",
+        DEFAULT_IMAGE_TRANSCODE_MAX_CONCURRENCY_PER_USER,
+    )
+    semaphore = get_user_transcode_semaphore(user_id, concurrency_limit)
+
+    output_dir = Path(local_input_path).parent
+    output_filename = f"{Path(local_input_path).stem}.webp"
+    output_path = output_dir / output_filename
+
+    with semaphore:
+        last_error = None
+        for attempt in range(3):
+            if output_path.exists():
+                output_path.unlink()
+            try:
+                transcode_result = transcode_image_to_webp(
+                    input_path=local_input_path,
+                    output_path=str(output_path),
+                    max_width=compression_settings["width"],
+                    max_height=compression_settings["height"],
+                    quality=compression_settings["quality"],
+                )
+                updated_file = _replace_file_with_transcoded_variant(
+                    file_item=file_item,
+                    original_name=file_item.filename,
+                    original_path=original_path,
+                    transcoded_path=str(output_path),
+                    transcoded_size=output_path.stat().st_size,
+                    transcode_result=transcode_result,
+                )
+                Files.update_file_data_by_id(updated_file.id, {"status": "completed", "error": None})
+                return updated_file
+            except ImageTranscodeCapabilityError as exc:
+                last_error = str(exc)
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                log.exception("Image transcoding attempt %s failed for file %s", attempt + 1, file_item.id)
+
+        Files.update_file_data_by_id(file_item.id, {"status": "failed", "error": last_error})
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(last_error or "Error transcoding image"),
+        )
 
 
 ############################
@@ -298,6 +428,14 @@ def upload_file_handler(
             upload_dir=upload_dir,
         )
 
+        image_transcoding_enabled = is_image_transcoding_enabled(
+            file_metadata=file_metadata,
+            is_image_upload=is_image_upload,
+        )
+        initial_status = None
+        if process or is_image_upload:
+            initial_status = "pending"
+
         file_item = Files.insert_new_file(
             user.id,
             FileForm(
@@ -305,9 +443,7 @@ def upload_file_handler(
                     "id": id,
                     "filename": name,
                     "path": file_path,
-                    "data": {
-                        **({"status": "pending"} if process else {}),
-                    },
+                    "data": ({"status": initial_status} if initial_status else {}),
                     "meta": {
                         "name": name,
                         "content_type": file.content_type,
@@ -347,15 +483,29 @@ def upload_file_handler(
                     user,
                 )
                 return {"status": True, **file_item.model_dump()}
-        else:
-            if file_item:
-                return file_item
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=ERROR_MESSAGES.DEFAULT("Error uploading file"),
+        elif image_transcoding_enabled:
+            if background_tasks and process_in_background:
+                background_tasks.add_task(
+                    transcode_uploaded_image,
+                    request,
+                    file_item,
+                    file_metadata,
+                    user.id,
                 )
+            else:
+                transcode_uploaded_image(
+                    request,
+                    file_item,
+                    file_metadata,
+                    user.id,
+                )
+            return file_item
+        else:
+            Files.update_file_data_by_id(file_item.id, {"status": "completed", "error": None})
+            return file_item
 
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception(e)
         raise HTTPException(
@@ -688,6 +838,10 @@ async def get_file_content_by_id(
                             f"inline; filename*=UTF-8''{encoded_filename}"
                         )
                         content_type = "application/pdf"
+                    elif content_type and content_type.startswith("image/"):
+                        headers["Content-Disposition"] = (
+                            f"inline; filename*=UTF-8''{encoded_filename}"
+                        )
                     elif content_type != "text/plain":
                         headers["Content-Disposition"] = (
                             f"attachment; filename*=UTF-8''{encoded_filename}"

@@ -130,6 +130,7 @@ type Settings = {
 	notifications?: any;
 	imageCompression?: boolean;
 	imageCompressionSize?: any;
+	imageCompressionQuality?: number;
 	textScale?: number;
 	widescreenMode?: null;
 	largeTextAsFile?: boolean;
