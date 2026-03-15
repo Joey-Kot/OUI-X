@@ -45,7 +45,7 @@ export const uploadFile = async (
 	if (res) {
 		const status = await getFileProcessStatus(token, res.id);
 
-		if (status && status.ok) {
+		if (status && status.ok && status.body) {
 			const reader = status.body
 				.pipeThrough(new TextDecoderStream())
 				.pipeThrough(splitStream('\n'))
@@ -58,50 +58,31 @@ export const uploadFile = async (
 				}
 
 				try {
-					let lines = value.split('\n');
-
-					for (const line of lines) {
-						if (line !== '') {
-							console.log(line);
-							if (line === 'data: [DONE]') {
-								console.log(line);
-							} else {
-								let data = JSON.parse(line.replace(/^data: /, ''));
-								console.log(data);
-
-							if (data?.error) {
-								console.error(data.error);
-								res.error = data.error;
-							}
-
-							res.data = {
-								...(res?.data ?? {}),
-								...data
-							};
-
-							if (data?.status === "completed") {
-								res.collection_name = data?.collection_name ?? res.collection_name;
-								res.meta = {
-									...(res.meta ?? {}),
-									...(data?.collection_name ? { collection_name: data.collection_name } : {}),
-									...(data?.active_collection_name
-										? { active_collection_name: data.active_collection_name }
-										: {}),
-									...(data?.conversation_upload_knowledge_id
-										? {
-												conversation_upload_knowledge_id:
-													data.conversation_upload_knowledge_id
-										  }
-										: {})
-								};
-							}
+					for (const line of value.split('\n')) {
+						if (line === '' || line === 'data: [DONE]') {
+							continue;
 						}
+
+						const streamData = JSON.parse(line.replace(/^data: /, ''));
+						if (streamData?.error) {
+							console.error(streamData.error);
+							res.error = streamData.error;
+						}
+
+						res.data = {
+							...(res?.data ?? {}),
+							...streamData
+						};
 					}
-					}
-				} catch (error) {
-					console.log(error);
+				} catch (streamError) {
+					console.log(streamError);
 				}
 			}
+		}
+
+		const finalizedFile = await getFileById(token, res.id).catch(() => null);
+		if (finalizedFile) {
+			Object.assign(res, finalizedFile);
 		}
 	}
 

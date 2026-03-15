@@ -22,7 +22,7 @@
 
 	import { PaneGroup, Pane, PaneResizer } from 'paneforge';
 
-	import { compressImage, copyToClipboard, splitStream, convertHeicToJpeg } from '$lib/utils';
+	import { copyToClipboard, splitStream, getImageCompressionMetadata } from '$lib/utils';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 	import { getFileById, uploadFile } from '$lib/apis/files';
 	import { chatCompletion, generateOpenAIChatCompletion } from '$lib/apis/openai';
@@ -381,7 +381,7 @@ ${content}
 		setContentByVersion(versionIdx);
 	}
 
-	const uploadFileHandler = async (file) => {
+	const uploadFileHandler = async (file, process = true, itemData = {}) => {
 		const tempItemId = uuidv4();
 		const fileItem = {
 			type: 'file',
@@ -393,7 +393,8 @@ ${content}
 			status: 'uploading',
 			size: file.size,
 			error: '',
-			itemId: tempItemId
+			itemId: tempItemId,
+			...itemData
 		};
 
 		if (fileItem.size == 0) {
@@ -422,8 +423,14 @@ ${content}
 				};
 			}
 
-			// During the file upload, file content is automatically extracted.
-			const uploadedFile = await uploadFile(localStorage.token, file, metadata);
+			if (file.type.startsWith('image/')) {
+				metadata = {
+					...(metadata ?? {}),
+					...(getImageCompressionMetadata($settings) ?? {})
+				};
+			}
+
+			const uploadedFile = await uploadFile(localStorage.token, file, metadata, process);
 
 			if (uploadedFile) {
 				console.log('File upload completed:', uploadedFile);
@@ -442,7 +449,10 @@ ${content}
 				fileItem.collection_name =
 					uploadedFile?.meta?.collection_name || uploadedFile?.collection_name;
 
-				fileItem.url = `${uploadedFile.id}`;
+				fileItem.url =
+					fileItem.type === 'image'
+						? `${WEBUI_API_BASE_URL}/files/${uploadedFile.id}/content`
+						: `${uploadedFile.id}`;
 
 				files = files;
 			} else {
@@ -464,42 +474,6 @@ ${content}
 		changeDebounceHandler();
 
 		return fileItem;
-	};
-
-	const compressImageHandler = async (imageUrl, settings = {}, config = {}) => {
-		// Quick shortcut so we don’t do unnecessary work.
-		const settingsCompression = settings?.imageCompression ?? false;
-		const configWidth = config?.file?.image_compression?.width ?? null;
-		const configHeight = config?.file?.image_compression?.height ?? null;
-
-		// If neither settings nor config wants compression, return original URL.
-		if (!settingsCompression && !configWidth && !configHeight) {
-			return imageUrl;
-		}
-
-		// Default to null (no compression unless set)
-		let width = null;
-		let height = null;
-
-		// If user/settings want compression, pick their preferred size.
-		if (settingsCompression) {
-			width = settings?.imageCompressionSize?.width ?? null;
-			height = settings?.imageCompressionSize?.height ?? null;
-		}
-
-		// Apply config limits as an upper bound if any
-		if (configWidth && (width === null || width > configWidth)) {
-			width = configWidth;
-		}
-		if (configHeight && (height === null || height > configHeight)) {
-			height = configHeight;
-		}
-
-		// Do the compression if required
-		if (width || height) {
-			return await compressImage(imageUrl, width, height);
-		}
-		return imageUrl;
 	};
 
 	const inputFileHandler = async (file) => {
@@ -527,34 +501,11 @@ ${content}
 		}
 
 		if (file['type'].startsWith('image/')) {
-			const uploadImagePromise = new Promise(async (resolve, reject) => {
-				let reader = new FileReader();
-				reader.onload = async (event) => {
-					try {
-						let imageUrl = event.target.result;
-						imageUrl = await compressImageHandler(imageUrl, $settings, $config);
-
-						const fileId = uuidv4();
-						const fileItem = {
-							id: fileId,
-							type: 'image',
-							url: `${imageUrl}`
-						};
-						files = [...files, fileItem];
-						note.data.files = files;
-						editor.storage.files = files;
-
-						changeDebounceHandler();
-						resolve(fileItem);
-					} catch (err) {
-						reject(err);
-					}
-				};
-
-				reader.readAsDataURL(file['type'] === 'image/heic' ? await convertHeicToJpeg(file) : file);
-			});
-
-			return await uploadImagePromise;
+			const uploadedImage = await uploadFileHandler(file, false, { type: 'image' });
+			if (!uploadedImage) {
+				return null;
+			}
+			return uploadedImage;
 		} else {
 			return await uploadFileHandler(file);
 		}

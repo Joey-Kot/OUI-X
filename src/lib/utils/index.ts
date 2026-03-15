@@ -271,6 +271,37 @@ export const canvasPixelTest = () => {
 	return true;
 };
 
+
+export const normalizeImageCompressionQuality = (value, defaultValue = 0.75) => {
+	const numericValue = Number(value);
+	if (!Number.isFinite(numericValue)) {
+		return defaultValue;
+	}
+
+	return Math.min(1, Math.max(0, Math.round(numericValue * 100) / 100));
+};
+
+export const getImageCompressionMetadata = (settings) => {
+	if (settings?.imageCompression !== true) {
+		return null;
+	}
+
+	const width = Number(settings?.imageCompressionSize?.width);
+	const height = Number(settings?.imageCompressionSize?.height);
+	if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+		throw new Error('Image compression width and height are required.');
+	}
+
+	return {
+		image_compression: {
+			enabled: true,
+			width,
+			height,
+			quality: normalizeImageCompressionQuality(settings?.imageCompressionQuality ?? 0.75)
+		}
+	};
+};
+
 export const compressImage = async (imageUrl, maxWidth, maxHeight) => {
 	return new Promise((resolve, reject) => {
 		const img = new Image();

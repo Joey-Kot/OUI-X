@@ -35,7 +35,7 @@
 
 	import {
 		convertHeicToJpeg,
-		compressImage,
+		getImageCompressionMetadata,
 		createMessagesList,
 		extractContentFromFile,
 		extractCurlyBraceWords,
@@ -575,7 +575,6 @@
 
 		if (!$temporaryChatEnabled) {
 			try {
-				// If the file is an audio file, provide the language for STT.
 				let metadata = null;
 				if (
 					(file.type.startsWith("audio/") || file.type.startsWith("video/")) &&
@@ -583,6 +582,13 @@
 				) {
 					metadata = {
 						language: $settings?.audio?.stt?.language
+					};
+				}
+
+				if (file.type.startsWith('image/')) {
+					metadata = {
+						...(metadata ?? {}),
+						...(getImageCompressionMetadata($settings) ?? {})
 					};
 				}
 
@@ -596,7 +602,6 @@
 						: "direct_context"
 				};
 
-				// During the file upload, file content is automatically extracted.
 				const uploadedFile = await uploadFile(localStorage.token, file, metadata, process);
 
 				if (uploadedFile) {
@@ -706,69 +711,21 @@
 					return;
 				}
 
-				const compressImageHandler = async (imageUrl, settings = {}, config = {}) => {
-					// Quick shortcut so we don’t do unnecessary work.
-					const settingsCompression = settings?.imageCompression ?? false;
-					const configWidth = config?.file?.image_compression?.width ?? null;
-					const configHeight = config?.file?.image_compression?.height ?? null;
-
-					// If neither settings nor config wants compression, return original URL.
-					if (!settingsCompression && !configWidth && !configHeight) {
-						return imageUrl;
-					}
-
-					// Default to null (no compression unless set)
-					let width = null;
-					let height = null;
-
-					// If user/settings want compression, pick their preferred size.
-					if (settingsCompression) {
-						width = settings?.imageCompressionSize?.width ?? null;
-						height = settings?.imageCompressionSize?.height ?? null;
-					}
-
-					// Apply config limits as an upper bound if any
-					if (configWidth && (width === null || width > configWidth)) {
-						width = configWidth;
-					}
-					if (configHeight && (height === null || height > configHeight)) {
-						height = configHeight;
-					}
-
-					// Do the compression if required
-					if (width || height) {
-						return await compressImage(imageUrl, width, height);
-					}
-					return imageUrl;
-				};
-
-				let reader = new FileReader();
-
-				reader.onload = async (event) => {
-					let imageUrl = event.target.result;
-
-					// Compress the image if settings or config require it
-					if ($settings?.imageCompression && $settings?.imageCompressionInChannels) {
-						imageUrl = await compressImageHandler(imageUrl, $settings, $config);
-					}
-
-					if ($temporaryChatEnabled) {
+				if ($temporaryChatEnabled) {
+					let reader = new FileReader();
+					reader.onload = async (event) => {
 						files = [
 							...files,
 							{
 								type: 'image',
-								url: imageUrl
+								url: event.target.result
 							}
 						];
-					} else {
-						const blob = await (await fetch(imageUrl)).blob();
-						const compressedFile = new File([blob], file.name, { type: file.type });
-
-						uploadFileHandler(compressedFile, false);
-					}
-				};
-
-				reader.readAsDataURL(file['type'] === 'image/heic' ? await convertHeicToJpeg(file) : file);
+					};
+					reader.readAsDataURL(file['type'] === 'image/heic' ? await convertHeicToJpeg(file) : file);
+				} else {
+					uploadFileHandler(file, false);
+				}
 			} else {
 				uploadFileHandler(file);
 			}

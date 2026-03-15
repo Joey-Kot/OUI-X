@@ -2644,6 +2644,16 @@ FILE_IMAGE_COMPRESSION_HEIGHT = PersistentConfig(
     ),
 )
 
+IMAGE_TRANSCODE_MAX_CONCURRENCY_PER_USER = PersistentConfig(
+    "IMAGE_TRANSCODE_MAX_CONCURRENCY_PER_USER",
+    "file.image_transcode_max_concurrency_per_user",
+    (
+        int(os.environ.get("IMAGE_TRANSCODE_MAX_CONCURRENCY_PER_USER"))
+        if os.environ.get("IMAGE_TRANSCODE_MAX_CONCURRENCY_PER_USER")
+        else 2
+    ),
+)
+
 
 RAG_ALLOWED_FILE_EXTENSIONS = PersistentConfig(
     "RAG_ALLOWED_FILE_EXTENSIONS",

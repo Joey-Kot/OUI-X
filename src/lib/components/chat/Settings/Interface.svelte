@@ -4,7 +4,7 @@
 	import { toast } from 'svelte-sonner';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import { updateUserInfo } from '$lib/apis/users';
-	import { getUserPosition } from '$lib/utils';
+	import { getUserPosition, normalizeImageCompressionQuality } from '$lib/utils';
 	import { setTextScale } from '$lib/utils/text-scale';
 
 	import Minus from '$lib/components/icons/Minus.svelte';
@@ -83,6 +83,7 @@
 		height: ''
 	};
 	let imageCompressionInChannels = true;
+	let imageCompressionQuality = 0.75;
 
 	// Admin - Show Update Available Toast
 
@@ -171,9 +172,19 @@
 	};
 
 	const updateInterfaceHandler = async () => {
+		if (imageCompression) {
+			const width = Number(imageCompressionSize?.width);
+			const height = Number(imageCompressionSize?.height);
+			if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+				toast.error($i18n.t('Image compression width and height are required.'));
+				return;
+			}
+		}
+
 		saveSettings({
 			models: [defaultModelId],
-			imageCompressionSize: imageCompressionSize
+			imageCompressionSize: imageCompressionSize,
+			imageCompressionQuality
 		});
 	};
 
@@ -209,6 +220,11 @@
 	const setBackgroundOverlayOpacityHandler = (value) => {
 		backgroundOverlayOpacity = normalizeBackgroundImageOpacity(value);
 		saveSettings({ backgroundOverlayOpacity });
+	};
+
+	const setImageCompressionQualityHandler = (value) => {
+		imageCompressionQuality = normalizeImageCompressionQuality(value);
+		saveSettings({ imageCompressionQuality });
 	};
 
 	onMount(async () => {
@@ -273,6 +289,7 @@
 		imageCompression = $settings?.imageCompression ?? false;
 		imageCompressionSize = $settings?.imageCompressionSize ?? { width: '', height: '' };
 		imageCompressionInChannels = $settings?.imageCompressionInChannels ?? true;
+		imageCompressionQuality = normalizeImageCompressionQuality($settings?.imageCompressionQuality ?? 0.75);
 
 		defaultModelId = $settings?.models?.at(0) ?? '';
 		if ($config?.default_models) {
@@ -1423,21 +1440,49 @@
 			</div>
 
 			{#if imageCompression}
-				<div>
-					<div class=" py-0.5 flex w-full justify-between">
-						<div id="image-compression-in-channels-label" class=" self-center text-xs">
-							{$i18n.t('Compress Images in Channels')}
+				<div class="space-y-2">
+					<div>
+						<div class="py-0.5 flex w-full justify-between">
+							<label id="image-compression-quality-label" class="self-center text-xs" for="image-compression-quality-slider">
+								{$i18n.t('Image Compression Quality')}
+							</label>
+							<span class="text-xs" aria-live="polite">{imageCompressionQuality.toFixed(2)}</span>
 						</div>
+						<input
+							id="image-compression-quality-slider"
+							type="range"
+							min="0"
+							max="1"
+							step="0.01"
+							bind:value={imageCompressionQuality}
+							on:input={() => {
+								setImageCompressionQualityHandler(imageCompressionQuality);
+							}}
+							class="accent-black dark:accent-white w-full"
+							aria-labelledby="image-compression-quality-label"
+							aria-valuemin={0}
+							aria-valuemax={1}
+							aria-valuenow={imageCompressionQuality}
+							aria-valuetext={imageCompressionQuality.toFixed(2)}
+						/>
+					</div>
 
-						<div class="flex items-center gap-2 p-1">
-							<Switch
-								ariaLabelledbyId="image-compression-in-channels-label"
-								tooltip={true}
-								bind:state={imageCompressionInChannels}
-								on:change={() => {
-									saveSettings({ imageCompressionInChannels });
-								}}
-							/>
+					<div>
+						<div class=" py-0.5 flex w-full justify-between">
+							<div id="image-compression-in-channels-label" class=" self-center text-xs">
+								{$i18n.t('Compress Images in Channels')}
+							</div>
+
+							<div class="flex items-center gap-2 p-1">
+								<Switch
+									ariaLabelledbyId="image-compression-in-channels-label"
+									tooltip={true}
+									bind:state={imageCompressionInChannels}
+									on:change={() => {
+										saveSettings({ imageCompressionInChannels });
+									}}
+								/>
+							</div>
 						</div>
 					</div>
 				</div>
