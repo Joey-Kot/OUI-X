@@ -1,10 +1,14 @@
+from pathlib import Path
+
 import pytest
+from PIL import Image
 
 from open_webui.utils.image_transcoding import (
     ImageTranscodeError,
     build_ffmpeg_webp_command,
     clamp_quality,
     compute_target_dimensions,
+    normalize_orientation_to_tempfile,
     parse_image_compression_metadata,
 )
 
@@ -55,16 +59,36 @@ def test_compute_target_dimensions_scales_down_with_aspect_ratio():
     assert height == 1536
 
 
+def test_compute_target_dimensions_scales_rotated_dimensions():
+    width, height = compute_target_dimensions(3060, 4080, 2048, 2048)
+    assert width == 1536
+    assert height == 2048
+
+
 def test_build_ffmpeg_webp_command_uses_webp_and_fixed_threads():
     command = build_ffmpeg_webp_command(
-        input_path="/tmp/input.heic",
+        input_path="/tmp/input.jpg",
         output_path="/tmp/output.webp",
-        width=2048,
-        height=1536,
+        width=1536,
+        height=2048,
         quality=0.75,
     )
 
-    assert command[:8] == ["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", "/tmp/input.heic"]
+    assert command[:8] == ["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", "/tmp/input.jpg"]
+    assert command[8:10] == ["-vf", "scale=1536:2048:flags=lanczos"]
     assert "libwebp" in command
     assert "75" in command
     assert "/tmp/output.webp" == command[-1]
+
+
+def test_normalize_orientation_to_tempfile_keeps_image_when_no_exif(tmp_path):
+    source = tmp_path / "plain.jpg"
+    Image.new("RGB", (100, 50), color="red").save(source, format="JPEG")
+
+    normalized_path, width, height, orientation_applied = normalize_orientation_to_tempfile(str(source))
+    try:
+        assert Path(normalized_path).is_file()
+        assert (width, height) == (100, 50)
+        assert orientation_applied is False
+    finally:
+        Path(normalized_path).unlink(missing_ok=True)

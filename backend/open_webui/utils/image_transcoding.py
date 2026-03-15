@@ -1,11 +1,13 @@
-import json
 import logging
 import math
 import os
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Optional
+
+from PIL import Image, ImageOps
 
 log = logging.getLogger(__name__)
 
@@ -69,30 +71,22 @@ def parse_image_compression_metadata(metadata: Optional[dict]) -> Optional[dict[
     }
 
 
-
-def ffprobe_stream_info(file_path: str) -> dict[str, Any]:
-    command = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=width,height,codec_name,nb_frames",
-        "-of",
-        "json",
-        file_path,
-    ]
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        raise ImageTranscodeError(stderr or "Failed to inspect image stream.")
-
-    payload = json.loads(result.stdout or "{}")
-    streams = payload.get("streams") or []
-    if not streams:
-        raise ImageTranscodeError("No video stream found in uploaded image.")
-    return streams[0]
+def normalize_orientation_to_tempfile(input_path: str) -> tuple[str, int, int, bool]:
+    try:
+        with Image.open(input_path) as image:
+            normalized = ImageOps.exif_transpose(image)
+            normalized.load()
+            orientation_applied = normalized.size != image.size or normalized.tobytes() != image.tobytes()
+            suffix = Path(input_path).suffix or ".img"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                normalized.save(temp_file, format=normalized.format or image.format)
+                return temp_file.name, normalized.width, normalized.height, orientation_applied
+    except OSError as exc:
+        if Path(input_path).suffix.lower().lstrip(".") in HEIC_EXTENSIONS:
+            raise ImageTranscodeCapabilityError(
+                "HEIC/HEIF decode support is unavailable on this server."
+            ) from exc
+        raise ImageTranscodeError(f"Failed to normalize image orientation: {exc}") from exc
 
 
 def compute_target_dimensions(
@@ -157,43 +151,46 @@ def transcode_image_to_webp(
     max_height: int,
     quality: float,
 ) -> dict[str, Any]:
-    stream_info = ffprobe_stream_info(input_path)
-    original_width = int(stream_info.get("width") or 0)
-    original_height = int(stream_info.get("height") or 0)
-    target_width, target_height = compute_target_dimensions(
-        original_width=original_width,
-        original_height=original_height,
-        max_width=max_width,
-        max_height=max_height,
-    )
+    normalized_input_path = None
+    try:
+        normalized_input_path, normalized_width, normalized_height, orientation_applied = (
+            normalize_orientation_to_tempfile(input_path)
+        )
 
-    command = build_ffmpeg_webp_command(
-        input_path=input_path,
-        output_path=output_path,
-        width=target_width,
-        height=target_height,
-        quality=quality,
-    )
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        if Path(input_path).suffix.lower().lstrip(".") in HEIC_EXTENSIONS:
-            raise ImageTranscodeCapabilityError(
-                stderr or "HEIC/HEIF decode support is unavailable on this server."
-            )
-        raise ImageTranscodeError(stderr or "Failed to transcode image.")
+        target_width, target_height = compute_target_dimensions(
+            original_width=normalized_width,
+            original_height=normalized_height,
+            max_width=max_width,
+            max_height=max_height,
+        )
 
-    if not os.path.exists(output_path):
-        raise ImageTranscodeError("Image transcoding did not produce an output file.")
+        command = build_ffmpeg_webp_command(
+            input_path=normalized_input_path,
+            output_path=output_path,
+            width=target_width,
+            height=target_height,
+            quality=quality,
+        )
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            raise ImageTranscodeError(stderr or "Failed to transcode image.")
 
-    return {
-        "original_width": original_width,
-        "original_height": original_height,
-        "width": target_width,
-        "height": target_height,
-        "resized": target_width != original_width or target_height != original_height,
-        "quality": clamp_quality(quality),
-    }
+        if not os.path.exists(output_path):
+            raise ImageTranscodeError("Image transcoding did not produce an output file.")
+
+        return {
+            "original_width": normalized_width,
+            "original_height": normalized_height,
+            "orientation_applied": orientation_applied,
+            "width": target_width,
+            "height": target_height,
+            "resized": target_width != normalized_width or target_height != normalized_height,
+            "quality": clamp_quality(quality),
+        }
+    finally:
+        if normalized_input_path and os.path.exists(normalized_input_path):
+            os.unlink(normalized_input_path)
 
 
 def get_user_transcode_semaphore(user_id: str, limit: int) -> threading.BoundedSemaphore:
