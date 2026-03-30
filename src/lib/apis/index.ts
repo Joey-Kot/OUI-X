@@ -114,9 +114,18 @@ export const getModels = async (
 			for (const idx in responses) {
 				const response = responses[idx];
 				const apiConfig = OPENAI_API_CONFIGS[idx.toString()] ?? {};
+				const providerType =
+					apiConfig?.provider_type === 'azure_openai'
+						? 'openai'
+						: (apiConfig?.provider_type ?? (apiConfig?.azure ? 'openai' : 'openai_responses'));
 
 				let models = Array.isArray(response) ? response : (response?.data ?? []);
-				models = models.map((model) => ({ ...model, openai: { id: model.id }, urlIdx: idx }));
+				models = models.map((model) => ({
+					...model,
+					openai: { id: model.id },
+					urlIdx: idx,
+					provider_type: providerType
+				}));
 
 				const prefixId = apiConfig.prefix_id;
 				if (prefixId) {
@@ -360,6 +369,27 @@ export const updateTaskConfig = async (token: string, config: object) => {
 	return res;
 };
 
+export const extractTaskContentFromCompletion = (payload: any): string => {
+	const choiceText = payload?.choices?.[0]?.message?.content;
+	if (typeof choiceText === 'string' && choiceText.length > 0) {
+		return choiceText;
+	}
+
+	const output = Array.isArray(payload?.output) ? payload.output : [];
+	const outputText = output
+		.filter((item: any) => item?.type === 'message')
+		.flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
+		.filter((part: any) => part?.type === 'output_text')
+		.map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
+		.join('');
+
+	if (outputText.length > 0) {
+		return outputText;
+	}
+
+	return typeof payload?.output_text === 'string' ? payload.output_text : '';
+};
+
 export const generateTitle = async (
 	token: string = '',
 	model: string,
@@ -399,7 +429,7 @@ export const generateTitle = async (
 
 	try {
 		// Step 1: Safely extract the response string
-		const response = res?.choices[0]?.message?.content ?? '';
+		const response = extractTaskContentFromCompletion(res);
 
 		// Step 2: Attempt to fix common JSON format issues like single quotes
 		const sanitizedResponse = response.replace(/['‘’`]/g, '"'); // Convert single quotes to double quotes for valid JSON
@@ -471,7 +501,7 @@ export const generateFollowUps = async (
 
 	try {
 		// Step 1: Safely extract the response string
-		const response = res?.choices[0]?.message?.content ?? '';
+		const response = extractTaskContentFromCompletion(res);
 
 		// Step 2: Attempt to fix common JSON format issues like single quotes
 		const sanitizedResponse = response.replace(/['‘’`]/g, '"'); // Convert single quotes to double quotes for valid JSON
@@ -543,7 +573,7 @@ export const generateTags = async (
 
 	try {
 		// Step 1: Safely extract the response string
-		const response = res?.choices[0]?.message?.content ?? '';
+		const response = extractTaskContentFromCompletion(res);
 
 		// Step 2: Attempt to fix common JSON format issues like single quotes
 		const sanitizedResponse = response.replace(/['‘’`]/g, '"'); // Convert single quotes to double quotes for valid JSON
@@ -613,7 +643,7 @@ export const generateEmoji = async (
 		throw error;
 	}
 
-	const response = res?.choices[0]?.message?.content.replace(/["']/g, '') ?? null;
+	const response = extractTaskContentFromCompletion(res).replace(/["']/g, '') ?? null;
 
 	if (response) {
 		if (/\p{Extended_Pictographic}/u.test(response)) {
@@ -664,7 +694,7 @@ export const generateQueries = async (
 	}
 
 	// Step 1: Safely extract the response string
-	const response = res?.choices[0]?.message?.content ?? '';
+	const response = extractTaskContentFromCompletion(res);
 
 	try {
 		const jsonStartIndex = response.indexOf('{');
@@ -735,7 +765,7 @@ export const generateAutoCompletion = async (
 		throw error;
 	}
 
-	const response = res?.choices[0]?.message?.content ?? '';
+	const response = extractTaskContentFromCompletion(res);
 
 	try {
 		const jsonStartIndex = response.indexOf('{');

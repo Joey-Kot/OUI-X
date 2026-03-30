@@ -70,7 +70,7 @@ FILE_ID_RETRY_BACKOFF_CAP = 2.0
 UUID_FILENAME_PREFIX_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}_(.+)$")
 
 
-SUPPORTED_EMBEDDING_ENGINES = {"openai", "azure_openai"}
+SUPPORTED_EMBEDDING_ENGINES = {"openai"}
 SUPPORTED_TEXT_SPLITTERS = {"", "character", "token", "token_voyage"}
 SUPPORTED_RERANKING_ENGINES = {"external", "voyage"}
 

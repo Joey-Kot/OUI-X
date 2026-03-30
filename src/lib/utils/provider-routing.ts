@@ -1,4 +1,4 @@
-export type ProviderType = 'openai' | 'azure_openai' | 'openai_responses';
+export type ProviderType = 'openai' | 'openai_responses';
 
 export const getProviderTypeFromModel = (model: any = {}, directConnections: any = null): ProviderType => {
 	const defaultProvider: ProviderType = 'openai_responses';
@@ -15,12 +15,13 @@ export const getProviderTypeFromModel = (model: any = {}, directConnections: any
 	const apiConfig = directConnections?.OPENAI_API_CONFIGS?.[urlIdx] ?? {};
 	const providerType = apiConfig?.provider_type;
 
-	if (providerType === 'openai' || providerType === 'azure_openai' || providerType === 'openai_responses') {
+	if (providerType === 'openai' || providerType === 'openai_responses') {
 		return providerType;
 	}
 
-	if (apiConfig?.azure) {
-		return 'azure_openai';
+	// Legacy migration: Azure OpenAI provider is removed; treat old configs as OpenAI.
+	if (providerType === 'azure_openai' || apiConfig?.azure) {
+		return 'openai';
 	}
 
 	return defaultProvider;

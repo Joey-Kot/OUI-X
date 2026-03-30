@@ -1635,6 +1635,107 @@
 	// Chat functions
 	//////////////////////////
 
+	const toResponsesInputFromMessages = (messages = []) => {
+		const normalizePart = (role, part) => {
+			if (!part || typeof part !== 'object') return null;
+			const partType = part.type;
+
+			if (partType === 'text') {
+				return {
+					type: role === 'assistant' ? 'output_text' : 'input_text',
+					text: part.text ?? ''
+				};
+			}
+			if (partType === 'image_url') {
+				const url = typeof part.image_url === 'string' ? part.image_url : part.image_url?.url;
+				return url ? { type: 'input_image', image_url: url } : null;
+			}
+			if (partType === 'input_text' || partType === 'output_text') {
+				return part;
+			}
+			return null;
+		};
+
+		return (messages ?? [])
+			.map((message) => {
+				if (!message || typeof message !== 'object') return null;
+
+				if (message.role === 'tool') {
+					return {
+						type: 'function_call_output',
+						call_id: message.tool_call_id ?? '',
+						output: message.content ?? ''
+					};
+				}
+
+				if (typeof message.content === 'string') {
+					return { role: message.role, content: message.content };
+				}
+
+				if (Array.isArray(message.content)) {
+					return {
+						role: message.role,
+						content: message.content.map((part) => normalizePart(message.role, part)).filter(Boolean)
+					};
+				}
+
+				return null;
+			})
+			.filter(Boolean);
+	};
+
+	const buildResponsesRequestBody = (chatPayload) => {
+		const params = chatPayload?.params ?? {};
+		const body = {
+			model: chatPayload.model,
+			input: toResponsesInputFromMessages(chatPayload.messages ?? []),
+			stream: Boolean(chatPayload.stream),
+			metadata: chatPayload.metadata,
+			reasoning:
+				chatPayload?.reasoning || params?.reasoning_effort
+					? {
+							...(chatPayload?.reasoning ?? {}),
+							...(params?.reasoning_effort ? { effort: params.reasoning_effort } : {})
+						}
+					: undefined,
+			verbosity: params?.verbosity,
+			temperature: params?.temperature,
+			top_p: params?.top_p,
+			stop: params?.stop,
+			tool_choice: chatPayload?.tool_choice,
+			parallel_tool_calls: chatPayload?.parallel_tool_calls,
+			previous_response_id: params?.previous_response_id,
+			conversation: params?.conversation,
+			prompt_cache_key: params?.prompt_cache_key,
+			prompt_cache_retention: params?.prompt_cache_retention,
+			store: params?.store,
+			truncation: params?.truncation,
+			text: params?.text,
+			user: params?.user,
+			model_item: chatPayload?.model_item,
+			session_id: chatPayload?.session_id,
+			chat_id: chatPayload?.chat_id,
+			id: chatPayload?.id,
+			parent_id: chatPayload?.parent_id,
+			parent_message: chatPayload?.parent_message,
+			background_tasks: chatPayload?.background_tasks,
+			files: chatPayload?.files,
+			filter_ids: chatPayload?.filter_ids,
+			tool_ids: chatPayload?.tool_ids,
+			features: chatPayload?.features,
+			variables: chatPayload?.variables,
+			endpointKind: 'responses'
+		};
+
+		const maxOutputTokens = params?.max_completion_tokens ?? params?.max_tokens;
+		if (maxOutputTokens !== undefined) {
+			body.max_output_tokens = maxOutputTokens;
+		}
+
+		Object.keys(body).forEach((key) => body[key] === undefined && delete body[key]);
+		return body;
+	};
+
 	const submitPrompt = async (userPrompt, { _raw = false } = {}) => {
 		console.log('submitPrompt', userPrompt, $chatId);
 
@@ -1998,65 +2099,64 @@
 
 		const toolIds = [...selectedToolIds];
 
-		const res = await generateOpenAIChatCompletion(
-			localStorage.token,
-			{
-				stream: stream,
-				model: model.id,
-				messages: messages,
-				params: {
-					...$settings?.params,
-					...params,
-					stop:
-						(params?.stop ?? $settings?.params?.stop ?? undefined)
-							? (params?.stop.split(',').map((token) => token.trim()) ?? $settings.params.stop).map(
-									(str) => decodeURIComponent(JSON.parse('"' + str.replace(/\"/g, '\\"') + '"'))
-								)
-							: undefined
-				},
-
-				files: (files?.length ?? 0) > 0 ? files : undefined,
-
-				filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
-				tool_ids: toolIds.length > 0 ? toolIds : undefined,
-				features: getFeatures(),
-				variables: {
-					...getPromptVariables($user?.name, $settings?.userLocation ? userLocation : undefined)
-				},
-				model_item: $models.find((m) => m.id === model.id),
-
-				session_id: $socket?.id,
-				chat_id: $chatId,
-
-				id: responseMessageId,
-				parent_id: userMessage?.id ?? null,
-				parent_message: userMessage,
-
-				background_tasks: {
-					...(!$temporaryChatEnabled &&
-					(messages.length == 1 ||
-						(messages.length == 2 &&
-							messages.at(0)?.role === 'system' &&
-							messages.at(1)?.role === 'user')) &&
-					(selectedModels[0] === model.id || atSelectedModel !== undefined)
-						? {
-								title_generation: $settings?.title?.auto ?? true,
-								tags_generation: $settings?.autoTags ?? true
-							}
-						: {}),
-					follow_up_generation: $settings?.autoFollowUps ?? true
-				},
-
-				...(stream && (model.info?.meta?.capabilities?.usage ?? false)
-					? {
-							stream_options: {
-								include_usage: true
-							}
-						}
-					: {})
+		const baseBody = {
+			stream: stream,
+			model: model.id,
+			messages: messages,
+			params: {
+				...$settings?.params,
+				...params,
+				stop:
+					(params?.stop ?? $settings?.params?.stop ?? undefined)
+						? (params?.stop.split(',').map((token) => token.trim()) ?? $settings.params.stop).map(
+								(str) => decodeURIComponent(JSON.parse('"' + str.replace(/\"/g, '\\"') + '"'))
+							)
+						: undefined
 			},
-			`${WEBUI_BASE_URL}/api`
-		).catch(async (error) => {
+
+			files: (files?.length ?? 0) > 0 ? files : undefined,
+			filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
+			tool_ids: toolIds.length > 0 ? toolIds : undefined,
+			features: getFeatures(),
+			variables: {
+				...getPromptVariables($user?.name, $settings?.userLocation ? userLocation : undefined)
+			},
+			model_item: $models.find((m) => m.id === model.id),
+			session_id: $socket?.id,
+			chat_id: $chatId,
+			id: responseMessageId,
+			parent_id: userMessage?.id ?? null,
+			parent_message: userMessage,
+			background_tasks: {
+				...(!$temporaryChatEnabled &&
+				(messages.length == 1 ||
+					(messages.length == 2 &&
+						messages.at(0)?.role === 'system' &&
+						messages.at(1)?.role === 'user')) &&
+				(selectedModels[0] === model.id || atSelectedModel !== undefined)
+					? {
+							title_generation: $settings?.title?.auto ?? true,
+							tags_generation: $settings?.autoTags ?? true
+						}
+					: {}),
+				follow_up_generation: $settings?.autoFollowUps ?? true
+			},
+			...(stream && (model.info?.meta?.capabilities?.usage ?? false)
+				? {
+						stream_options: {
+							include_usage: true
+						}
+					}
+				: {})
+		};
+
+		const providerType = baseBody?.model_item?.provider_type;
+		const requestBody =
+			providerType === 'openai_responses'
+				? buildResponsesRequestBody(baseBody)
+				: { ...baseBody, endpointKind: 'chat_completions' };
+
+		const res = await generateOpenAIChatCompletion(localStorage.token, requestBody, `${WEBUI_BASE_URL}/api`).catch(async (error) => {
 			console.log(error);
 
 			let errorMessage = error;

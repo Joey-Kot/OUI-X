@@ -20,7 +20,7 @@ def test_resolver_uses_explicit_prompt_cache_key_and_skips_chat_lookup(monkeypat
 
     monkeypatch.setattr(openai_router, "Chats", DummyChats())
 
-    resolved = openai_router._resolve_prompt_cache_key_for_responses(
+    resolved = openai_router._resolve_prompt_cache_key_for_completion_request(
         {"prompt_cache_key": "request-key"},
         {"chat_id": "chat-1"},
         _user(),
@@ -42,7 +42,7 @@ def test_resolver_reuses_persisted_chat_meta_key(monkeypatch):
 
     monkeypatch.setattr(openai_router, "Chats", DummyChats())
 
-    resolved = openai_router._resolve_prompt_cache_key_for_responses(
+    resolved = openai_router._resolve_prompt_cache_key_for_completion_request(
         {},
         {"chat_id": "chat-1"},
         _user(),
@@ -69,7 +69,7 @@ def test_resolver_generates_and_persists_for_chat_without_key(monkeypatch):
 
     monkeypatch.setattr(openai_router, "Chats", DummyChats())
 
-    resolved = openai_router._resolve_prompt_cache_key_for_responses(
+    resolved = openai_router._resolve_prompt_cache_key_for_completion_request(
         {},
         {"chat_id": "chat-1"},
         _user(),
@@ -97,7 +97,7 @@ def test_resolver_returns_generated_key_when_persist_fails(monkeypatch):
 
     monkeypatch.setattr(openai_router, "Chats", DummyChats())
 
-    resolved = openai_router._resolve_prompt_cache_key_for_responses(
+    resolved = openai_router._resolve_prompt_cache_key_for_completion_request(
         {},
         {"chat_id": "chat-1"},
         _user(),
@@ -107,17 +107,17 @@ def test_resolver_returns_generated_key_when_persist_fails(monkeypatch):
 
 
 def test_resolver_derives_deterministic_key_for_local_chat():
-    first = openai_router._resolve_prompt_cache_key_for_responses(
+    first = openai_router._resolve_prompt_cache_key_for_completion_request(
         {},
         {"chat_id": "local:session-a"},
         _user(),
     )
-    second = openai_router._resolve_prompt_cache_key_for_responses(
+    second = openai_router._resolve_prompt_cache_key_for_completion_request(
         {},
         {"chat_id": "local:session-a"},
         _user(),
     )
-    third = openai_router._resolve_prompt_cache_key_for_responses(
+    third = openai_router._resolve_prompt_cache_key_for_completion_request(
         {},
         {"chat_id": "local:session-b"},
         _user(),
@@ -129,7 +129,7 @@ def test_resolver_derives_deterministic_key_for_local_chat():
 
 
 def test_resolver_returns_none_without_chat_id():
-    resolved = openai_router._resolve_prompt_cache_key_for_responses(
+    resolved = openai_router._resolve_prompt_cache_key_for_completion_request(
         {},
         {},
         _user(),
@@ -155,7 +155,7 @@ def test_resolver_uses_admin_fallback_chat_lookup(monkeypatch):
 
     monkeypatch.setattr(openai_router, "Chats", DummyChats())
 
-    resolved = openai_router._resolve_prompt_cache_key_for_responses(
+    resolved = openai_router._resolve_prompt_cache_key_for_completion_request(
         {},
         {"chat_id": "chat-2"},
         _user(user_id="admin-1", role="admin"),
@@ -165,20 +165,86 @@ def test_resolver_uses_admin_fallback_chat_lookup(monkeypatch):
     assert resolved == "pc:v1:admin-stored"
 
 
-def test_injector_skips_non_responses_provider(monkeypatch):
+def test_injector_skips_provider_endpoint_pairs_outside_scope(monkeypatch):
     def fail_resolver(*_args, **_kwargs):
-        raise AssertionError("resolver should not be called for non-responses providers")
+        raise AssertionError("resolver should not be called when scope does not apply")
 
     monkeypatch.setattr(
-        openai_router, "_resolve_prompt_cache_key_for_responses", fail_resolver
+        openai_router, "_resolve_prompt_cache_key_for_completion_request", fail_resolver
     )
 
     payload = {"model": "gpt-5"}
-    openai_router._inject_prompt_cache_key_for_responses(
-        "openai",
+    openai_router._inject_prompt_cache_params_for_completion_request(
+        "custom_provider",
+        "chat_completions",
         payload,
         {"chat_id": "chat-1"},
         _user(),
     )
 
     assert "prompt_cache_key" not in payload
+    assert "prompt_cache_retention" not in payload
+
+
+def test_injector_adds_prompt_cache_params_for_openai_chat(monkeypatch):
+    monkeypatch.setattr(
+        openai_router,
+        "_resolve_prompt_cache_key_for_completion_request",
+        lambda *_args, **_kwargs: "pc:v1:test-openai",
+    )
+
+    payload = {"model": "gpt-5"}
+    openai_router._inject_prompt_cache_params_for_completion_request(
+        "openai",
+        "chat_completions",
+        payload,
+        {"chat_id": "chat-1"},
+        _user(),
+    )
+
+    assert payload["prompt_cache_key"] == "pc:v1:test-openai"
+    assert "prompt_cache_retention" not in payload
+
+
+def test_injector_adds_prompt_cache_params_for_responses_provider(monkeypatch):
+    monkeypatch.setattr(
+        openai_router,
+        "_resolve_prompt_cache_key_for_completion_request",
+        lambda *_args, **_kwargs: "pc:v1:test-responses",
+    )
+
+    payload = {"model": "gpt-5"}
+    openai_router._inject_prompt_cache_params_for_completion_request(
+        "openai_responses",
+        "responses",
+        payload,
+        {"chat_id": "chat-1"},
+        _user(),
+    )
+
+    assert payload["prompt_cache_key"] == "pc:v1:test-responses"
+    assert "prompt_cache_retention" not in payload
+
+
+def test_injector_preserves_explicit_key_and_retention_value(monkeypatch):
+    monkeypatch.setattr(
+        openai_router,
+        "_resolve_prompt_cache_key_for_completion_request",
+        lambda *_args, **_kwargs: "pc:v1:resolved-ignored",
+    )
+
+    payload = {
+        "model": "gpt-5",
+        "prompt_cache_key": "request-key",
+        "prompt_cache_retention": "12h",
+    }
+    openai_router._inject_prompt_cache_params_for_completion_request(
+        "openai_responses",
+        "responses",
+        payload,
+        {"chat_id": "chat-1"},
+        _user(),
+    )
+
+    assert payload["prompt_cache_key"] == "request-key"
+    assert payload["prompt_cache_retention"] == "12h"

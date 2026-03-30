@@ -404,7 +404,7 @@ from open_webui.config import (
     ENABLE_ADMIN_EXPORT,
     # Tasks
     TASK_MODEL,
-    TASK_MODEL_EXTERNAL,
+    LEGACY_TASK_MODEL_EXTERNAL,
     ENABLE_TAGS_GENERATION,
     ENABLE_TITLE_GENERATION,
     ENABLE_FOLLOW_UP_GENERATION,
@@ -476,8 +476,14 @@ from open_webui.utils.models import (
 )
 from open_webui.utils.chat import (
     generate_chat_completion as chat_completion_handler,
+    generate_responses as responses_handler,
     chat_completed as chat_completed_handler,
     chat_action as chat_action_handler,
+)
+from open_webui.utils.completion_adapter import (
+    build_upstream_payload,
+    chat_messages_to_responses_input,
+    normalize_tools_for_responses,
 )
 from open_webui.utils.embeddings import generate_embeddings
 from open_webui.utils.middleware import process_chat_payload, process_chat_response
@@ -919,6 +925,8 @@ app.state.config.CHUNK_SIZE = CHUNK_SIZE
 app.state.config.CHUNK_OVERLAP = CHUNK_OVERLAP
 
 app.state.config.RAG_EMBEDDING_ENGINE = RAG_EMBEDDING_ENGINE
+if app.state.config.RAG_EMBEDDING_ENGINE == "azure_openai":
+    app.state.config.RAG_EMBEDDING_ENGINE = "openai"
 app.state.config.RAG_EMBEDDING_MODEL = RAG_EMBEDDING_MODEL
 app.state.config.RAG_EMBEDDING_BATCH_SIZE = RAG_EMBEDDING_BATCH_SIZE
 app.state.config.ENABLE_ASYNC_EMBEDDING = ENABLE_ASYNC_EMBEDDING
@@ -1049,22 +1057,9 @@ app.state.EMBEDDING_FUNCTION = get_embedding_function(
     app.state.config.RAG_EMBEDDING_ENGINE,
     app.state.config.RAG_EMBEDDING_MODEL,
     embedding_function=app.state.ef,
-    url=(
-        app.state.config.RAG_OPENAI_API_BASE_URL
-        if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-        else app.state.config.RAG_AZURE_OPENAI_BASE_URL
-    ),
-    key=(
-        app.state.config.RAG_OPENAI_API_KEY
-        if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-        else app.state.config.RAG_AZURE_OPENAI_API_KEY
-    ),
+    url=app.state.config.RAG_OPENAI_API_BASE_URL,
+    key=app.state.config.RAG_OPENAI_API_KEY,
     embedding_batch_size=app.state.config.RAG_EMBEDDING_BATCH_SIZE,
-    azure_api_version=(
-        app.state.config.RAG_AZURE_OPENAI_API_VERSION
-        if app.state.config.RAG_EMBEDDING_ENGINE == "azure_openai"
-        else None
-    ),
     enable_async=app.state.config.ENABLE_ASYNC_EMBEDDING,
 )
 
@@ -1199,7 +1194,9 @@ app.state.config.TTS_AZURE_SPEECH_OUTPUT_FORMAT = AUDIO_TTS_AZURE_SPEECH_OUTPUT_
 
 
 app.state.config.TASK_MODEL = TASK_MODEL
-app.state.config.TASK_MODEL_EXTERNAL = TASK_MODEL_EXTERNAL
+if not app.state.config.TASK_MODEL and LEGACY_TASK_MODEL_EXTERNAL.value:
+    # Backward compatibility: migrate legacy key/value to the unified TASK_MODEL.
+    app.state.config.TASK_MODEL = LEGACY_TASK_MODEL_EXTERNAL.value
 
 
 app.state.config.ENABLE_SEARCH_QUERY_GENERATION = ENABLE_SEARCH_QUERY_GENERATION
@@ -1545,6 +1542,9 @@ async def chat_completion(
     if not request.app.state.MODELS:
         await get_all_models(request, user=user)
 
+    endpoint_kind = form_data.pop("endpoint_kind", "chat_completions")
+    responses_upstream_payload = form_data.pop("_responses_upstream_payload", None)
+
     model_id = form_data.get("model", None)
     model_item = form_data.pop("model_item", {})
     tasks = form_data.pop("background_tasks", None)
@@ -1705,7 +1705,20 @@ async def chat_completion(
                 request, form_data, user, metadata, model
             )
 
-            response = await chat_completion_handler(request, form_data, user)
+            if endpoint_kind == "responses":
+                upstream_payload = build_upstream_payload(
+                    form_data=form_data,
+                    endpoint_kind="responses",
+                    metadata=metadata,
+                    base_payload=responses_upstream_payload
+                    if isinstance(responses_upstream_payload, dict)
+                    else None,
+                    strip_internal_keys=True,
+                    include_endpoint_kind=False,
+                )
+                response = await responses_handler(request, upstream_payload, user)
+            else:
+                response = await chat_completion_handler(request, form_data, user)
             if metadata.get("chat_id") and metadata.get("message_id"):
                 try:
                     if not metadata["chat_id"].startswith("local:"):
@@ -1792,6 +1805,107 @@ async def chat_completion(
 # Alias for chat_completion (Legacy)
 generate_chat_completions = chat_completion
 generate_chat_completion = chat_completion
+
+
+def _responses_input_to_chat_messages(input_items: list) -> list[dict]:
+    messages: list[dict] = []
+    for item in input_items or []:
+        if not isinstance(item, dict):
+            continue
+
+        item_type = item.get("type")
+        if item_type == "function_call_output":
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": item.get("call_id", ""),
+                    "content": item.get("output", ""),
+                }
+            )
+            continue
+
+        role = item.get("role")
+        if role not in {"user", "assistant", "system", "developer"}:
+            continue
+
+        content = item.get("content", "")
+        if isinstance(content, str):
+            messages.append({"role": role, "content": content})
+            continue
+
+        if isinstance(content, list):
+            text_parts = []
+            normalized_parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+
+                part_type = part.get("type")
+                if part_type == "input_text":
+                    text = part.get("text", "")
+                    text_parts.append(text)
+                    normalized_parts.append({"type": "text", "text": text})
+                elif part_type == "output_text":
+                    text = part.get("text", "")
+                    text_parts.append(text)
+                    normalized_parts.append({"type": "text", "text": text})
+                elif part_type == "input_image":
+                    image_url = part.get("image_url", "")
+                    normalized_parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": image_url}
+                            if isinstance(image_url, str)
+                            else image_url,
+                        }
+                    )
+
+            if normalized_parts:
+                messages.append(
+                    {
+                        "role": role,
+                        "content": normalized_parts if len(normalized_parts) > 1 else "".join(text_parts),
+                    }
+                )
+    return messages
+
+
+def _chat_messages_to_responses_input(messages: list[dict]) -> list[dict]:
+    return chat_messages_to_responses_input(messages)
+
+
+def _chat_tools_to_responses_tools(tools: list[dict]) -> list[dict]:
+    return normalize_tools_for_responses(tools)
+
+
+@app.post("/api/responses")
+@app.post("/api/v1/responses")  # Experimental: Compatibility with OpenAI API
+async def responses(
+    request: Request,
+    form_data: dict,
+    user=Depends(get_verified_user),
+):
+    try:
+        form_data = {**form_data}
+        responses_upstream_payload = {**form_data}
+
+        if "messages" not in form_data:
+            derived_messages = _responses_input_to_chat_messages(form_data.get("input", []))
+            if derived_messages:
+                form_data["messages"] = derived_messages
+
+        form_data["_responses_upstream_payload"] = responses_upstream_payload
+        form_data["endpoint_kind"] = "responses"
+
+        return await chat_completion(request, form_data, user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("Error in /api/responses")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
 
 
 @app.post("/api/chat/completed")

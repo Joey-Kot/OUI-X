@@ -107,6 +107,12 @@ from open_webui.utils.tool_orchestrator import (
     clamp_max_tool_calls_per_round,
 )
 from open_webui.utils.tools_runtime import build_tool_registry, registry_to_legacy_tools
+from open_webui.utils.completion_adapter import (
+    build_upstream_payload,
+    chat_messages_to_responses_input,
+    extract_assistant_content_from_completion_response,
+    normalize_tools_for_responses,
+)
 
 
 from open_webui.config import (
@@ -131,6 +137,14 @@ from open_webui.constants import TASKS
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
+
+
+def _extract_task_response_content(response: Any, fallback: str = "") -> str:
+    if isinstance(response, dict):
+        content = extract_assistant_content_from_completion_response(response)
+        if isinstance(content, str) and content:
+            return content
+    return fallback
 
 
 REMOVED_PARAM_KEYS = {
@@ -359,13 +373,15 @@ async def chat_completion_tools_handler(
         if hasattr(response, "body_iterator"):
             async for chunk in response.body_iterator:
                 data = json.loads(chunk.decode("utf-8", "replace"))
-                content = data["choices"][0]["message"]["content"]
+                extracted = _extract_task_response_content(data)
+                if extracted:
+                    content = extracted
 
             # Cleanup any remaining background tasks if necessary
             if response.background is not None:
                 await response.background()
         else:
-            content = response["choices"][0]["message"]["content"]
+            content = _extract_task_response_content(response)
         return content
 
     def get_tools_function_calling_payload(messages, task_model_id, content):
@@ -404,7 +420,6 @@ async def chat_completion_tools_handler(
     task_model_id = get_task_model_id(
         body["model"],
         request.app.state.config.TASK_MODEL,
-        request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
     )
 
@@ -651,7 +666,7 @@ async def chat_web_search_handler(
             user,
         )
 
-        response = res["choices"][0]["message"]["content"]
+        response = _extract_task_response_content(res)
 
         try:
             bracket_start = response.find("{")
@@ -820,6 +835,182 @@ def get_image_urls(delta_images, request, metadata, user) -> list[str]:
     return image_urls
 
 
+def _map_responses_event_to_chat_chunk(payload: dict, state: dict) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+
+    event_type = payload.get("type")
+    if not isinstance(event_type, str) or not event_type.startswith("response."):
+        return payload
+
+    if event_type == "response.output_text.delta":
+        delta = payload.get("delta", "")
+        if isinstance(delta, str) and delta:
+            state["text_emitted"] = True
+            return {
+                "choices": [{"delta": {"content": delta}}],
+                "raw_event": payload,
+            }
+        return None
+
+    if event_type in {"response.function_call_arguments.delta", "response.function_call.delta"}:
+        call_id = payload.get("call_id") or payload.get("item_id")
+        if call_id:
+            current = state["function_calls"].setdefault(
+                call_id, {"name": payload.get("name", ""), "arguments": ""}
+            )
+            if payload.get("name"):
+                current["name"] = payload.get("name")
+            if isinstance(payload.get("delta"), str):
+                current["arguments"] += payload.get("delta", "")
+        return None
+
+    if event_type == "response.output_item.done":
+        item = payload.get("item", {})
+        if isinstance(item, dict) and item.get("type") == "function_call":
+            call_id = item.get("call_id") or item.get("id")
+            if call_id and call_id not in state["emitted_call_ids"]:
+                current = state["function_calls"].setdefault(
+                    call_id,
+                    {"name": item.get("name", ""), "arguments": ""},
+                )
+                if item.get("name"):
+                    current["name"] = item.get("name")
+                if isinstance(item.get("arguments"), str):
+                    current["arguments"] = item.get("arguments")
+
+                index = state["call_indexes"].setdefault(
+                    call_id, len(state["call_indexes"])
+                )
+                state["emitted_call_ids"].add(call_id)
+                return {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": index,
+                                        "id": call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": current.get("name", ""),
+                                            "arguments": current.get("arguments", "{}"),
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                    "raw_event": payload,
+                }
+        return None
+
+    if event_type == "response.completed":
+        response = payload.get("response", {})
+        if not isinstance(response, dict):
+            response = {}
+
+        delta = {}
+
+        reasoning_text = ""
+        output_items = response.get("output", [])
+        if isinstance(output_items, list):
+            for item in output_items:
+                if not isinstance(item, dict) or item.get("type") != "reasoning":
+                    continue
+                summary_items = item.get("summary", [])
+                if isinstance(summary_items, list):
+                    reasoning_text = "\n".join(
+                        s.get("text", "")
+                        for s in summary_items
+                        if isinstance(s, dict) and isinstance(s.get("text"), str)
+                    ).strip()
+                if reasoning_text:
+                    break
+
+        if reasoning_text:
+            delta["reasoning_content"] = reasoning_text
+
+        if not state.get("text_emitted", False):
+            text_parts = []
+            if isinstance(output_items, list):
+                for item in output_items:
+                    if not isinstance(item, dict) or item.get("type") != "message":
+                        continue
+                    for part in item.get("content", []) or []:
+                        if isinstance(part, dict) and part.get("type") == "output_text":
+                            text_parts.append(part.get("text", ""))
+            fallback_text = "".join(text_parts)
+            if fallback_text:
+                delta["content"] = fallback_text
+
+        unresolved_tool_calls = []
+        if isinstance(output_items, list):
+            for item in output_items:
+                if not isinstance(item, dict) or item.get("type") != "function_call":
+                    continue
+                call_id = item.get("call_id") or item.get("id")
+                if not call_id or call_id in state["emitted_call_ids"]:
+                    continue
+                index = state["call_indexes"].setdefault(
+                    call_id, len(state["call_indexes"])
+                )
+                unresolved_tool_calls.append(
+                    {
+                        "index": index,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": item.get("name", ""),
+                            "arguments": item.get("arguments", "{}")
+                            if isinstance(item.get("arguments"), str)
+                            else json.dumps(item.get("arguments", {})),
+                        },
+                    }
+                )
+                state["emitted_call_ids"].add(call_id)
+
+        if unresolved_tool_calls:
+            delta["tool_calls"] = unresolved_tool_calls
+
+        mapped = {"raw_event": payload}
+        if delta:
+            mapped["choices"] = [{"delta": delta}]
+
+        usage = response.get("usage")
+        if isinstance(usage, dict):
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            prompt_tokens = input_tokens if isinstance(input_tokens, (int, float)) else 0
+            completion_tokens = (
+                output_tokens if isinstance(output_tokens, (int, float)) else 0
+            )
+            total_tokens = usage.get("total_tokens")
+            mapped["usage"] = {
+                **usage,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens
+                if isinstance(total_tokens, (int, float))
+                else prompt_tokens + completion_tokens,
+            }
+
+        return mapped if any(k in mapped for k in ("choices", "usage")) else None
+
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        return {"usage": usage, "raw_event": payload}
+    return {"raw_event": payload}
+
+
+def _chat_messages_to_responses_input(messages: list[dict]) -> list[dict]:
+    return chat_messages_to_responses_input(messages)
+
+
+def _chat_tools_to_responses_tools(tools: list[dict]) -> list[dict]:
+    return normalize_tools_for_responses(tools)
+
+
 async def chat_image_generation_handler(
     request: Request, form_data: dict, extra_params: dict, user
 ):
@@ -932,7 +1123,7 @@ async def chat_image_generation_handler(
                     user,
                 )
 
-                response = res["choices"][0]["message"]["content"]
+                response = _extract_task_response_content(res)
 
                 try:
                     bracket_start = response.find("{")
@@ -1184,7 +1375,7 @@ async def chat_completion_files_handler(
                     },
                     user,
                 )
-                queries_response = queries_response["choices"][0]["message"]["content"]
+                queries_response = _extract_task_response_content(queries_response)
 
                 try:
                     bracket_start = queries_response.find("{")
@@ -1456,7 +1647,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     task_model_id = get_task_model_id(
         form_data["model"],
         request.app.state.config.TASK_MODEL,
-        request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
     )
 
@@ -1870,13 +2060,7 @@ async def process_chat_response(
 
                     if res and isinstance(res, dict):
                         if len(res.get("choices", [])) == 1:
-                            response_message = res.get("choices", [])[0].get(
-                                "message", {}
-                            )
-
-                            follow_ups_string = response_message.get(
-                                "content"
-                            ) or response_message.get("reasoning_content", "")
+                            follow_ups_string = _extract_task_response_content(res)
                         else:
                             follow_ups_string = ""
 
@@ -1932,15 +2116,8 @@ async def process_chat_response(
 
                             if res and isinstance(res, dict):
                                 if len(res.get("choices", [])) == 1:
-                                    response_message = res.get("choices", [])[0].get(
-                                        "message", {}
-                                    )
-
                                     title_string = (
-                                        response_message.get("content")
-                                        or response_message.get(
-                                            "reasoning_content",
-                                        )
+                                        _extract_task_response_content(res)
                                         or message.get("content", user_message)
                                     )
                                 else:
@@ -1996,13 +2173,7 @@ async def process_chat_response(
 
                         if res and isinstance(res, dict):
                             if len(res.get("choices", [])) == 1:
-                                response_message = res.get("choices", [])[0].get(
-                                    "message", {}
-                                )
-
-                                tags_string = response_message.get(
-                                    "content"
-                                ) or response_message.get("reasoning_content", "")
+                                tags_string = _extract_task_response_content(res)
                             else:
                                 tags_string = ""
 
@@ -2679,6 +2850,12 @@ async def process_chat_response(
                         ),
                     )
                     last_delta_data = None
+                    responses_stream_state = {
+                        "text_emitted": False,
+                        "function_calls": {},
+                        "emitted_call_ids": set(),
+                        "call_indexes": {},
+                    }
 
                     async def flush_pending_delta_data(threshold: int = 0):
                         nonlocal delta_count
@@ -2715,6 +2892,13 @@ async def process_chat_response(
 
                         try:
                             data = json.loads(data)
+
+                            mapped_data = _map_responses_event_to_chat_chunk(
+                                data, responses_stream_state
+                            )
+                            if mapped_data is None:
+                                continue
+                            data = mapped_data
 
                             data, _ = await process_filter_functions(
                                 request=request,
@@ -3057,11 +3241,31 @@ async def process_chat_response(
                     tool_call_retries += 1
 
                     response_tool_calls = tool_calls.pop(0)
+                    endpoint_kind = (
+                        form_data.get("endpoint_kind")
+                        if isinstance(form_data, dict)
+                        else None
+                    ) or (
+                        "responses"
+                        if (
+                            metadata.get("model", {})
+                            .get("provider_type", "")
+                            == "openai_responses"
+                        )
+                        else "chat_completions"
+                    )
+                    provider_type = (
+                        metadata.get("model", {}).get("provider_type")
+                        if isinstance(metadata.get("model", {}), dict)
+                        else None
+                    )
                     log.info(
-                        "round_index=%s tool_calls_count=%s model=%s",
+                        "round_index=%s tool_calls_count=%s model=%s endpoint=%s provider=%s",
                         tool_call_retries,
                         len(response_tool_calls),
                         model_id,
+                        endpoint_kind,
+                        provider_type,
                     )
 
                     content_blocks.append(
@@ -3140,19 +3344,50 @@ async def process_chat_response(
                                 ),
                             ],
                         }
+                        if endpoint_kind == "responses":
+                            new_form_data = build_upstream_payload(
+                                form_data=new_form_data,
+                                endpoint_kind="responses",
+                                include_endpoint_kind=True,
+                            )
+                        else:
+                            new_form_data["endpoint_kind"] = "chat_completions"
 
-                        res = await generate_chat_completion(
-                            request,
-                            new_form_data,
-                            user,
-                        )
+                        if endpoint_kind == "responses":
+                            from open_webui.utils.chat import generate_responses
+
+                            res = await generate_responses(request, new_form_data, user)
+                        else:
+                            res = await generate_chat_completion(
+                                request,
+                                new_form_data,
+                                user,
+                            )
 
                         if isinstance(res, StreamingResponse):
                             await stream_body_handler(res, new_form_data)
                         else:
                             break
                     except Exception as e:
-                        log.debug(e)
+                        log.exception(
+                            "tool_followup_failed endpoint=%s provider=%s round_index=%s",
+                            endpoint_kind,
+                            provider_type,
+                            tool_call_retries,
+                        )
+                        await event_emitter(
+                            {
+                                "type": "chat:message:error",
+                                "data": {
+                                    "error": {
+                                        "content": (
+                                            "Tool follow-up request failed "
+                                            f"(endpoint={endpoint_kind}, provider={provider_type}): {e}"
+                                        )
+                                    }
+                                },
+                            }
+                        )
                         break
 
                 if len(tool_calls) > 0:

@@ -7,7 +7,8 @@
 	import { getContext, tick, onDestroy } from 'svelte';
 	const i18n = getContext('i18n');
 
-	import { chatCompletion } from '$lib/apis/openai';
+	import { generateOpenAIChatCompletionStream } from '$lib/apis/openai';
+	import { createOpenAITextStream } from '$lib/apis/streaming';
 
 	import ChatBubble from '$lib/components/icons/ChatBubble.svelte';
 	import LightBulb from '$lib/components/icons/LightBulb.svelte';
@@ -129,47 +130,32 @@
 			stream: true
 		};
 
-		const endpointType = 'chat_completions(proxy)';
-		const [res, requestController] = await chatCompletion(localStorage.token, requestBody);
+		const endpointType =
+			requestBody?.model_item?.provider_type === 'openai_responses'
+				? 'responses'
+				: 'chat_completions';
+		requestBody.endpointKind = endpointType;
+		const [res, requestController] = await generateOpenAIChatCompletionStream(
+			localStorage.token,
+			requestBody
+		);
 		controller = requestController;
 
-		const handleLine = (line: string) => {
-			if (!line.startsWith('data: ')) {
-				return;
-			}
-
-			if (line.startsWith('data: [DONE]')) {
-				responseDone = true;
-				tick().then(() => autoScroll());
-				return;
-			}
-
+		if (res && res.ok && res.body) {
 			try {
-				const data = JSON.parse(line.slice(6));
-				if (data.choices && data.choices[0]?.delta?.content) {
-					responseContent += data.choices[0].delta.content;
-					autoScroll();
-				}
-			} catch (e) {
-				console.error(e);
-			}
-		};
-
-		if (res && res.ok) {
-			try {
-				const reader = res.body.getReader();
-				const decoder = new TextDecoder();
-
-				while (true) {
-					const { done, value } = await reader.read();
-					if (done) {
+				const textStream = await createOpenAITextStream(res.body, false);
+				for await (const update of textStream) {
+					if (update.error) {
+						throw update.error;
+					}
+					if (update.done) {
+						responseDone = true;
+						tick().then(() => autoScroll());
 						break;
 					}
-
-					const chunk = decoder.decode(value, { stream: true });
-					const lines = chunk.split('\n').filter((line) => line.trim() !== '');
-					for (const line of lines) {
-						handleLine(line);
+					if (update.value) {
+						responseContent += update.value;
+						autoScroll();
 					}
 				}
 			} catch (e) {

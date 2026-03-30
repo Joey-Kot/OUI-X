@@ -39,6 +39,49 @@ type OpenAIConfig = {
 	OPENAI_API_CONFIGS: object;
 };
 
+export type ChatCompletionRequest = {
+	model: string;
+	messages: Array<Record<string, unknown>>;
+	stream?: boolean;
+	[key: string]: unknown;
+};
+
+export type ChatCompletionResponse = {
+	id?: string;
+	choices?: Array<Record<string, unknown>>;
+	usage?: Record<string, unknown>;
+	[key: string]: unknown;
+};
+
+export type ResponsesRequest = {
+	model: string;
+	input: unknown;
+	stream?: boolean;
+	[key: string]: unknown;
+};
+
+export type ResponsesResponse = {
+	id?: string;
+	output?: Array<Record<string, unknown>>;
+	usage?: Record<string, unknown>;
+	[key: string]: unknown;
+};
+
+export type CompletionEndpointKind = 'chat_completions' | 'responses';
+
+const resolveCompletionEndpointKind = (
+	body:
+		| (ChatCompletionRequest & { model_item?: { provider_type?: string } })
+		| (ResponsesRequest & { model_item?: { provider_type?: string } })
+		| { endpointKind?: CompletionEndpointKind; endpoint_kind?: CompletionEndpointKind }
+): CompletionEndpointKind => {
+	return (
+		body?.endpointKind ??
+		body?.endpoint_kind ??
+		(body?.model_item?.provider_type === 'openai_responses' ? 'responses' : 'chat_completions')
+	);
+};
+
 export const updateOpenAIConfig = async (token: string = '', config: OpenAIConfig) => {
 	let error = null;
 
@@ -390,12 +433,19 @@ export const responsesCompletion = async (
 
 export const generateOpenAIChatCompletion = async (
 	token: string = '',
-	body: object,
+	body: object & { endpointKind?: CompletionEndpointKind },
 	url: string = `${WEBUI_BASE_URL}/api`
 ) => {
+	const requestBody = body as
+		| (ChatCompletionRequest & { model_item?: { provider_type?: string } })
+		| (ResponsesRequest & { model_item?: { provider_type?: string } })
+		| { endpointKind?: CompletionEndpointKind };
+	const endpointKind = resolveCompletionEndpointKind(requestBody);
+	const endpoint = endpointKind === 'responses' ? 'responses' : 'chat/completions';
+
 	let error = null;
 
-	const res = await fetch(`${url}/chat/completions`, {
+	const res = await fetch(`${url}/${endpoint}`, {
 		method: 'POST',
 		headers: {
 			Authorization: `Bearer ${token}`,
@@ -418,6 +468,42 @@ export const generateOpenAIChatCompletion = async (
 	}
 
 	return res;
+};
+
+export const generateOpenAIChatCompletionStream = async (
+	token: string = '',
+	body: object & { endpointKind?: CompletionEndpointKind; endpoint_kind?: CompletionEndpointKind },
+	url: string = `${WEBUI_BASE_URL}/api`
+): Promise<[Response | null, AbortController]> => {
+	const requestBody = body as
+		| (ChatCompletionRequest & { model_item?: { provider_type?: string } })
+		| (ResponsesRequest & { model_item?: { provider_type?: string } })
+		| { endpointKind?: CompletionEndpointKind; endpoint_kind?: CompletionEndpointKind };
+	const endpointKind = resolveCompletionEndpointKind(requestBody);
+	const endpoint = endpointKind === 'responses' ? 'responses' : 'chat/completions';
+
+	const controller = new AbortController();
+	let error = null;
+
+	const res = await fetch(`${url}/${endpoint}`, {
+		signal: controller.signal,
+		method: 'POST',
+		headers: {
+			Authorization: `Bearer ${token}`,
+			'Content-Type': 'application/json'
+		},
+		body: JSON.stringify(body)
+	}).catch((err) => {
+		console.error(err);
+		error = err;
+		return null;
+	});
+
+	if (error) {
+		throw error;
+	}
+
+	return [res, controller];
 };
 
 export const synthesizeOpenAISpeech = async (

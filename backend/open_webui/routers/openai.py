@@ -2,14 +2,11 @@ import asyncio
 import hashlib
 import json
 import logging
-import uuid
 from typing import Any, Optional
 
 import aiohttp
 from aiocache import cached
 import requests
-
-from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
 from fastapi import Depends, HTTPException, Request, APIRouter
 from fastapi.responses import (
@@ -41,6 +38,10 @@ from open_webui.constants import ERROR_MESSAGES
 
 from open_webui.utils.payload import (
     apply_model_params_as_defaults_openai,
+)
+from open_webui.utils.completion_adapter import (
+    apply_prompt_cache_policy,
+    resolve_prompt_cache_key_for_completion_request as adapter_resolve_prompt_cache_key,
 )
 from open_webui.utils.misc import (
     convert_logit_bias_input_to_json,
@@ -121,824 +122,63 @@ def get_provider_type(api_config: Optional[dict]) -> str:
         return "openai"
 
     provider_type = api_config.get("provider_type")
-    if provider_type in {"openai", "azure_openai", "openai_responses"}:
+    if provider_type in {"openai", "openai_responses"}:
         return provider_type
 
-    if api_config.get("azure", False):
-        return "azure_openai"
+    if provider_type == "azure_openai" or api_config.get("azure", False):
+        return "openai"
 
     return "openai"
+
+
+def normalize_openai_api_config(api_config: Optional[dict]) -> dict:
+    if not isinstance(api_config, dict):
+        return {}
+
+    normalized = {**api_config}
+    normalized["provider_type"] = get_provider_type(api_config)
+
+    auth_type = normalized.get("auth_type")
+    if auth_type in {"azure_ad", "microsoft_entra_id"}:
+        normalized["auth_type"] = "bearer"
+
+    # Azure OpenAI provider is removed. Drop legacy keys.
+    normalized.pop("azure", None)
+    normalized.pop("api_version", None)
+
+    return normalized
+
+
+def normalize_connection_type(connection_type: Optional[str]) -> str:
+    # `local` connection types are deprecated and should behave as external.
+    if connection_type == "local":
+        return "external"
+    return connection_type or "external"
 
 
 def is_responses_provider(api_config: Optional[dict]) -> bool:
     return get_provider_type(api_config) == "openai_responses"
 
 
-def _mask_prompt_cache_key(prompt_cache_key: Optional[str]) -> str:
-    if not isinstance(prompt_cache_key, str) or not prompt_cache_key:
-        return "<none>"
-    if len(prompt_cache_key) <= 8:
-        return prompt_cache_key
-    return f"{prompt_cache_key[:8]}..."
-
-
-def _resolve_prompt_cache_key_for_responses(
+def _resolve_prompt_cache_key_for_completion_request(
     payload: dict, metadata: Optional[dict], user: UserModel
 ) -> Optional[str]:
-    explicit_key = payload.get("prompt_cache_key")
-    if isinstance(explicit_key, str) and explicit_key.strip():
-        resolved_key = explicit_key.strip()
-        log.debug(
-            "Responses prompt_cache_key source=explicit key=%s",
-            _mask_prompt_cache_key(resolved_key),
-        )
-        return resolved_key
-
-    chat_id = metadata.get("chat_id") if isinstance(metadata, dict) else None
-    if not isinstance(chat_id, str) or not chat_id:
-        log.debug("Responses prompt_cache_key source=none key=<none>")
-        return None
-
-    if chat_id.startswith("local:"):
-        derived_key = f"pc:v1:local:{hashlib.sha256(chat_id.encode()).hexdigest()[:16]}"
-        log.debug(
-            "Responses prompt_cache_key source=local_derived chat_id=%s key=%s",
-            chat_id,
-            _mask_prompt_cache_key(derived_key),
-        )
-        return derived_key
-
-    chat = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
-    if chat is None and user.role == "admin":
-        chat = Chats.get_chat_by_id(chat_id)
-
-    if chat is None:
-        log.debug(
-            "Responses prompt_cache_key source=none chat_id=%s key=<none>", chat_id
-        )
-        return None
-
-    chat_meta = chat.meta if isinstance(chat.meta, dict) else {}
-    chat_meta_key = chat_meta.get("prompt_cache_key")
-    if isinstance(chat_meta_key, str) and chat_meta_key.strip():
-        resolved_key = chat_meta_key.strip()
-        log.debug(
-            "Responses prompt_cache_key source=chat_meta chat_id=%s key=%s",
-            chat_id,
-            _mask_prompt_cache_key(resolved_key),
-        )
-        return resolved_key
-
-    generated_key = f"pc:v1:{uuid.uuid4().hex}"
-    updated_chat = Chats.update_chat_metadata_by_id(
-        chat_id,
-        {
-            "prompt_cache_key": generated_key,
-            "prompt_cache_key_version": "v1",
-        },
-    )
-
-    log.debug(
-        "Responses prompt_cache_key source=generated_persisted chat_id=%s persisted=%s key=%s",
-        chat_id,
-        bool(updated_chat),
-        _mask_prompt_cache_key(generated_key),
-    )
-    return generated_key
+    return adapter_resolve_prompt_cache_key(payload, metadata, user)
 
 
-def _inject_prompt_cache_key_for_responses(
-    provider_type: str, payload: dict, metadata: Optional[dict], user: UserModel
+def _inject_prompt_cache_params_for_completion_request(
+    provider_type: str,
+    endpoint: str,
+    payload: dict,
+    metadata: Optional[dict],
+    user: UserModel,
 ) -> None:
-    if provider_type != "openai_responses":
-        return
-
-    resolved_prompt_cache_key = _resolve_prompt_cache_key_for_responses(
-        payload, metadata, user
-    )
-    explicit_prompt_cache_key = payload.get("prompt_cache_key")
-    has_explicit_prompt_cache_key = (
-        isinstance(explicit_prompt_cache_key, str)
-        and bool(explicit_prompt_cache_key.strip())
-    )
-    if resolved_prompt_cache_key and not has_explicit_prompt_cache_key:
-        payload["prompt_cache_key"] = resolved_prompt_cache_key
-
-
-def _normalize_tool_choice_for_responses(tool_choice):
-    if isinstance(tool_choice, dict):
-        if tool_choice.get("type") == "function" and isinstance(
-            tool_choice.get("function"), dict
-        ):
-            return {
-                "type": "function",
-                "name": tool_choice.get("function", {}).get("name"),
-            }
-        return tool_choice
-
-    if isinstance(tool_choice, str):
-        return tool_choice
-
-    return None
-
-
-ALLOWED_REASONING_SUMMARY_VALUES = {"auto", "concise", "detailed"}
-
-
-def normalize_reasoning_summary(
-    value: Any,
-    default: str = "auto",
-    source: str = "reasoning.summary",
-) -> str:
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in ALLOWED_REASONING_SUMMARY_VALUES:
-            return normalized
-        if normalized:
-            log.debug(
-                "Invalid Responses %s value %s. Falling back to %s.",
-                source,
-                value,
-                default,
-            )
-        return default
-
-    if value is not None:
-        log.debug(
-            "Invalid Responses %s type %s. Falling back to %s.",
-            source,
-            type(value).__name__,
-            default,
-        )
-
-    return default
-
-
-def _normalize_tools_for_responses(tools: list) -> list:
-    normalized_tools = []
-    for tool in tools or []:
-        if not isinstance(tool, dict):
-            continue
-
-        if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
-            function = tool.get("function")
-            normalized_tools.append(
-                {
-                    "type": "function",
-                    "name": function.get("name", ""),
-                    "description": function.get("description", ""),
-                    "parameters": function.get(
-                        "parameters",
-                        {
-                            "type": "object",
-                            "properties": {},
-                        },
-                    ),
-                }
-            )
-            continue
-
-        normalized_tools.append(tool)
-
-    return normalized_tools
-
-
-def to_responses_content_part(role: str, part: dict) -> dict | None:
-    if not isinstance(part, dict):
-        return None
-
-    part_type = part.get("type")
-    user_like_roles = {"user", "system", "developer"}
-
-    if part_type == "text":
-        target_type = "output_text" if role == "assistant" else "input_text"
-        text_value = part.get("text") or part.get("content", "")
-        return {"type": target_type, "text": text_value}
-
-    if part_type == "image_url":
-        image_url = part.get("image_url", {})
-        return {
-            "type": "input_image",
-            "image_url": image_url.get("url", "")
-            if isinstance(image_url, dict)
-            else image_url,
-        }
-
-    if part_type == "refusal":
-        # Assistant-only content block in responses API.
-        return part if role == "assistant" else None
-
-    if part_type in {"input_image", "input_file"}:
-        return part if role in user_like_roles else None
-
-    if part_type == "input_text":
-        if role == "assistant":
-            return {"type": "output_text", "text": part.get("text", "")}
-        return part
-
-    if part_type == "output_text":
-        if role == "assistant":
-            return part
-        return {"type": "input_text", "text": part.get("text", "")}
-
-    return None
-
-
-def chat_messages_to_responses_input(messages: list[dict]) -> list:
-    input_items = []
-
-    for message in messages or []:
-        if not isinstance(message, dict):
-            continue
-
-        role = message.get("role", "user")
-
-        if role == "tool":
-            input_items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": message.get("tool_call_id", ""),
-                    "output": message.get("content", ""),
-                }
-            )
-            continue
-
-        tool_calls = message.get("tool_calls")
-        if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
-            for tool_call in tool_calls:
-                function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
-                arguments = function.get("arguments", "{}")
-                if not isinstance(arguments, str):
-                    arguments = json.dumps(arguments)
-
-                input_items.append(
-                    {
-                        "type": "function_call",
-                        "call_id": tool_call.get("id", ""),
-                        "name": function.get("name", ""),
-                        "arguments": arguments,
-                    }
-                )
-
-            if message.get("content"):
-                input_items.append(
-                    {
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": message.get("content", ""),
-                            }
-                        ],
-                    }
-                )
-            continue
-
-        content = message.get("content", "")
-        if isinstance(content, str):
-            input_items.append({"role": role, "content": content})
-            continue
-
-        if isinstance(content, list):
-            converted_content = []
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-
-                normalized_part = to_responses_content_part(role=role, part=part)
-                if normalized_part:
-                    converted_content.append(normalized_part)
-
-            if converted_content:
-                input_items.append({"role": role, "content": converted_content})
-
-    return input_items
-
-
-def responses_input_from_tool_followups(messages: list[dict]) -> list:
-    return chat_messages_to_responses_input(messages)
-
-
-def _extract_reasoning_summary(reasoning: dict | None) -> str:
-    if not isinstance(reasoning, dict):
-        return ""
-
-    summary = reasoning.get("summary")
-    if isinstance(summary, str):
-        normalized = summary.strip().lower()
-        # Some providers return the summary mode here (auto/concise/detailed)
-        # rather than the actual reasoning text; don't surface these in UI.
-        if normalized in ALLOWED_REASONING_SUMMARY_VALUES:
-            return ""
-        return summary
-
-    if isinstance(summary, list):
-        texts = []
-        for item in summary:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                text = item.get("text", "")
-                if text.strip().lower() in ALLOWED_REASONING_SUMMARY_VALUES:
-                    continue
-                texts.append(text)
-        return "\n".join(texts)
-
-    return ""
-
-
-def extract_reasoning_text_from_output(output_items: list[dict] | None) -> str:
-    if not isinstance(output_items, list):
-        return ""
-
-    texts: list[str] = []
-    for item in output_items:
-        if not isinstance(item, dict) or item.get("type") != "reasoning":
-            continue
-
-        summary = item.get("summary")
-        if isinstance(summary, list):
-            for summary_item in summary:
-                if isinstance(summary_item, dict) and isinstance(
-                    summary_item.get("text"), str
-                ):
-                    text = summary_item.get("text", "").strip()
-                    if not text:
-                        continue
-                    if text.lower() in ALLOWED_REASONING_SUMMARY_VALUES:
-                        continue
-                    texts.append(text)
-
-    return "\n".join(texts)
-
-
-def extract_reasoning_content(resp: dict | None) -> str:
-    if not isinstance(resp, dict):
-        return ""
-
-    reasoning_from_output = extract_reasoning_text_from_output(resp.get("output"))
-    if reasoning_from_output:
-        return reasoning_from_output
-
-    return _extract_reasoning_summary(resp.get("reasoning"))
-
-
-def _normalize_responses_usage(usage: dict | None) -> dict | None:
-    if not isinstance(usage, dict):
-        return None
-
-    input_tokens = usage.get("input_tokens")
-    output_tokens = usage.get("output_tokens")
-
-    prompt_tokens = input_tokens if isinstance(input_tokens, (int, float)) else 0
-    completion_tokens = output_tokens if isinstance(output_tokens, (int, float)) else 0
-
-    total_tokens = usage.get("total_tokens")
-    normalized_total_tokens = (
-        total_tokens
-        if isinstance(total_tokens, (int, float))
-        else prompt_tokens + completion_tokens
-    )
-
-    # Keep raw Responses usage fields and add OpenAI Chat-compatible aliases.
-    return {
-        **usage,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": normalized_total_tokens,
-    }
-
-
-def _responses_event_to_chat_chunks(
-    event_type: str,
-    payload: dict | None,
-    state: dict,
-) -> list[str]:
-    chunks: list[str] = []
-    payload = payload if isinstance(payload, dict) else {}
-
-    def emit(data: dict):
-        chunks.append(f"data: {json.dumps(data)}\n\n")
-
-    if event_type == "response.output_text.delta":
-        delta = payload.get("delta", "")
-        if delta:
-            state["text_emitted"] = True
-            emit({"choices": [{"delta": {"content": delta}}]})
-
-    elif event_type in {
-        "response.function_call_arguments.delta",
-        "response.function_call.delta",
-    }:
-        call_id = payload.get("call_id") or payload.get("item_id")
-        if call_id:
-            function_state = state["function_calls"].setdefault(
-                call_id, {"name": payload.get("name", ""), "arguments": ""}
-            )
-
-            if payload.get("name"):
-                function_state["name"] = payload.get("name")
-
-            arguments_delta = payload.get("delta", "")
-            if isinstance(arguments_delta, str) and arguments_delta:
-                function_state["arguments"] += arguments_delta
-
-    elif event_type == "response.output_item.done":
-        item = payload.get("item", {})
-        if isinstance(item, dict) and item.get("type") == "function_call":
-            call_id = item.get("call_id") or item.get("id", "")
-            if call_id and call_id not in state["emitted_call_ids"]:
-                function_state = state["function_calls"].setdefault(
-                    call_id,
-                    {
-                        "name": item.get("name", ""),
-                        "arguments": "",
-                    },
-                )
-
-                if item.get("name"):
-                    function_state["name"] = item.get("name")
-
-                arguments = item.get("arguments", "")
-                if isinstance(arguments, str):
-                    function_state["arguments"] = arguments
-
-                index = state["call_indexes"].setdefault(
-                    call_id, len(state["call_indexes"])
-                )
-
-                emit(
-                    {
-                        "choices": [
-                            {
-                                "delta": {
-                                    "tool_calls": [
-                                        {
-                                            "index": index,
-                                            "id": call_id,
-                                            "type": "function",
-                                            "function": {
-                                                "name": function_state.get("name", ""),
-                                                "arguments": function_state.get(
-                                                    "arguments", "{}"
-                                                ),
-                                            },
-                                        }
-                                    ]
-                                }
-                            }
-                        ]
-                    }
-                )
-                state["emitted_call_ids"].add(call_id)
-
-    elif event_type == "response.completed":
-        response = payload.get("response", {})
-        if not isinstance(response, dict):
-            response = {}
-
-        reasoning_summary = extract_reasoning_content(response)
-        if reasoning_summary:
-            emit(
-                {
-                    "choices": [
-                        {
-                            "delta": {
-                                "reasoning_content": reasoning_summary,
-                            }
-                        }
-                    ]
-                }
-            )
-
-        output_items = response.get("output", []) if isinstance(response, dict) else []
-
-        if isinstance(output_items, list):
-            for item in output_items:
-                if not isinstance(item, dict) or item.get("type") != "function_call":
-                    continue
-
-                call_id = item.get("call_id") or item.get("id", "")
-                if not call_id or call_id in state["emitted_call_ids"]:
-                    continue
-
-                function_state = state["function_calls"].setdefault(
-                    call_id,
-                    {
-                        "name": item.get("name", ""),
-                        "arguments": item.get("arguments", "{}")
-                        if isinstance(item.get("arguments"), str)
-                        else json.dumps(item.get("arguments", {})),
-                    },
-                )
-
-                if item.get("name"):
-                    function_state["name"] = item.get("name")
-
-                arguments = item.get("arguments", "")
-                if isinstance(arguments, str) and arguments:
-                    function_state["arguments"] = arguments
-
-                index = state["call_indexes"].setdefault(
-                    call_id, len(state["call_indexes"])
-                )
-
-                emit(
-                    {
-                        "choices": [
-                            {
-                                "delta": {
-                                    "tool_calls": [
-                                        {
-                                            "index": index,
-                                            "id": call_id,
-                                            "type": "function",
-                                            "function": {
-                                                "name": function_state.get("name", ""),
-                                                "arguments": function_state.get(
-                                                    "arguments", "{}"
-                                                ),
-                                            },
-                                        }
-                                    ]
-                                }
-                            }
-                        ]
-                    }
-                )
-                state["emitted_call_ids"].add(call_id)
-
-        if not state.get("text_emitted", False):
-            text_parts = []
-            for item in output_items if isinstance(output_items, list) else []:
-                if not isinstance(item, dict) or item.get("type") != "message":
-                    continue
-                for part in item.get("content", []) or []:
-                    if isinstance(part, dict) and part.get("type") == "output_text":
-                        text_parts.append(part.get("text", ""))
-
-            fallback_text = "".join(text_parts)
-            if fallback_text:
-                emit({"choices": [{"delta": {"content": fallback_text}}]})
-
-        usage = _normalize_responses_usage(response.get("usage"))
-        if usage:
-            emit({"usage": usage})
-
-        chunks.append("data: [DONE]\n\n")
-
-    return chunks
-
-
-def responses_output_to_chat_tool_calls(output_items: list[dict]) -> list[dict]:
-    tool_calls = []
-
-    for item in output_items or []:
-        if not isinstance(item, dict) or item.get("type") != "function_call":
-            continue
-
-        arguments = item.get("arguments", "{}")
-        if not isinstance(arguments, str):
-            arguments = json.dumps(arguments)
-
-        call_id = item.get("call_id") or item.get("id", "")
-        tool_calls.append(
-            {
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": item.get("name", ""),
-                    "arguments": arguments,
-                },
-            }
-        )
-
-    return tool_calls
-
-
-def sanitize_responses_metadata(metadata: dict | None) -> dict:
-    if not isinstance(metadata, dict):
-        return {}
-
-    def _sanitize(value):
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            return value
-        if isinstance(value, dict):
-            sanitized = {}
-            for key, item in value.items():
-                if not isinstance(key, str):
-                    continue
-                sanitized_item = _sanitize(item)
-                if sanitized_item is not None or item is None:
-                    sanitized[key] = sanitized_item
-            return sanitized
-        if isinstance(value, list):
-            sanitized = []
-            for item in value:
-                sanitized_item = _sanitize(item)
-                if sanitized_item is not None or item is None:
-                    sanitized.append(sanitized_item)
-            return sanitized
-        return None
-
-    return _sanitize(metadata) or {}
-
-
-def responses_to_chat_compatible(resp_json: dict) -> dict:
-    output = resp_json.get("output", []) if isinstance(resp_json, dict) else []
-    content_parts = []
-
-    for item in output:
-        if not isinstance(item, dict) or item.get("type") != "message":
-            continue
-        for part in item.get("content", []) or []:
-            if isinstance(part, dict) and part.get("type") == "output_text":
-                content_parts.append(part.get("text", ""))
-
-    content = "".join(content_parts)
-    tool_calls = responses_output_to_chat_tool_calls(output)
-
-    message = {
-        "role": "assistant",
-        "content": content,
-    }
-    if tool_calls:
-        message["tool_calls"] = tool_calls
-
-    reasoning_summary = extract_reasoning_content(resp_json)
-    if reasoning_summary:
-        message["reasoning_content"] = reasoning_summary
-
-    usage = resp_json.get("usage") if isinstance(resp_json, dict) else None
-    normalized_usage = _normalize_responses_usage(usage)
-
-    return {
-        "id": resp_json.get("id"),
-        "object": "chat.completion",
-        "created": resp_json.get("created_at"),
-        "model": resp_json.get("model"),
-        "choices": [
-            {
-                "index": 0,
-                "message": message,
-                "finish_reason": "tool_calls" if tool_calls else "stop",
-            }
-        ],
-        **({"usage": normalized_usage} if normalized_usage else {}),
-    }
-
-
-def chat_to_responses_payload(payload: dict, metadata: Optional[dict], api_config: dict) -> dict:
-    responses_payload = {
-        "model": payload.get("model"),
-        "input": responses_input_from_tool_followups(payload.get("messages", [])),
-    }
-
-    if "stream" in payload:
-        responses_payload["stream"] = bool(payload.get("stream"))
-
-    tools = payload.get("tools")
-    if isinstance(tools, list) and tools:
-        responses_payload["tools"] = _normalize_tools_for_responses(tools)
-
-    tool_choice = _normalize_tool_choice_for_responses(payload.get("tool_choice"))
-    if tool_choice is not None:
-        responses_payload["tool_choice"] = tool_choice
-
-    if "parallel_tool_calls" in payload:
-        responses_payload["parallel_tool_calls"] = payload.get("parallel_tool_calls")
-
-    max_output_tokens = payload.get("max_completion_tokens", payload.get("max_tokens"))
-    if max_output_tokens is not None:
-        responses_payload["max_output_tokens"] = max_output_tokens
-
-    reasoning = payload.get("reasoning", {})
-    if not isinstance(reasoning, dict):
-        reasoning = {}
-
-    explicit_reasoning_summary = None
-    if "summary" in reasoning:
-        explicit_reasoning_summary = reasoning.get("summary")
-    elif payload.get("summary") is not None:
-        # support custom_params.summary -> reasoning.summary mapping
-        explicit_reasoning_summary = payload.get("summary")
-
-    if isinstance(reasoning.get("effort"), str):
-        normalized_effort = reasoning["effort"].strip().lower()
-        if normalized_effort:
-            reasoning["effort"] = normalized_effort
-        else:
-            reasoning.pop("effort", None)
-
-    top_level_reasoning_effort = payload.get("reasoning_effort")
-    if isinstance(top_level_reasoning_effort, str):
-        normalized_effort = top_level_reasoning_effort.strip().lower()
-        if normalized_effort:
-            reasoning["effort"] = normalized_effort
-
-    verbosity = payload.get("verbosity")
-    if isinstance(verbosity, str):
-        normalized_verbosity = verbosity.strip().lower()
-        if normalized_verbosity and normalized_verbosity != "none":
-            responses_payload["verbosity"] = normalized_verbosity
-
-    if is_responses_provider(api_config):
-        reasoning["summary"] = normalize_reasoning_summary(
-            explicit_reasoning_summary if explicit_reasoning_summary is not None else "auto",
-            default="auto",
-            source="summary" if explicit_reasoning_summary is not None else "default",
-        )
-
-    if reasoning:
-        responses_payload["reasoning"] = reasoning
-
-    for key in [
-        "temperature",
-        "top_p",
-        "stop",
-        "store",
-        "truncation",
-        "text",
-        "user",
-        "previous_response_id",
-        "conversation",
-        "prompt_cache_key",
-        "prompt_cache_retention",
-    ]:
-        if key in payload:
-            responses_payload[key] = payload[key]
-
-    # Responses API does not allow both fields in a single request.
-    if (
-        responses_payload.get("previous_response_id") is not None
-        and responses_payload.get("conversation") is not None
-    ):
-        responses_payload.pop("conversation", None)
-
-    # Only forward explicitly provided request metadata and drop non-JSON values.
-    if "metadata" in payload:
-        sanitized_metadata = sanitize_responses_metadata(payload.get("metadata"))
-        if sanitized_metadata:
-            responses_payload["metadata"] = sanitized_metadata
-
-    return responses_payload
-
-
-def responses_stream_to_chat_streaming_response(
-    stream: aiohttp.StreamReader,
-    background: Optional[BackgroundTask] = None,
-) -> StreamingResponse:
-    async def event_stream():
-        buffer = ""
-        state = {
-            "function_calls": {},
-            "call_indexes": {},
-            "emitted_call_ids": set(),
-            "text_emitted": False,
-        }
-
-        async for chunk in stream_chunks_handler(stream):
-            if isinstance(chunk, bytes):
-                buffer += chunk.decode("utf-8", "replace")
-            else:
-                buffer += str(chunk)
-
-            while "\n\n" in buffer:
-                raw_event, buffer = buffer.split("\n\n", 1)
-                if not raw_event.strip():
-                    continue
-
-                event_name = None
-                data_lines = []
-                for line in raw_event.split("\n"):
-                    if line.startswith("event:"):
-                        event_name = line[len("event:") :].strip()
-                    elif line.startswith("data:"):
-                        data_lines.append(line[len("data:") :].strip())
-
-                if not data_lines:
-                    continue
-
-                data_str = "\n".join(data_lines)
-                if data_str == "[DONE]":
-                    yield "data: [DONE]\n\n"
-                    return
-
-                try:
-                    payload = json.loads(data_str)
-                except Exception:
-                    continue
-
-                event_type = event_name or payload.get("type")
-                for mapped_chunk in _responses_event_to_chat_chunks(
-                    event_type=event_type,
-                    payload=payload,
-                    state=state,
-                ):
-                    yield mapped_chunk
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        background=background,
+    apply_prompt_cache_policy(
+        provider_type=provider_type,
+        endpoint_kind=endpoint,
+        payload=payload,
+        metadata=metadata,
+        user=user,
     )
 
 
@@ -995,9 +235,6 @@ async def get_headers_and_cookies(
         if oauth_token:
             token = f"{oauth_token.get('access_token', '')}"
 
-    elif auth_type in ("azure_ad", "microsoft_entra_id"):
-        token = get_microsoft_entra_id_access_token()
-
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
@@ -1005,21 +242,6 @@ async def get_headers_and_cookies(
         headers = {**headers, **config.get("headers")}
 
     return headers, cookies
-
-
-def get_microsoft_entra_id_access_token():
-    """
-    Get Microsoft Entra ID access token using DefaultAzureCredential for Azure OpenAI.
-    Returns the token string or None if authentication fails.
-    """
-    try:
-        token_provider = get_bearer_token_provider(
-            DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
-        )
-        return token_provider()
-    except Exception as e:
-        log.error(f"Error getting Microsoft Entra ID access token: {e}")
-        return None
 
 
 ##########################################
@@ -1033,11 +255,17 @@ router = APIRouter()
 
 @router.get("/config")
 async def get_config(request: Request, user=Depends(get_admin_user)):
+    normalized_api_configs = {
+        key: normalize_openai_api_config(value)
+        if isinstance(value, dict)
+        else value
+        for key, value in (request.app.state.config.OPENAI_API_CONFIGS or {}).items()
+    }
     return {
         "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
         "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
         "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
-        "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
+        "OPENAI_API_CONFIGS": normalized_api_configs,
     }
 
 
@@ -1074,7 +302,15 @@ async def update_config(
                 - len(request.app.state.config.OPENAI_API_KEYS)
             )
 
-    request.app.state.config.OPENAI_API_CONFIGS = form_data.OPENAI_API_CONFIGS
+    raw_api_configs = form_data.OPENAI_API_CONFIGS or {}
+    normalized_api_configs = {}
+    for key, value in raw_api_configs.items():
+        if isinstance(value, dict):
+            normalized_api_configs[key] = normalize_openai_api_config(value)
+        else:
+            normalized_api_configs[key] = value
+
+    request.app.state.config.OPENAI_API_CONFIGS = normalized_api_configs
 
     # Remove the API configs that are not in the API URLS
     keys = list(map(str, range(len(request.app.state.config.OPENAI_API_BASE_URLS))))
@@ -1118,6 +354,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             str(idx),
             request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
         )
+        api_config = normalize_openai_api_config(api_config)
 
         headers, cookies = await get_headers_and_cookies(
             request, url, key, api_config, user=user
@@ -1203,6 +440,8 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
                     url, {}
                 ),  # Legacy support
             )
+            api_config = normalize_openai_api_config(api_config)
+            api_config = normalize_openai_api_config(api_config)
 
             enable = api_config.get("enable", True)
             model_ids = api_config.get("model_ids", [])
@@ -1249,9 +488,12 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
                 ),  # Legacy support
             )
 
-            connection_type = api_config.get("connection_type", "external")
+            connection_type = normalize_connection_type(
+                api_config.get("connection_type", "external")
+            )
             prefix_id = api_config.get("prefix_id", None)
             tags = api_config.get("tags", [])
+            provider_type = get_provider_type(api_config)
 
             model_list = (
                 response if isinstance(response, list) else response.get("data", [])
@@ -1275,6 +517,7 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
 
                 if connection_type:
                     model["connection_type"] = connection_type
+                model["provider_type"] = provider_type
 
     log.debug(f"get_all_models:responses() {responses}")
     return responses
@@ -1350,7 +593,9 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
                             "name": model.get("name", model_id),
                             "owned_by": "openai",
                             "openai": model,
-                            "connection_type": model.get("connection_type", "external"),
+                            "connection_type": normalize_connection_type(
+                                model.get("connection_type", "external")
+                            ),
                             "urlIdx": idx,
                         }
 
@@ -1382,6 +627,7 @@ async def get_models(
             str(url_idx),
             request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
         )
+        api_config = normalize_openai_api_config(api_config)
 
         r = None
         async with aiohttp.ClientSession(
@@ -1393,48 +639,42 @@ async def get_models(
                     request, url, key, api_config, user=user
                 )
 
-                if get_provider_type(api_config) == "azure_openai":
-                    models = {
-                        "data": api_config.get("model_ids", []) or [],
-                        "object": "list",
-                    }
-                else:
-                    async with session.get(
-                        f"{url}/models",
-                        headers=headers,
-                        cookies=cookies,
-                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
-                    ) as r:
-                        if r.status != 200:
-                            # Extract response error details if available
-                            error_detail = f"HTTP Error: {r.status}"
-                            res = await r.json()
-                            if "error" in res:
-                                error_detail = f"External Error: {res['error']}"
-                            raise Exception(error_detail)
+                async with session.get(
+                    f"{url}/models",
+                    headers=headers,
+                    cookies=cookies,
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                ) as r:
+                    if r.status != 200:
+                        # Extract response error details if available
+                        error_detail = f"HTTP Error: {r.status}"
+                        res = await r.json()
+                        if "error" in res:
+                            error_detail = f"External Error: {res['error']}"
+                        raise Exception(error_detail)
 
-                        response_data = await r.json()
+                    response_data = await r.json()
 
-                        # Check if we're calling OpenAI API based on the URL
-                        if "api.openai.com" in url:
-                            # Filter models according to the specified conditions
-                            response_data["data"] = [
-                                model
-                                for model in response_data.get("data", [])
-                                if not any(
-                                    name in model["id"]
-                                    for name in [
-                                        "babbage",
-                                        "dall-e",
-                                        "davinci",
-                                        "embedding",
-                                        "tts",
-                                        "whisper",
-                                    ]
-                                )
-                            ]
+                    # Check if we're calling OpenAI API based on the URL
+                    if "api.openai.com" in url:
+                        # Filter models according to the specified conditions
+                        response_data["data"] = [
+                            model
+                            for model in response_data.get("data", [])
+                            if not any(
+                                name in model["id"]
+                                for name in [
+                                    "babbage",
+                                    "dall-e",
+                                    "davinci",
+                                    "embedding",
+                                    "tts",
+                                    "whisper",
+                                ]
+                            )
+                        ]
 
-                        models = response_data
+                    models = response_data
             except aiohttp.ClientError as e:
                 # ClientError covers all aiohttp requests issues
                 log.exception(f"Client error: {str(e)}")
@@ -1469,6 +709,7 @@ async def verify_connection(
     key = form_data.key
 
     api_config = form_data.config or {}
+    api_config = normalize_openai_api_config(api_config)
 
     async with aiohttp.ClientSession(
         trust_env=True,
@@ -1479,58 +720,28 @@ async def verify_connection(
                 request, url, key, api_config, user=user
             )
 
-            if get_provider_type(api_config) == "azure_openai":
-                # Only set api-key header if not using Azure Entra ID authentication
-                auth_type = api_config.get("auth_type", "bearer")
-                if auth_type not in ("azure_ad", "microsoft_entra_id"):
-                    headers["api-key"] = key
+            async with session.get(
+                f"{url}/models",
+                headers=headers,
+                cookies=cookies,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as r:
+                try:
+                    response_data = await r.json()
+                except Exception:
+                    response_data = await r.text()
 
-                api_version = api_config.get("api_version", "") or "2023-03-15-preview"
-                async with session.get(
-                    url=f"{url}/openai/models?api-version={api_version}",
-                    headers=headers,
-                    cookies=cookies,
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
-                ) as r:
-                    try:
-                        response_data = await r.json()
-                    except Exception:
-                        response_data = await r.text()
+                if r.status != 200:
+                    if isinstance(response_data, (dict, list)):
+                        return JSONResponse(
+                            status_code=r.status, content=response_data
+                        )
+                    else:
+                        return PlainTextResponse(
+                            status_code=r.status, content=response_data
+                        )
 
-                    if r.status != 200:
-                        if isinstance(response_data, (dict, list)):
-                            return JSONResponse(
-                                status_code=r.status, content=response_data
-                            )
-                        else:
-                            return PlainTextResponse(
-                                status_code=r.status, content=response_data
-                            )
-
-                    return response_data
-            else:
-                async with session.get(
-                    f"{url}/models",
-                    headers=headers,
-                    cookies=cookies,
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
-                ) as r:
-                    try:
-                        response_data = await r.json()
-                    except Exception:
-                        response_data = await r.text()
-
-                    if r.status != 200:
-                        if isinstance(response_data, (dict, list)):
-                            return JSONResponse(
-                                status_code=r.status, content=response_data
-                            )
-                        else:
-                            return PlainTextResponse(
-                                status_code=r.status, content=response_data
-                            )
-
-                    return response_data
+                return response_data
 
         except aiohttp.ClientError as e:
             # ClientError covers all aiohttp requests issues
@@ -1545,85 +756,38 @@ async def verify_connection(
             )
 
 
-def get_azure_allowed_params(api_version: str) -> set[str]:
-    allowed_params = {
-        "messages",
-        "temperature",
-        "role",
-        "content",
-        "contentPart",
-        "contentPartImage",
-        "enhancements",
-        "dataSources",
-        "n",
-        "stream",
-        "stop",
-        "max_tokens",
-        "presence_penalty",
-        "frequency_penalty",
-        "logit_bias",
-        "user",
-        "function_call",
-        "functions",
-        "tools",
-        "tool_choice",
-        "top_p",
-        "log_probs",
-        "top_logprobs",
-        "response_format",
-        "seed",
-        "max_completion_tokens",
-        "reasoning_effort",
-    }
-
-    try:
-        if api_version >= "2024-09-01-preview":
-            allowed_params.add("stream_options")
-    except ValueError:
-        log.debug(
-            f"Invalid API version {api_version} for Azure OpenAI. Defaulting to allowed parameters."
-        )
-
-    return allowed_params
-
-
 def is_openai_reasoning_model(model: str) -> bool:
     return model.lower().startswith(("o1", "o3", "o4", "gpt-5"))
 
 
-def convert_to_azure_payload(url, payload: dict, api_version: str):
-    model = payload.get("model", "")
+def _validate_provider_for_endpoint(
+    provider_type: str, endpoint: str, model_name: str
+) -> None:
+    if endpoint == "chat_completions" and provider_type == "openai_responses":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model '{model_name}' is configured with provider_type="
+                "openai_responses and must use /responses."
+            ),
+        )
 
-    # Filter allowed parameters based on Azure OpenAI API
-    allowed_params = get_azure_allowed_params(api_version)
-
-    # Special handling for o-series models
-    if is_openai_reasoning_model(model):
-        # Convert max_tokens to max_completion_tokens for o-series models
-        if "max_tokens" in payload:
-            payload["max_completion_tokens"] = payload["max_tokens"]
-            del payload["max_tokens"]
-
-        # Remove temperature if not 1 for o-series models
-        if "temperature" in payload and payload["temperature"] != 1:
-            log.debug(
-                f"Removing temperature parameter for o-series model {model} as only default value (1) is supported"
-            )
-            del payload["temperature"]
-
-    # Filter out unsupported parameters
-    payload = {k: v for k, v in payload.items() if k in allowed_params}
-
-    url = f"{url}/openai/deployments/{model}"
-    return url, payload
+    if endpoint == "responses" and provider_type != "openai_responses":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model '{model_name}' is configured with provider_type="
+                f"{provider_type} and must use /chat/completions."
+            ),
+        )
 
 
-@router.post("/chat/completions")
-async def generate_chat_completion(
+async def _generate_completion_with_endpoint(
     request: Request,
     form_data: dict,
     user=Depends(get_verified_user),
     bypass_filter: Optional[bool] = False,
+    endpoint: str = "chat_completions",
 ):
     if BYPASS_MODEL_ACCESS_CONTROL:
         bypass_filter = True
@@ -1689,6 +853,7 @@ async def generate_chat_completion(
             request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
         ),  # Legacy support
     )
+    api_config = normalize_openai_api_config(api_config)
 
     prefix_id = api_config.get("prefix_id", None)
     if prefix_id:
@@ -1707,6 +872,16 @@ async def generate_chat_completion(
     key = request.app.state.config.OPENAI_API_KEYS[idx]
 
     provider_type = get_provider_type(api_config)
+    _validate_provider_for_endpoint(provider_type, endpoint, payload.get("model", ""))
+
+    if endpoint == "responses" and "input" not in payload:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid /responses payload: missing required field 'input'. "
+                "It looks like a chat-style payload ('messages')."
+            ),
+        )
 
     if not is_responses_provider(api_config):
         payload.pop("summary", None)
@@ -1738,23 +913,38 @@ async def generate_chat_completion(
         request, url, key, api_config, metadata, user=user
     )
 
-    if provider_type == "azure_openai":
-        api_version = api_config.get("api_version", "2023-03-15-preview")
-        request_url, payload = convert_to_azure_payload(url, payload, api_version)
-
-        # Only set api-key header if not using Azure Entra ID authentication
-        auth_type = api_config.get("auth_type", "bearer")
-        if auth_type not in ("azure_ad", "microsoft_entra_id"):
-            headers["api-key"] = key
-
-        headers["api-version"] = api_version
-        request_url = f"{request_url}/chat/completions?api-version={api_version}"
-    elif provider_type == "openai_responses":
-        _inject_prompt_cache_key_for_responses(provider_type, payload, metadata, user)
-        payload = chat_to_responses_payload(payload, metadata, api_config)
+    if endpoint == "responses":
+        _inject_prompt_cache_params_for_completion_request(
+            provider_type,
+            endpoint,
+            payload,
+            metadata,
+            user,
+        )
         request_url = f"{url}/responses"
     else:
+        _inject_prompt_cache_params_for_completion_request(
+            provider_type,
+            endpoint,
+            payload,
+            metadata,
+            user,
+        )
         request_url = f"{url}/chat/completions"
+
+    tools_shape_summary = "<none>"
+    if isinstance(payload.get("tools"), list) and payload["tools"]:
+        first_tool = payload["tools"][0]
+        if isinstance(first_tool, dict):
+            tools_shape_summary = ",".join(sorted(first_tool.keys()))
+        else:
+            tools_shape_summary = type(first_tool).__name__
+    log.debug(
+        "Completion upstream payload endpoint=%s provider=%s tools_shape=%s",
+        endpoint,
+        provider_type,
+        tools_shape_summary,
+    )
 
     payload = json.dumps(payload)
 
@@ -1780,16 +970,6 @@ async def generate_chat_completion(
         # Check if response is SSE
         if "text/event-stream" in r.headers.get("Content-Type", ""):
             streaming = True
-            if provider_type == "openai_responses":
-                return responses_stream_to_chat_streaming_response(
-                    r.content,
-                    background=BackgroundTask(
-                        cleanup_response,
-                        response=r,
-                        session=session,
-                    ),
-                )
-
             return StreamingResponse(
                 stream_chunks_handler(r.content),
                 status_code=r.status,
@@ -1811,9 +991,6 @@ async def generate_chat_completion(
                 else:
                     return PlainTextResponse(status_code=r.status, content=response)
 
-            if provider_type == "openai_responses" and isinstance(response, dict):
-                return responses_to_chat_compatible(response)
-
             return response
     except Exception as e:
         log.exception(e)
@@ -1825,6 +1002,38 @@ async def generate_chat_completion(
     finally:
         if not streaming:
             await cleanup_response(r, session)
+
+
+@router.post("/chat/completions")
+async def generate_chat_completion(
+    request: Request,
+    form_data: dict,
+    user=Depends(get_verified_user),
+    bypass_filter: Optional[bool] = False,
+):
+    return await _generate_completion_with_endpoint(
+        request=request,
+        form_data=form_data,
+        user=user,
+        bypass_filter=bypass_filter,
+        endpoint="chat_completions",
+    )
+
+
+@router.post("/responses")
+async def generate_responses(
+    request: Request,
+    form_data: dict,
+    user=Depends(get_verified_user),
+    bypass_filter: Optional[bool] = False,
+):
+    return await _generate_completion_with_endpoint(
+        request=request,
+        form_data=form_data,
+        user=user,
+        bypass_filter=bypass_filter,
+        endpoint="responses",
+    )
 
 
 async def embeddings(request: Request, form_data: dict, user):
@@ -1855,6 +1064,7 @@ async def embeddings(request: Request, form_data: dict, user):
         str(idx),
         request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
     )
+    api_config = normalize_openai_api_config(api_config)
 
     r = None
     session = None
@@ -1926,6 +1136,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
         ),  # Legacy support
     )
+    api_config = normalize_openai_api_config(api_config)
 
     r = None
     session = None
@@ -1936,23 +1147,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             request, url, key, api_config, user=user
         )
 
-        if get_provider_type(api_config) == "azure_openai":
-            api_version = api_config.get("api_version", "2023-03-15-preview")
-
-            # Only set api-key header if not using Azure Entra ID authentication
-            auth_type = api_config.get("auth_type", "bearer")
-            if auth_type not in ("azure_ad", "microsoft_entra_id"):
-                headers["api-key"] = key
-
-            headers["api-version"] = api_version
-
-            payload = json.loads(body)
-            url, payload = convert_to_azure_payload(url, payload, api_version)
-            body = json.dumps(payload).encode()
-
-            request_url = f"{url}/{path}?api-version={api_version}"
-        else:
-            request_url = f"{url}/{path}"
+        request_url = f"{url}/{path}"
 
         session = aiohttp.ClientSession(trust_env=True)
         r = await session.request(

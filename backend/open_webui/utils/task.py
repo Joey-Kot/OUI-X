@@ -14,20 +14,13 @@ from open_webui.config import DEFAULT_RAG_TEMPLATE
 log = logging.getLogger(__name__)
 
 
-def get_task_model_id(
-    default_model_id: str, task_model: str, task_model_external: str, models
-) -> str:
-    # Set the task model
-    task_model_id = default_model_id
-    # Check if the user has a custom task model and use that model
-    if models[task_model_id].get("connection_type") == "local":
-        if task_model and task_model in models:
-            task_model_id = task_model
-    else:
-        if task_model_external and task_model_external in models:
-            task_model_id = task_model_external
+def get_task_model_id(default_model_id: str, task_model: str, models) -> str:
+    # Prefer explicitly configured task model when it exists,
+    # otherwise fall back to the default.
+    if task_model and task_model in models:
+        return task_model
 
-    return task_model_id
+    return default_model_id
 
 
 def prompt_variables_template(template: str, variables: dict[str, str]) -> str:

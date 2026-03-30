@@ -4,6 +4,9 @@ import type { ParsedEvent } from 'eventsource-parser';
 type TextStreamUpdate = {
 	done: boolean;
 	value: string;
+	reasoning?: string;
+	toolCalls?: Array<Record<string, unknown>>;
+	rawEvent?: Record<string, unknown>;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	sources?: any;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -43,6 +46,52 @@ export async function createOpenAITextStream(
 async function* openAIStreamToIterator(
 	reader: ReadableStreamDefaultReader<ParsedEvent>
 ): AsyncGenerator<TextStreamUpdate> {
+	const responsesState: {
+		textEmitted: boolean;
+		functionCalls: Record<string, { name: string; arguments: string }>;
+		emittedCallIds: Set<string>;
+		callIndexes: Record<string, number>;
+	} = {
+		textEmitted: false,
+		functionCalls: {},
+		emittedCallIds: new Set(),
+		callIndexes: {}
+	};
+
+	const normalizeResponsesUsage = (usage: any) => {
+		if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null;
+		const prompt_tokens = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0;
+		const completion_tokens = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0;
+		const total_tokens =
+			typeof usage.total_tokens === 'number' ? usage.total_tokens : prompt_tokens + completion_tokens;
+		return {
+			...usage,
+			prompt_tokens,
+			completion_tokens,
+			total_tokens
+		};
+	};
+
+	const extractResponsesFallbackText = (response: any) => {
+		const output = Array.isArray(response?.output) ? response.output : [];
+		return output
+			.filter((item: any) => item?.type === 'message')
+			.flatMap((item: any) => item?.content ?? [])
+			.filter((part: any) => part?.type === 'output_text')
+			.map((part: any) => part?.text ?? '')
+			.join('');
+	};
+
+	const extractResponsesReasoning = (response: any) => {
+		const output = Array.isArray(response?.output) ? response.output : [];
+		return output
+			.filter((item: any) => item?.type === 'reasoning')
+			.flatMap((item: any) => item?.summary ?? [])
+			.map((summary: any) => summary?.text ?? '')
+			.filter((text: any) => typeof text === 'string' && text.trim())
+			.join('\n');
+	};
+
 	while (true) {
 		const { value, done } = await reader.read();
 		if (done) {
@@ -52,6 +101,7 @@ async function* openAIStreamToIterator(
 		if (!value) {
 			continue;
 		}
+		const eventName = (value as any).event || '';
 		const data = value.data;
 		if (data.startsWith('[DONE]')) {
 			yield { done: true, value: '' };
@@ -65,6 +115,106 @@ async function* openAIStreamToIterator(
 			if (parsedData.error) {
 				yield { done: true, value: '', error: parsedData.error };
 				break;
+			}
+
+			const responsesEventType = eventName || parsedData?.type;
+			const isResponsesEvent =
+				typeof responsesEventType === 'string' && responsesEventType.startsWith('response.');
+			if (isResponsesEvent) {
+				if (responsesEventType === 'response.output_text.delta') {
+					const delta = parsedData?.delta ?? '';
+					if (delta) {
+						responsesState.textEmitted = true;
+						yield { done: false, value: delta, rawEvent: parsedData };
+					}
+					continue;
+				}
+
+				if (
+					responsesEventType === 'response.function_call_arguments.delta' ||
+					responsesEventType === 'response.function_call.delta'
+				) {
+					const callId = parsedData?.call_id ?? parsedData?.item_id;
+					if (callId) {
+						const call = responsesState.functionCalls[callId] ?? {
+							name: parsedData?.name ?? '',
+							arguments: ''
+						};
+						if (parsedData?.name) call.name = parsedData.name;
+						if (typeof parsedData?.delta === 'string') call.arguments += parsedData.delta;
+						responsesState.functionCalls[callId] = call;
+					}
+					yield { done: false, value: '', rawEvent: parsedData };
+					continue;
+				}
+
+				if (responsesEventType === 'response.output_item.done') {
+					const item = parsedData?.item ?? {};
+					if (item?.type === 'function_call') {
+						const callId = item?.call_id ?? item?.id;
+						if (callId && !responsesState.emittedCallIds.has(callId)) {
+							const call = responsesState.functionCalls[callId] ?? {
+								name: item?.name ?? '',
+								arguments: typeof item?.arguments === 'string' ? item.arguments : '{}'
+							};
+							if (item?.name) call.name = item.name;
+							if (typeof item?.arguments === 'string') call.arguments = item.arguments;
+							responsesState.functionCalls[callId] = call;
+							const index =
+								responsesState.callIndexes[callId] ?? Object.keys(responsesState.callIndexes).length;
+							responsesState.callIndexes[callId] = index;
+							responsesState.emittedCallIds.add(callId);
+
+							yield {
+								done: false,
+								value: '',
+								toolCalls: [
+									{
+										index,
+										id: callId,
+										type: 'function',
+										function: {
+											name: call.name,
+											arguments: call.arguments || '{}'
+										}
+									}
+								],
+								rawEvent: parsedData
+							};
+						}
+					}
+					continue;
+				}
+
+				if (responsesEventType === 'response.completed') {
+					const response = parsedData?.response ?? {};
+					const reasoning = extractResponsesReasoning(response);
+					if (reasoning) {
+						yield { done: false, value: '', reasoning, rawEvent: parsedData };
+					}
+
+					if (!responsesState.textEmitted) {
+						const fallbackText = extractResponsesFallbackText(response);
+						if (fallbackText) {
+							yield { done: false, value: fallbackText, rawEvent: parsedData };
+						}
+					}
+
+					const usage = normalizeResponsesUsage(response?.usage);
+					if (usage) {
+						yield { done: false, value: '', usage, rawEvent: parsedData };
+					}
+					yield { done: true, value: '', rawEvent: parsedData };
+					break;
+				}
+
+				const usage = normalizeResponsesUsage(parsedData?.usage);
+				if (usage) {
+					yield { done: false, value: '', usage, rawEvent: parsedData };
+				} else {
+					yield { done: false, value: '', rawEvent: parsedData };
+				}
+				continue;
 			}
 
 			if (parsedData.sources) {
@@ -104,6 +254,10 @@ async function* streamLargeDeltasAsRandomChunks(
 		}
 
 		if (textStreamUpdate.error) {
+			yield textStreamUpdate;
+			continue;
+		}
+		if (textStreamUpdate.reasoning || textStreamUpdate.toolCalls || textStreamUpdate.rawEvent) {
 			yield textStreamUpdate;
 			continue;
 		}

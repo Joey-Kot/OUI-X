@@ -48,10 +48,6 @@
 	let OpenAIUrl = '';
 	let OpenAIKey = '';
 
-	let AzureOpenAIUrl = '';
-	let AzureOpenAIKey = '';
-	let AzureOpenAIVersion = '';
-
 	let querySettings = {
 		template: '',
 		r: 0.0,
@@ -72,14 +68,6 @@
 			return;
 		}
 
-		if (
-			RAG_EMBEDDING_ENGINE === 'azure_openai' &&
-			(AzureOpenAIKey === '' || AzureOpenAIUrl === '' || AzureOpenAIVersion === '')
-		) {
-			toast.error($i18n.t('OpenAI URL/Key required.'));
-			return;
-		}
-
 		console.debug('Update embedding model attempt:', {
 			RAG_EMBEDDING_ENGINE,
 			RAG_EMBEDDING_MODEL,
@@ -96,11 +84,6 @@
 			openai_config: {
 				key: OpenAIKey,
 				url: OpenAIUrl
-			},
-			azure_openai_config: {
-				key: AzureOpenAIKey,
-				url: AzureOpenAIUrl,
-				version: AzureOpenAIVersion
 			}
 		}).catch(async (error) => {
 			toast.error(`${error}`);
@@ -213,18 +196,14 @@
 		const embeddingConfig = await getEmbeddingConfig(localStorage.token);
 
 		if (embeddingConfig) {
-			RAG_EMBEDDING_ENGINE = embeddingConfig.RAG_EMBEDDING_ENGINE;
+			RAG_EMBEDDING_ENGINE =
+				embeddingConfig.RAG_EMBEDDING_ENGINE === 'azure_openai' ? 'openai' : embeddingConfig.RAG_EMBEDDING_ENGINE;
 			RAG_EMBEDDING_MODEL = embeddingConfig.RAG_EMBEDDING_MODEL;
 			RAG_EMBEDDING_BATCH_SIZE = embeddingConfig.RAG_EMBEDDING_BATCH_SIZE ?? 1;
 			ENABLE_ASYNC_EMBEDDING = embeddingConfig.ENABLE_ASYNC_EMBEDDING ?? true;
 
 			OpenAIKey = embeddingConfig.openai_config.key;
 			OpenAIUrl = embeddingConfig.openai_config.url;
-
-
-			AzureOpenAIKey = embeddingConfig.azure_openai_config.key;
-			AzureOpenAIUrl = embeddingConfig.azure_openai_config.url;
-			AzureOpenAIVersion = embeddingConfig.azure_openai_config.version;
 		}
 	};
 	onMount(async () => {
@@ -806,13 +785,10 @@
 										on:change={(e) => {
 											if (e.target.value === 'openai') {
 												RAG_EMBEDDING_MODEL = 'text-embedding-3-small';
-											} else if (e.target.value === 'azure_openai') {
-												RAG_EMBEDDING_MODEL = 'text-embedding-3-small';
 											}
 										}}
 									>
 										<option value="openai">{$i18n.t('OpenAI')}</option>
-										<option value="azure_openai">{$i18n.t('Azure OpenAI')}</option>
 									</select>
 								</div>
 							</div>
@@ -831,26 +807,6 @@
 										bind:value={OpenAIKey}
 										required={false}
 									/>
-								</div>
-							{:else if RAG_EMBEDDING_ENGINE === 'azure_openai'}
-								<div class="my-0.5 flex flex-col gap-2 pr-2 w-full">
-									<div class="flex gap-2">
-										<input
-											class="flex-1 w-full text-sm bg-transparent outline-hidden"
-											placeholder={$i18n.t('API Base URL')}
-											bind:value={AzureOpenAIUrl}
-											required
-										/>
-										<SensitiveInput placeholder={$i18n.t('API Key')} bind:value={AzureOpenAIKey} />
-									</div>
-									<div class="flex gap-2">
-										<input
-											class="flex-1 w-full text-sm bg-transparent outline-hidden"
-											placeholder={$i18n.t('Version')}
-											bind:value={AzureOpenAIVersion}
-											required
-										/>
-									</div>
 								</div>
 							{/if}
 						</div>
@@ -879,7 +835,7 @@
 							</div>
 						</div>
 
-						{#if RAG_EMBEDDING_ENGINE === 'openai' || RAG_EMBEDDING_ENGINE === 'azure_openai'}
+						{#if RAG_EMBEDDING_ENGINE === 'openai'}
 							<div class="  mb-2.5 flex w-full justify-between">
 								<div class=" self-center text-xs font-medium">
 									{$i18n.t('Embedding Batch Size')}

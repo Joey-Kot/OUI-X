@@ -22,7 +22,10 @@ export let config = {};
 let providerType = 'openai';
 let endpointPath = '/chat/completions';
 
-$: providerType = config?.provider_type ?? (config?.azure ? 'azure_openai' : 'openai');
+$: providerType =
+	config?.provider_type === 'azure_openai'
+		? 'openai'
+		: (config?.provider_type ?? (config?.azure ? 'openai' : 'openai'));
 $: endpointPath = providerType === 'openai_responses' ? '/responses' : '/chat/completions';
 
 	let showConfigModal = false;

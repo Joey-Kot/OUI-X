@@ -115,14 +115,12 @@
 							.map((tag) => tag.name.toLowerCase())
 							.includes(selectedTag.toLowerCase());
 					})
-					.filter((item) => {
-						if (selectedConnectionType === '') {
-							return true;
-						} else if (selectedConnectionType === 'local') {
-							return item.model?.connection_type === 'local';
-						} else if (selectedConnectionType === 'external') {
-							return item.model?.connection_type === 'external';
-						} else if (selectedConnectionType === 'direct') {
+						.filter((item) => {
+							if (selectedConnectionType === '') {
+								return true;
+							} else if (selectedConnectionType === 'external') {
+								return item.model?.connection_type === 'external';
+							} else if (selectedConnectionType === 'direct') {
 							return item.model?.direct;
 						}
 					})
@@ -135,14 +133,12 @@
 							.map((tag) => tag.name.toLowerCase())
 							.includes(selectedTag.toLowerCase());
 					})
-					.filter((item) => {
-						if (selectedConnectionType === '') {
-							return true;
-						} else if (selectedConnectionType === 'local') {
-							return item.model?.connection_type === 'local';
-						} else if (selectedConnectionType === 'external') {
-							return item.model?.connection_type === 'external';
-						} else if (selectedConnectionType === 'direct') {
+						.filter((item) => {
+							if (selectedConnectionType === '') {
+								return true;
+							} else if (selectedConnectionType === 'external') {
+								return item.model?.connection_type === 'external';
+							} else if (selectedConnectionType === 'direct') {
 							return item.model?.direct;
 						}
 					})
@@ -284,7 +280,7 @@
 							class="flex gap-1 w-fit text-center text-sm rounded-full bg-transparent px-1.5 whitespace-nowrap"
 							bind:this={tagsContainerElement}
 						>
-							{#if items.find((item) => item.model?.connection_type === 'local') || items.find((item) => item.model?.connection_type === 'external') || items.find((item) => item.model?.direct) || tags.length > 0}
+								{#if items.find((item) => item.model?.connection_type === 'external') || items.find((item) => item.model?.direct) || tags.length > 0}
 								<button
 									class="min-w-fit outline-none px-1.5 py-0.5 {selectedTag === '' &&
 									selectedConnectionType === ''
@@ -300,22 +296,7 @@
 								</button>
 							{/if}
 
-							{#if items.find((item) => item.model?.connection_type === 'local')}
-								<button
-									class="min-w-fit outline-none px-1.5 py-0.5 {selectedConnectionType === 'local'
-										? ''
-										: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition capitalize"
-									aria-pressed={selectedConnectionType === 'local'}
-									on:click={() => {
-										selectedTag = '';
-										selectedConnectionType = 'local';
-									}}
-								>
-									{$i18n.t('Local')}
-								</button>
-							{/if}
-
-							{#if items.find((item) => item.model?.connection_type === 'external')}
+								{#if items.find((item) => item.model?.connection_type === 'external')}
 								<button
 									class="min-w-fit outline-none px-1.5 py-0.5 {selectedConnectionType === 'external'
 										? ''
