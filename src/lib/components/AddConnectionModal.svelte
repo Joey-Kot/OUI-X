@@ -33,7 +33,6 @@
 	let auth_type = 'bearer';
 	let providerType = 'openai';
 
-	let connectionType = 'external';
 	let azure = false;
 	$: azure = providerType === 'azure_openai';
 
@@ -159,7 +158,8 @@
 				tags: tags,
 				prefix_id: prefixId,
 				model_ids: modelIds,
-				connection_type: connectionType,
+				// `local` connection type is deprecated; always persist as external.
+				connection_type: 'external',
 				provider_type: providerType,
 				auth_type,
 				headers: headers ? JSON.parse(headers) : undefined,
@@ -202,7 +202,6 @@
 			prefixId = connection.config?.prefix_id ?? '';
 			modelIds = connection.config?.model_ids ?? [];
 
-			connectionType = connection.config?.connection_type ?? 'external';
 			apiVersion = connection.config?.api_version ?? '';
 		} else {
 			providerType = 'openai';
@@ -249,30 +248,6 @@
 					}}
 				>
 					<div class="px-1">
-						{#if !direct}
-							<div class="flex gap-2">
-								<div class="flex w-full justify-between items-center">
-									<div class=" text-xs text-gray-500">{$i18n.t('Connection Type')}</div>
-
-									<div class="">
-										<button
-											on:click={() => {
-												connectionType = connectionType === 'local' ? 'external' : 'local';
-											}}
-											type="button"
-											class=" text-xs text-gray-700 dark:text-gray-300"
-										>
-											{#if connectionType === 'local'}
-												{$i18n.t('Local')}
-											{:else}
-												{$i18n.t('External')}
-											{/if}
-										</button>
-									</div>
-								</div>
-							</div>
-						{/if}
-
 						<div class="flex gap-2 mt-1.5">
 							<div class="flex flex-col w-full">
 								<label

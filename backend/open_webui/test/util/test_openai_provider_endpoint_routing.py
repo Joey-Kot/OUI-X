@@ -74,6 +74,67 @@ async def test_get_all_models_responses_includes_provider_type(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_all_models_responses_normalizes_local_connection_type(monkeypatch):
+    async def fake_send_get_request(_url, _key=None, user=None):
+        return {
+            "object": "list",
+            "data": [{"id": "gpt-5-mini", "owned_by": "openai"}],
+        }
+
+    monkeypatch.setattr(openai_router, "send_get_request", fake_send_get_request)
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    ENABLE_OPENAI_API=True,
+                    OPENAI_API_BASE_URLS=["https://example.com/v1"],
+                    OPENAI_API_KEYS=["sk-test"],
+                    OPENAI_API_CONFIGS={
+                        "0": {
+                            "provider_type": "openai",
+                            "connection_type": "local",
+                        }
+                    },
+                )
+            )
+        )
+    )
+
+    responses = await openai_router.get_all_models_responses(request, _user())
+
+    assert responses[0]["data"][0]["connection_type"] == "external"
+
+
+@pytest.mark.asyncio
+async def test_get_all_models_normalizes_local_connection_type(monkeypatch):
+    async def fake_get_all_models_responses(_request, user=None):
+        return [
+            {
+                "object": "list",
+                "data": [{"id": "gpt-5-mini", "connection_type": "local"}],
+            }
+        ]
+
+    monkeypatch.setattr(openai_router, "get_all_models_responses", fake_get_all_models_responses)
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    ENABLE_OPENAI_API=True,
+                    OPENAI_API_BASE_URLS=["https://example.com/v1"],
+                )
+            )
+        )
+    )
+
+    models = await openai_router.get_all_models.__wrapped__(request, _user())
+
+    assert models["data"][0]["connection_type"] == "external"
+
+
+@pytest.mark.asyncio
 async def test_generate_responses_passthrough_preserves_unknown_fields(monkeypatch):
     captured = {}
 

@@ -185,16 +185,15 @@
 									}
 								}
 							}}
-						>
-							<option value="" selected>{$i18n.t('Current Model')}</option>
-							{#each models as model}
-								<option value={model.id} class="bg-gray-100 dark:bg-gray-700">
-									{model.name}
-									{model?.connection_type === 'local' ? `(${$i18n.t('Local')})` : ''}
-								</option>
-							{/each}
-						</select>
-					</div>
+							>
+								<option value="" selected>{$i18n.t('Current Model')}</option>
+								{#each models as model}
+									<option value={model.id} class="bg-gray-100 dark:bg-gray-700">
+										{model.name}
+									</option>
+								{/each}
+							</select>
+						</div>
 
 					<div class="flex-1">
 						<div class=" text-xs mb-1">{$i18n.t('External Task Model')}</div>
@@ -220,16 +219,15 @@
 									}
 								}
 							}}
-						>
-							<option value="" selected>{$i18n.t('Current Model')}</option>
-							{#each models as model}
-								<option value={model.id} class="bg-gray-100 dark:bg-gray-700">
-									{model.name}
-									{model?.connection_type === 'local' ? `(${$i18n.t('Local')})` : ''}
-								</option>
-							{/each}
-						</select>
-					</div>
+							>
+								<option value="" selected>{$i18n.t('Current Model')}</option>
+								{#each models as model}
+									<option value={model.id} class="bg-gray-100 dark:bg-gray-700">
+										{model.name}
+									</option>
+								{/each}
+							</select>
+						</div>
 				</div>
 
 				<div class="mb-2.5 flex w-full items-center justify-between">

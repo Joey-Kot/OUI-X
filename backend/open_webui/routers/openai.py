@@ -133,6 +133,13 @@ def get_provider_type(api_config: Optional[dict]) -> str:
     return "openai"
 
 
+def normalize_connection_type(connection_type: Optional[str]) -> str:
+    # `local` connection types are deprecated and should behave as external.
+    if connection_type == "local":
+        return "external"
+    return connection_type or "external"
+
+
 def is_responses_provider(api_config: Optional[dict]) -> bool:
     return get_provider_type(api_config) == "openai_responses"
 
@@ -468,7 +475,9 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
                 ),  # Legacy support
             )
 
-            connection_type = api_config.get("connection_type", "external")
+            connection_type = normalize_connection_type(
+                api_config.get("connection_type", "external")
+            )
             prefix_id = api_config.get("prefix_id", None)
             tags = api_config.get("tags", [])
             provider_type = get_provider_type(api_config)
@@ -571,7 +580,9 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
                             "name": model.get("name", model_id),
                             "owned_by": "openai",
                             "openai": model,
-                            "connection_type": model.get("connection_type", "external"),
+                            "connection_type": normalize_connection_type(
+                                model.get("connection_type", "external")
+                            ),
                             "urlIdx": idx,
                         }
 
