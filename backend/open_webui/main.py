@@ -404,7 +404,7 @@ from open_webui.config import (
     ENABLE_ADMIN_EXPORT,
     # Tasks
     TASK_MODEL,
-    TASK_MODEL_EXTERNAL,
+    LEGACY_TASK_MODEL_EXTERNAL,
     ENABLE_TAGS_GENERATION,
     ENABLE_TITLE_GENERATION,
     ENABLE_FOLLOW_UP_GENERATION,
@@ -1194,7 +1194,9 @@ app.state.config.TTS_AZURE_SPEECH_OUTPUT_FORMAT = AUDIO_TTS_AZURE_SPEECH_OUTPUT_
 
 
 app.state.config.TASK_MODEL = TASK_MODEL
-app.state.config.TASK_MODEL_EXTERNAL = TASK_MODEL_EXTERNAL
+if not app.state.config.TASK_MODEL and LEGACY_TASK_MODEL_EXTERNAL.value:
+    # Backward compatibility: migrate legacy key/value to the unified TASK_MODEL.
+    app.state.config.TASK_MODEL = LEGACY_TASK_MODEL_EXTERNAL.value
 
 
 app.state.config.ENABLE_SEARCH_QUERY_GENERATION = ENABLE_SEARCH_QUERY_GENERATION

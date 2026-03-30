@@ -14,13 +14,11 @@ from open_webui.config import DEFAULT_RAG_TEMPLATE
 log = logging.getLogger(__name__)
 
 
-def get_task_model_id(
-    default_model_id: str, task_model: str, task_model_external: str, models
-) -> str:
-    # Local/external split has been removed; prefer explicitly configured external
-    # task model when it exists, otherwise fall back to the default.
-    if task_model_external and task_model_external in models:
-        return task_model_external
+def get_task_model_id(default_model_id: str, task_model: str, models) -> str:
+    # Prefer explicitly configured task model when it exists,
+    # otherwise fall back to the default.
+    if task_model and task_model in models:
+        return task_model
 
     return default_model_id
 

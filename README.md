@@ -52,7 +52,7 @@ OUI-X 的 Completion/Responses 已收敛到统一适配层（`completion_adapter
   * 统一上游 payload 构建
   * 统一 messages -> responses.input 转换
   * 统一 tools 结构归一化（兼容 chat-style / responses-style）
-  * 统一 prompt cache 策略注入（含 retention 模式）
+  * 统一 prompt cache 策略注入
 * 后端 `/api/responses` 接入统一聊天任务流水线：
   * 复用 `process_chat_payload / process_chat_response / create_task`
   * 保持 `task_id`、socket 事件、标题/标签/follow-up 等行为一致
@@ -426,7 +426,7 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
   * 统一记录上游请求形状调试信息（endpoint/provider/tools 结构摘要），可观测性更强
   * 新增适配层单测，覆盖端点决策、结构转换与策略注入行为
 * 任务模型选择策略收敛：
-  * 优先有效 `TASK_MODEL_EXTERNAL`，否则回退默认模型
+  * 优先有效 `TASK_MODEL`，否则回退默认模型
 
 ## 接口与兼容性变更（升级须知）
 

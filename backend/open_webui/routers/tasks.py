@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Optional, Any, Dict, List
 import logging
 import re
@@ -249,7 +249,6 @@ def _model_max_tokens(models: Dict[str, Any], model_id: str, default: int = 128)
 async def get_task_config(request: Request, user=Depends(get_verified_user)):
     return {
         "TASK_MODEL": request.app.state.config.TASK_MODEL,
-        "TASK_MODEL_EXTERNAL": request.app.state.config.TASK_MODEL_EXTERNAL,
         "TITLE_GENERATION_PROMPT_TEMPLATE": request.app.state.config.TITLE_GENERATION_PROMPT_TEMPLATE,
         "IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE": request.app.state.config.IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE,
         "ENABLE_AUTOCOMPLETE_GENERATION": request.app.state.config.ENABLE_AUTOCOMPLETE_GENERATION,
@@ -269,8 +268,8 @@ async def get_task_config(request: Request, user=Depends(get_verified_user)):
 
 
 class TaskConfigForm(BaseModel):
-    TASK_MODEL: Optional[str]
-    TASK_MODEL_EXTERNAL: Optional[str]
+    model_config = ConfigDict(extra="ignore")
+    TASK_MODEL: Optional[str] = None
     ENABLE_TITLE_GENERATION: bool
     TITLE_GENERATION_PROMPT_TEMPLATE: str
     IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE: str
@@ -285,8 +284,17 @@ class TaskConfigForm(BaseModel):
     RETRIEVAL_QUERY_GENERATION_REFER_CONTEXT_TURNS: int = Field(3, ge=0, le=20)
     QUERY_GENERATION_PROMPT_TEMPLATE: str
     TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE: str
-    VOICE_MODE_PROMPT_TEMPLATE: str
     VOICE_MODE_PROMPT_TEMPLATE: Optional[str]
+
+    @model_validator(mode="before")
+    @classmethod
+    def map_legacy_task_model_external(cls, data):
+        if not isinstance(data, dict):
+            return data
+
+        if not data.get("TASK_MODEL") and data.get("TASK_MODEL_EXTERNAL"):
+            data["TASK_MODEL"] = data["TASK_MODEL_EXTERNAL"]
+        return data
 
 
 @router.post("/config/update")
@@ -294,7 +302,6 @@ async def update_task_config(
     request: Request, form_data: TaskConfigForm, user=Depends(get_admin_user)
 ):
     request.app.state.config.TASK_MODEL = form_data.TASK_MODEL
-    request.app.state.config.TASK_MODEL_EXTERNAL = form_data.TASK_MODEL_EXTERNAL
     request.app.state.config.ENABLE_TITLE_GENERATION = form_data.ENABLE_TITLE_GENERATION
     request.app.state.config.TITLE_GENERATION_PROMPT_TEMPLATE = (
         form_data.TITLE_GENERATION_PROMPT_TEMPLATE
@@ -345,7 +352,6 @@ async def update_task_config(
 
     return {
         "TASK_MODEL": request.app.state.config.TASK_MODEL,
-        "TASK_MODEL_EXTERNAL": request.app.state.config.TASK_MODEL_EXTERNAL,
         "ENABLE_TITLE_GENERATION": request.app.state.config.ENABLE_TITLE_GENERATION,
         "TITLE_GENERATION_PROMPT_TEMPLATE": request.app.state.config.TITLE_GENERATION_PROMPT_TEMPLATE,
         "IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE": request.app.state.config.IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE,
@@ -392,7 +398,6 @@ async def generate_title(
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
-        request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
     )
 
@@ -467,7 +472,6 @@ async def generate_follow_ups(
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
-        request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
     )
 
@@ -537,7 +541,6 @@ async def generate_chat_tags(
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
-        request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
     )
 
@@ -600,7 +603,6 @@ async def generate_image_prompt(
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
-        request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
     )
 
@@ -681,7 +683,6 @@ async def generate_queries(
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
-        request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
     )
 
@@ -808,7 +809,6 @@ async def generate_autocompletion(
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
-        request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
     )
 
@@ -872,7 +872,6 @@ async def generate_emoji(
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
-        request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
     )
 

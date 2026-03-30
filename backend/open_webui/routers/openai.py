@@ -172,7 +172,6 @@ def _inject_prompt_cache_params_for_completion_request(
     payload: dict,
     metadata: Optional[dict],
     user: UserModel,
-    retention_mode: str = "force_24h",
 ) -> None:
     apply_prompt_cache_policy(
         provider_type=provider_type,
@@ -180,7 +179,6 @@ def _inject_prompt_cache_params_for_completion_request(
         payload=payload,
         metadata=metadata,
         user=user,
-        retention_mode=retention_mode,
     )
 
 
@@ -916,29 +914,21 @@ async def _generate_completion_with_endpoint(
     )
 
     if endpoint == "responses":
-        prompt_cache_retention_mode = api_config.get(
-            "prompt_cache_retention_mode", "force_24h"
-        )
         _inject_prompt_cache_params_for_completion_request(
             provider_type,
             endpoint,
             payload,
             metadata,
             user,
-            retention_mode=prompt_cache_retention_mode,
         )
         request_url = f"{url}/responses"
     else:
-        prompt_cache_retention_mode = api_config.get(
-            "prompt_cache_retention_mode", "force_24h"
-        )
         _inject_prompt_cache_params_for_completion_request(
             provider_type,
             endpoint,
             payload,
             metadata,
             user,
-            retention_mode=prompt_cache_retention_mode,
         )
         request_url = f"{url}/chat/completions"
 

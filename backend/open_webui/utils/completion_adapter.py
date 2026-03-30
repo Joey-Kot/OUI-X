@@ -439,18 +439,3 @@ def apply_prompt_cache_policy(
     )
     if resolved_prompt_cache_key and not has_explicit_prompt_cache_key:
         payload["prompt_cache_key"] = resolved_prompt_cache_key
-
-    normalized_mode = (
-        retention_mode.strip().lower()
-        if isinstance(retention_mode, str)
-        else "force_24h"
-    )
-    if normalized_mode == "off":
-        return
-    if normalized_mode == "auto":
-        if "prompt_cache_retention" not in payload:
-            payload["prompt_cache_retention"] = "24h"
-        return
-
-    # Default: force_24h
-    payload["prompt_cache_retention"] = "24h"

@@ -110,7 +110,7 @@ def test_build_upstream_payload_for_responses_strips_internal_keys():
     assert payload["metadata"]["chat_id"] == "chat-1"
 
 
-def test_apply_prompt_cache_policy_force_24h_and_keep_explicit_key(monkeypatch):
+def test_apply_prompt_cache_policy_keeps_explicit_retention_unchanged(monkeypatch):
     monkeypatch.setattr(
         adapter,
         "resolve_prompt_cache_key_for_completion_request",
@@ -124,11 +124,10 @@ def test_apply_prompt_cache_policy_force_24h_and_keep_explicit_key(monkeypatch):
         payload=payload,
         metadata={"chat_id": "chat-1"},
         user=_user(),
-        retention_mode="force_24h",
     )
 
     assert payload["prompt_cache_key"] == "request-key"
-    assert payload["prompt_cache_retention"] == "24h"
+    assert payload["prompt_cache_retention"] == "12h"
 
 
 def test_resolve_prompt_cache_key_reads_and_persists_chat_metadata(monkeypatch):

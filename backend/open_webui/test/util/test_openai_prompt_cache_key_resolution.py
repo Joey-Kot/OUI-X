@@ -203,7 +203,7 @@ def test_injector_adds_prompt_cache_params_for_openai_chat(monkeypatch):
     )
 
     assert payload["prompt_cache_key"] == "pc:v1:test-openai"
-    assert payload["prompt_cache_retention"] == "24h"
+    assert "prompt_cache_retention" not in payload
 
 
 def test_injector_adds_prompt_cache_params_for_responses_provider(monkeypatch):
@@ -223,10 +223,10 @@ def test_injector_adds_prompt_cache_params_for_responses_provider(monkeypatch):
     )
 
     assert payload["prompt_cache_key"] == "pc:v1:test-responses"
-    assert payload["prompt_cache_retention"] == "24h"
+    assert "prompt_cache_retention" not in payload
 
 
-def test_injector_preserves_explicit_key_and_forces_retention(monkeypatch):
+def test_injector_preserves_explicit_key_and_retention_value(monkeypatch):
     monkeypatch.setattr(
         openai_router,
         "_resolve_prompt_cache_key_for_completion_request",
@@ -247,4 +247,4 @@ def test_injector_preserves_explicit_key_and_forces_retention(monkeypatch):
     )
 
     assert payload["prompt_cache_key"] == "request-key"
-    assert payload["prompt_cache_retention"] == "24h"
+    assert payload["prompt_cache_retention"] == "12h"
