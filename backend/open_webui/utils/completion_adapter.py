@@ -190,6 +190,116 @@ def normalize_tools_for_responses(tools: list[dict]) -> list[dict]:
     return normalized_tools
 
 
+def extract_text_from_responses_payload(response: dict) -> str:
+    if not isinstance(response, dict):
+        return ""
+
+    output = response.get("output")
+    if not isinstance(output, list):
+        fallback = response.get("output_text")
+        return fallback if isinstance(fallback, str) else ""
+
+    chunks: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") != "output_text":
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                chunks.append(text)
+
+    return "".join(chunks)
+
+
+def extract_reasoning_text_from_responses_payload(response: dict) -> str:
+    if not isinstance(response, dict):
+        return ""
+
+    output = response.get("output")
+    if not isinstance(output, list):
+        return ""
+
+    chunks: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "reasoning":
+            continue
+        summary = item.get("summary")
+        if isinstance(summary, str):
+            chunks.append(summary)
+            continue
+        if not isinstance(summary, list):
+            continue
+        for part in summary:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                chunks.append(text)
+
+    return "\n".join([chunk for chunk in chunks if chunk])
+
+
+def extract_assistant_content_from_completion_response(response: dict) -> str:
+    if not isinstance(response, dict):
+        return ""
+
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                [
+                    p.get("text", "")
+                    for p in content
+                    if isinstance(p, dict) and isinstance(p.get("text"), str)
+                ]
+            )
+
+    return extract_text_from_responses_payload(response)
+
+
+def build_chat_compatible_response_from_responses_payload(response: dict) -> dict:
+    if not isinstance(response, dict):
+        return response
+    if isinstance(response.get("choices"), list):
+        return response
+
+    content = extract_text_from_responses_payload(response)
+    reasoning = extract_reasoning_text_from_responses_payload(response)
+
+    message = {
+        "role": "assistant",
+        "content": content,
+    }
+    if reasoning:
+        message["reasoning_content"] = reasoning
+
+    return {
+        **response,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": "stop",
+            }
+        ],
+    }
+
+
 def build_upstream_payload(
     form_data: dict,
     endpoint_kind: str,

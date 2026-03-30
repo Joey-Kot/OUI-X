@@ -9,6 +9,7 @@ import re
 from open_webui.utils.chat import generate_chat_completion, generate_responses
 from open_webui.utils.completion_adapter import (
     build_upstream_payload,
+    build_chat_compatible_response_from_responses_payload,
     provider_type_from_model_id,
     resolve_endpoint_kind,
 )
@@ -132,7 +133,13 @@ async def _generate_task_completion(
     )
 
     if endpoint_kind == "responses":
-        return await generate_responses(request, form_data=upstream_payload, user=user)
+        response = await generate_responses(request, form_data=upstream_payload, user=user)
+        if payload.get("stream"):
+            return response
+        if isinstance(response, dict):
+            compatible = build_chat_compatible_response_from_responses_payload(response)
+            return {**compatible, "raw_response": response}
+        return response
 
     return await generate_chat_completion(request, form_data=upstream_payload, user=user)
 

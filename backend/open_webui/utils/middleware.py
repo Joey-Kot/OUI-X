@@ -110,6 +110,7 @@ from open_webui.utils.tools_runtime import build_tool_registry, registry_to_lega
 from open_webui.utils.completion_adapter import (
     build_upstream_payload,
     chat_messages_to_responses_input,
+    extract_assistant_content_from_completion_response,
     normalize_tools_for_responses,
 )
 
@@ -136,6 +137,14 @@ from open_webui.constants import TASKS
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
+
+
+def _extract_task_response_content(response: Any, fallback: str = "") -> str:
+    if isinstance(response, dict):
+        content = extract_assistant_content_from_completion_response(response)
+        if isinstance(content, str) and content:
+            return content
+    return fallback
 
 
 REMOVED_PARAM_KEYS = {
@@ -364,13 +373,15 @@ async def chat_completion_tools_handler(
         if hasattr(response, "body_iterator"):
             async for chunk in response.body_iterator:
                 data = json.loads(chunk.decode("utf-8", "replace"))
-                content = data["choices"][0]["message"]["content"]
+                extracted = _extract_task_response_content(data)
+                if extracted:
+                    content = extracted
 
             # Cleanup any remaining background tasks if necessary
             if response.background is not None:
                 await response.background()
         else:
-            content = response["choices"][0]["message"]["content"]
+            content = _extract_task_response_content(response)
         return content
 
     def get_tools_function_calling_payload(messages, task_model_id, content):
@@ -656,7 +667,7 @@ async def chat_web_search_handler(
             user,
         )
 
-        response = res["choices"][0]["message"]["content"]
+        response = _extract_task_response_content(res)
 
         try:
             bracket_start = response.find("{")
@@ -1124,7 +1135,7 @@ async def chat_image_generation_handler(
                     user,
                 )
 
-                response = res["choices"][0]["message"]["content"]
+                response = _extract_task_response_content(res)
 
                 try:
                     bracket_start = response.find("{")
@@ -1376,7 +1387,7 @@ async def chat_completion_files_handler(
                     },
                     user,
                 )
-                queries_response = queries_response["choices"][0]["message"]["content"]
+                queries_response = _extract_task_response_content(queries_response)
 
                 try:
                     bracket_start = queries_response.find("{")
@@ -2062,13 +2073,7 @@ async def process_chat_response(
 
                     if res and isinstance(res, dict):
                         if len(res.get("choices", [])) == 1:
-                            response_message = res.get("choices", [])[0].get(
-                                "message", {}
-                            )
-
-                            follow_ups_string = response_message.get(
-                                "content"
-                            ) or response_message.get("reasoning_content", "")
+                            follow_ups_string = _extract_task_response_content(res)
                         else:
                             follow_ups_string = ""
 
@@ -2124,15 +2129,8 @@ async def process_chat_response(
 
                             if res and isinstance(res, dict):
                                 if len(res.get("choices", [])) == 1:
-                                    response_message = res.get("choices", [])[0].get(
-                                        "message", {}
-                                    )
-
                                     title_string = (
-                                        response_message.get("content")
-                                        or response_message.get(
-                                            "reasoning_content",
-                                        )
+                                        _extract_task_response_content(res)
                                         or message.get("content", user_message)
                                     )
                                 else:
@@ -2188,13 +2186,7 @@ async def process_chat_response(
 
                         if res and isinstance(res, dict):
                             if len(res.get("choices", [])) == 1:
-                                response_message = res.get("choices", [])[0].get(
-                                    "message", {}
-                                )
-
-                                tags_string = response_message.get(
-                                    "content"
-                                ) or response_message.get("reasoning_content", "")
+                                tags_string = _extract_task_response_content(res)
                             else:
                                 tags_string = ""
 
