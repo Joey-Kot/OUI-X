@@ -84,23 +84,12 @@ async function* openAIStreamToIterator(
 
 	const extractResponsesReasoning = (response: any) => {
 		const output = Array.isArray(response?.output) ? response.output : [];
-		const outputSummary = output
+		return output
 			.filter((item: any) => item?.type === 'reasoning')
 			.flatMap((item: any) => item?.summary ?? [])
 			.map((summary: any) => summary?.text ?? '')
 			.filter((text: any) => typeof text === 'string' && text.trim())
 			.join('\n');
-		if (outputSummary) return outputSummary;
-
-		const root = response?.reasoning?.summary;
-		if (typeof root === 'string') return root;
-		if (Array.isArray(root)) {
-			return root
-				.map((summary: any) => summary?.text ?? '')
-				.filter((text: any) => typeof text === 'string' && text.trim())
-				.join('\n');
-		}
-		return '';
 	};
 
 	while (true) {

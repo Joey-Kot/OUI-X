@@ -55,5 +55,44 @@ describe('createOpenAITextStream responses parsing', () => {
 
 		expect(text).toBe('fallback text');
 	});
-});
 
+	it('does not emit reasoning from response.reasoning.summary config string', async () => {
+		const stream = makeSseStream([
+			'event: response.completed\n',
+			'data: {"type":"response.completed","response":{"output":[],"reasoning":{"summary":"detailed"}}}\n\n'
+		]);
+
+		const iterator = await createOpenAITextStream(stream, false);
+		let reasoning = '';
+		for await (const update of iterator) {
+			if (update.reasoning) {
+				reasoning += update.reasoning;
+			}
+			if (update.done) {
+				break;
+			}
+		}
+
+		expect(reasoning).toBe('');
+	});
+
+	it('emits reasoning from output reasoning summary text', async () => {
+		const stream = makeSseStream([
+			'event: response.completed\n',
+			'data: {"type":"response.completed","response":{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"line 1"},{"type":"summary_text","text":"line 2"}]}]}}\n\n'
+		]);
+
+		const iterator = await createOpenAITextStream(stream, false);
+		let reasoning = '';
+		for await (const update of iterator) {
+			if (update.reasoning) {
+				reasoning += update.reasoning;
+			}
+			if (update.done) {
+				break;
+			}
+		}
+
+		expect(reasoning).toBe('line 1\nline 2');
+	});
+});

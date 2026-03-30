@@ -928,17 +928,6 @@ def _map_responses_event_to_chat_chunk(payload: dict, state: dict) -> dict | Non
                 if reasoning_text:
                     break
 
-        if not reasoning_text and isinstance(response.get("reasoning"), dict):
-            summary = response["reasoning"].get("summary")
-            if isinstance(summary, str):
-                reasoning_text = summary
-            elif isinstance(summary, list):
-                reasoning_text = "\n".join(
-                    s.get("text", "")
-                    for s in summary
-                    if isinstance(s, dict) and isinstance(s.get("text"), str)
-                ).strip()
-
         if reasoning_text:
             delta["reasoning_content"] = reasoning_text
 

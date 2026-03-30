@@ -76,6 +76,7 @@ OUI-X 的 Completion/Responses 已收敛到统一适配层（`completion_adapter
 * 表现层与能力：
   * tool calls / tool followups 在 Responses 结构里的表达与回放
   * reasoning/thinking 的提取与展示（同时避免把不合适的 summary 混入 UI）
+    * reasoning 展示仅采信 `output[].summary[].text`，不读取 `response.reasoning.summary` 这类请求参数回显字段
   * UI 展示层对 content blocks 做了重排：**thinking 在正文之前展示**（仅展示顺序调整）
 * 缓存命中功能增强，大幅提升缓存命中率：
   * 请求未显式传 `prompt_cache_key` 时，服务端自动注入会话级 key，无需前端/用户手动传
