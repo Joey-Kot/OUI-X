@@ -30,9 +30,17 @@ COLLECTION_RAG_CONFIG_META_KEY = "collection_rag_config"
 COLLECTION_VECTOR_META_KEY = "collection_vector"
 
 
+def normalize_rag_embedding_engine_value(value: Any) -> Any:
+    if value == "azure_openai":
+        return "openai"
+    return value
+
+
 def get_global_rag_defaults(config: Any) -> dict:
     return {
-        "RAG_EMBEDDING_ENGINE": config.RAG_EMBEDDING_ENGINE,
+        "RAG_EMBEDDING_ENGINE": normalize_rag_embedding_engine_value(
+            config.RAG_EMBEDDING_ENGINE
+        ),
         "RAG_EMBEDDING_MODEL": config.RAG_EMBEDDING_MODEL,
         "TEXT_SPLITTER": config.TEXT_SPLITTER,
         "VOYAGE_TOKENIZER_MODEL": config.VOYAGE_TOKENIZER_MODEL,
@@ -59,7 +67,7 @@ def normalize_collection_rag_config(meta: Optional[dict]) -> dict:
 
     raw_overrides = rag_meta.get("overrides") or {}
     overrides = {
-        key: raw_overrides[key]
+        key: normalize_rag_embedding_engine_value(raw_overrides[key])
         for key in COLLECTION_RAG_OVERRIDE_KEYS
         if key in raw_overrides and raw_overrides[key] is not None
     }
@@ -140,6 +148,8 @@ def sanitize_rag_overrides(overrides: Optional[dict]) -> dict:
         }:
             if isinstance(value, str):
                 value = value.strip()
+            if key == "RAG_EMBEDDING_ENGINE":
+                value = normalize_rag_embedding_engine_value(value)
             if value != "":
                 sanitized[key] = value
         elif key in {"CHUNK_SIZE", "CHUNK_OVERLAP", "RAG_EMBEDDING_BATCH_SIZE", "TOP_K", "TOP_K_RERANKER"}:

@@ -175,7 +175,7 @@ def test_injector_skips_provider_endpoint_pairs_outside_scope(monkeypatch):
 
     payload = {"model": "gpt-5"}
     openai_router._inject_prompt_cache_params_for_completion_request(
-        "azure_openai",
+        "custom_provider",
         "chat_completions",
         payload,
         {"chat_id": "chat-1"},

@@ -13,6 +13,7 @@ OUI-X 是基于 **Open WebUI** 的二次开发分支，目标是：
 * **工具调用优先**：把工具体系升级到以 **MCP（Model Context Protocol）** 为核心，支持系统级与用户级 MCP server 管理、OAuth 2.1、SSE/Streamable HTTP。
 * **RAG 强化**：从“一个全局配置套所有集合”升级到“**每个 Knowledge Collection 可独立覆写配置**”，并强化 clone、BM25/Hybrid/Rerank 的配置结构与稳定性。
 * **面向 Responses API**：新增 OpenAI Responses API 的适配层，支持对话、图片输入、工具调用与 reasoning/thinking 的展示。
+* **连接与协议收敛**：连接 provider 已收敛为 `openai` / `openai_responses` 两类；Responses/Chat 采用并行原生链路，但路由决策与 payload 构建统一由后端适配层收敛；`Local Connection` 与 `Azure OpenAI provider` 均已下线为历史兼容语义。
 
 ## 新增了什么？
 
@@ -34,14 +35,49 @@ OUI-X 增加了“原生 MCP 工具调用”的完整链路：
 
 ### 2) OpenAI Responses API 适配
 
-OUI-X 新增 Responses API 的适配层（在后端与前端均有接入）：
+OUI-X 的 Completion/Responses 已收敛到统一适配层（`completion_adapter`），并由 `provider_type` 驱动端点分流：
 
-* chat messages → responses input 的转换
-* responses streaming event → chat SSE chunks 的映射
-* tool calls / tool followups 在 Responses 结构里的表达与回放
-* reasoning/thinking 的提取与展示（同时避免把不合适的 summary 混入 UI）
-* UI 展示层对 content blocks 做了重排：**thinking 在正文之前展示**（仅展示顺序调整）
-* 缓存命中功能增强（仅 `provider_type = openai_responses`），大幅提升缓存命中率：
+* 端点路由矩阵（主聊天链路）：
+  * `openai_responses -> /api/responses`
+  * `openai -> /api/chat/completions`
+* 协议事实源：
+  * 前端 `endpointKind` 仅作为 hint，最终以后端适配层决策为准
+  * 流式/非流式共享同一套端点决策与请求构造逻辑，减少分支漂移
+* 前端请求构造原生化：
+  * Responses 请求使用原生 schema（`input/tools/tool_choice/reasoning/verbosity/metadata` 等）
+  * Chat 请求维持 `chat/completions` schema
+  * 显式使用 `endpointKind` + 联合类型，避免隐式猜测路由
+* 统一适配能力：
+  * 统一端点决策（`chat_completions` / `responses`）
+  * 统一上游 payload 构建
+  * 统一 messages -> responses.input 转换
+  * 统一 tools 结构归一化（兼容 chat-style / responses-style）
+  * 统一 prompt cache 策略注入（含 retention 模式）
+* 后端 `/api/responses` 接入统一聊天任务流水线：
+  * 复用 `process_chat_payload / process_chat_response / create_task`
+  * 保持 `task_id`、socket 事件、标题/标签/follow-up 等行为一致
+* 端点与 provider 契约：
+  * `/responses` 仅允许 `openai_responses`
+  * `/chat/completions` 面向 `openai`
+* 透传策略统一：
+  * 请求与响应未知字段默认不裁剪
+  * 仅剥离内部控制字段与非上游协议字段
+* 多入口一致性（统一适配层贯通）：
+  * 主对话入口
+  * middleware 工具 follow-up 链路
+  * 任务链路（title/tags/follow_up/query/autocomplete/emoji/moa）
+  * 前端流式 quick actions 调用
+  * Socket 直连路径 `request:chat:completion / request:responses:completion` 按 provider 执行同一分流规则
+* 流式消费：
+  * 同时支持 Chat SSE 与 Responses SSE
+  * 统一输出文本/工具调用/reasoning/usage 事件
+  * 保留 raw event 通道，未知字段不丢失
+  * responses streaming event -> chat SSE chunks 的映射
+* 表现层与能力：
+  * tool calls / tool followups 在 Responses 结构里的表达与回放
+  * reasoning/thinking 的提取与展示（同时避免把不合适的 summary 混入 UI）
+  * UI 展示层对 content blocks 做了重排：**thinking 在正文之前展示**（仅展示顺序调整）
+* 缓存命中功能增强，大幅提升缓存命中率：
   * 请求未显式传 `prompt_cache_key` 时，服务端自动注入会话级 key，无需前端/用户手动传
   * 新会话自动生成 key，同会话稳定复用，跨会话隔离
   * 显式透传 `prompt_cache_key` 优先，不会被自动注入逻辑覆盖（便于灰度/调试）
@@ -356,6 +392,20 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * TTS：移除 ElevenLabs 与部分本地 transformers TTS 分支
 * STT：移除部分 provider/config（例如 Whisper/Deepgram/Mistral STT 等相关配置与依赖链）
 
+### 5) 移除 Local Connection Type
+
+* `Settings -> Connections -> Add/Edit Connection` 不再提供 Local/External 切换入口
+* 新增/编辑连接固定写入 `connection_type=external`
+* 历史配置中的 `connection_type=local` 在读取与聚合时自动归一化为 `external`
+* 模型筛选与管理展示不再暴露 `(Local)` 语义
+
+### 6) 移除 Azure OpenAI（Connections + RAG/Knowledge）
+
+* Add/Edit Connection 不再提供 `Azure OpenAI` provider
+* RAG Embedding Engine 不再提供 `azure_openai`
+* Knowledge collection overrides 不再接受 `azure_openai`
+* 历史 `azure_openai` 配置运行时自动归一化为 `openai`
+
 ## 重构与稳定性改进（值得一提）
 
 * Docker 构建与依赖体系多次“瘦身”：
@@ -371,6 +421,24 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * Retrieval/Citation 一致性修复：
   * 非 rerank 场景下的 Chunk Expansion、Citation 标签与 TopK 解析行为已统一
   * Collection override 在向量直出链路可稳定生效，减少上下文膨胀风险
+* Completion/Responses 适配层单点化：
+  * 主聊天、middleware follow-up、tasks、前端 quick actions 的端点决策与请求构造已统一收敛
+  * 统一记录上游请求形状调试信息（endpoint/provider/tools 结构摘要），可观测性更强
+  * 新增适配层单测，覆盖端点决策、结构转换与策略注入行为
+* 任务模型选择策略收敛：
+  * 优先有效 `TASK_MODEL_EXTERNAL`，否则回退默认模型
+
+## 接口与兼容性变更（升级须知）
+
+* Connections：
+  * `OPENAI_API_CONFIGS[].provider_type` 不再支持 `azure_openai`
+  * `azure` / `api_version` / `microsoft_entra_id` 等 Azure 遗留键不再生效，并在保存时清理
+* Retrieval：
+  * `GET /retrieval/embedding` 不再返回 `azure_openai_config`
+  * `POST /retrieval/embedding/update` 不再接收 `azure_openai_config`
+* 兼容策略：
+  * 采用运行时归一化，无需一次性迁移脚本
+  * 归一化仅针对本能力相关字段，不影响其他 Azure 功能（如存储/语音）
 
 ## 运行与开发（简述）
 

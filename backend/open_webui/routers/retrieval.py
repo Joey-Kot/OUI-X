@@ -267,28 +267,21 @@ def get_physical_collection_name(collection_name: str | None) -> str | None:
     return get_active_vector_collection_name(knowledge.id, knowledge.meta)
 
 
+def normalize_rag_embedding_engine(engine: str | None) -> str:
+    if engine == "azure_openai":
+        return "openai"
+    return engine or "openai"
+
+
 def build_embedding_function_from_effective_config(request: Request, effective_config: dict):
-    engine = effective_config["RAG_EMBEDDING_ENGINE"]
+    engine = normalize_rag_embedding_engine(effective_config["RAG_EMBEDDING_ENGINE"])
     return get_embedding_function(
         engine,
         effective_config["RAG_EMBEDDING_MODEL"],
         request.app.state.ef,
-        (
-            request.app.state.config.RAG_OPENAI_API_BASE_URL
-            if engine == "openai"
-            else request.app.state.config.RAG_AZURE_OPENAI_BASE_URL
-        ),
-        (
-            request.app.state.config.RAG_OPENAI_API_KEY
-            if engine == "openai"
-            else request.app.state.config.RAG_AZURE_OPENAI_API_KEY
-        ),
+        request.app.state.config.RAG_OPENAI_API_BASE_URL,
+        request.app.state.config.RAG_OPENAI_API_KEY,
         effective_config["RAG_EMBEDDING_BATCH_SIZE"],
-        azure_api_version=(
-            request.app.state.config.RAG_AZURE_OPENAI_API_VERSION
-            if engine == "azure_openai"
-            else None
-        ),
         enable_async=request.app.state.config.ENABLE_ASYNC_EMBEDDING,
     )
 
@@ -336,12 +329,15 @@ class SearchForm(BaseModel):
 
 @router.get("/")
 async def get_status(request: Request):
+    normalized_engine = normalize_rag_embedding_engine(
+        request.app.state.config.RAG_EMBEDDING_ENGINE
+    )
     return {
         "status": True,
         "CHUNK_SIZE": request.app.state.config.CHUNK_SIZE,
         "CHUNK_OVERLAP": request.app.state.config.CHUNK_OVERLAP,
         "RAG_TEMPLATE": request.app.state.config.RAG_TEMPLATE,
-        "RAG_EMBEDDING_ENGINE": request.app.state.config.RAG_EMBEDDING_ENGINE,
+        "RAG_EMBEDDING_ENGINE": normalized_engine,
         "RAG_EMBEDDING_MODEL": request.app.state.config.RAG_EMBEDDING_MODEL,
         "RAG_RERANKING_MODEL": request.app.state.config.RAG_RERANKING_MODEL,
         "RAG_EMBEDDING_BATCH_SIZE": request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
@@ -351,20 +347,18 @@ async def get_status(request: Request):
 
 @router.get("/embedding")
 async def get_embedding_config(request: Request, user=Depends(get_admin_user)):
+    normalized_engine = normalize_rag_embedding_engine(
+        request.app.state.config.RAG_EMBEDDING_ENGINE
+    )
     return {
         "status": True,
-        "RAG_EMBEDDING_ENGINE": request.app.state.config.RAG_EMBEDDING_ENGINE,
+        "RAG_EMBEDDING_ENGINE": normalized_engine,
         "RAG_EMBEDDING_MODEL": request.app.state.config.RAG_EMBEDDING_MODEL,
         "RAG_EMBEDDING_BATCH_SIZE": request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
         "ENABLE_ASYNC_EMBEDDING": request.app.state.config.ENABLE_ASYNC_EMBEDDING,
         "openai_config": {
             "url": request.app.state.config.RAG_OPENAI_API_BASE_URL,
             "key": request.app.state.config.RAG_OPENAI_API_KEY,
-        },
-        "azure_openai_config": {
-            "url": request.app.state.config.RAG_AZURE_OPENAI_BASE_URL,
-            "key": request.app.state.config.RAG_AZURE_OPENAI_API_KEY,
-            "version": request.app.state.config.RAG_AZURE_OPENAI_API_VERSION,
         },
     }
 
@@ -374,15 +368,8 @@ class OpenAIConfigForm(BaseModel):
     key: str
 
 
-class AzureOpenAIConfigForm(BaseModel):
-    url: str
-    key: str
-    version: str
-
-
 class EmbeddingModelUpdateForm(BaseModel):
     openai_config: Optional[OpenAIConfigForm] = None
-    azure_openai_config: Optional[AzureOpenAIConfigForm] = None
     RAG_EMBEDDING_ENGINE: str
     RAG_EMBEDDING_MODEL: str
     RAG_EMBEDDING_BATCH_SIZE: Optional[int] = 1
@@ -413,7 +400,9 @@ async def update_embedding_config(
     )
     unload_embedding_model(request)
     try:
-        request.app.state.config.RAG_EMBEDDING_ENGINE = form_data.RAG_EMBEDDING_ENGINE
+        request.app.state.config.RAG_EMBEDDING_ENGINE = normalize_rag_embedding_engine(
+            form_data.RAG_EMBEDDING_ENGINE
+        )
         request.app.state.config.RAG_EMBEDDING_MODEL = form_data.RAG_EMBEDDING_MODEL
         request.app.state.config.RAG_EMBEDDING_BATCH_SIZE = (
             form_data.RAG_EMBEDDING_BATCH_SIZE
@@ -422,28 +411,13 @@ async def update_embedding_config(
             form_data.ENABLE_ASYNC_EMBEDDING
         )
 
-        if request.app.state.config.RAG_EMBEDDING_ENGINE in [
-            "openai",
-            "azure_openai",
-        ]:
-            if form_data.openai_config is not None:
-                request.app.state.config.RAG_OPENAI_API_BASE_URL = (
-                    form_data.openai_config.url
-                )
-                request.app.state.config.RAG_OPENAI_API_KEY = (
-                    form_data.openai_config.key
-                )
-
-            if form_data.azure_openai_config is not None:
-                request.app.state.config.RAG_AZURE_OPENAI_BASE_URL = (
-                    form_data.azure_openai_config.url
-                )
-                request.app.state.config.RAG_AZURE_OPENAI_API_KEY = (
-                    form_data.azure_openai_config.key
-                )
-                request.app.state.config.RAG_AZURE_OPENAI_API_VERSION = (
-                    form_data.azure_openai_config.version
-                )
+        if form_data.openai_config is not None:
+            request.app.state.config.RAG_OPENAI_API_BASE_URL = (
+                form_data.openai_config.url
+            )
+            request.app.state.config.RAG_OPENAI_API_KEY = (
+                form_data.openai_config.key
+            )
 
         request.app.state.ef = get_ef(
             request.app.state.config.RAG_EMBEDDING_ENGINE,
@@ -454,22 +428,9 @@ async def update_embedding_config(
             request.app.state.config.RAG_EMBEDDING_ENGINE,
             request.app.state.config.RAG_EMBEDDING_MODEL,
             request.app.state.ef,
-            (
-                request.app.state.config.RAG_OPENAI_API_BASE_URL
-                if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else request.app.state.config.RAG_AZURE_OPENAI_BASE_URL
-            ),
-            (
-                request.app.state.config.RAG_OPENAI_API_KEY
-                if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else request.app.state.config.RAG_AZURE_OPENAI_API_KEY
-            ),
+            request.app.state.config.RAG_OPENAI_API_BASE_URL,
+            request.app.state.config.RAG_OPENAI_API_KEY,
             request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
-            azure_api_version=(
-                request.app.state.config.RAG_AZURE_OPENAI_API_VERSION
-                if request.app.state.config.RAG_EMBEDDING_ENGINE == "azure_openai"
-                else None
-            ),
             enable_async=request.app.state.config.ENABLE_ASYNC_EMBEDDING,
         )
 
@@ -482,11 +443,6 @@ async def update_embedding_config(
             "openai_config": {
                 "url": request.app.state.config.RAG_OPENAI_API_BASE_URL,
                 "key": request.app.state.config.RAG_OPENAI_API_KEY,
-            },
-            "azure_openai_config": {
-                "url": request.app.state.config.RAG_AZURE_OPENAI_BASE_URL,
-                "key": request.app.state.config.RAG_AZURE_OPENAI_API_KEY,
-                "version": request.app.state.config.RAG_AZURE_OPENAI_API_VERSION,
             },
         }
     except Exception as e:
@@ -1644,26 +1600,16 @@ def save_docs_to_vector_db(
                 return True
 
         log.info(f"generating embeddings for {collection_name}")
+        normalized_engine = normalize_rag_embedding_engine(
+            rag_config["RAG_EMBEDDING_ENGINE"]
+        )
         embedding_function = get_embedding_function(
-            rag_config["RAG_EMBEDDING_ENGINE"],
+            normalized_engine,
             rag_config["RAG_EMBEDDING_MODEL"],
             request.app.state.ef,
-            (
-                request.app.state.config.RAG_OPENAI_API_BASE_URL
-                if rag_config["RAG_EMBEDDING_ENGINE"] == "openai"
-                else request.app.state.config.RAG_AZURE_OPENAI_BASE_URL
-            ),
-            (
-                request.app.state.config.RAG_OPENAI_API_KEY
-                if rag_config["RAG_EMBEDDING_ENGINE"] == "openai"
-                else request.app.state.config.RAG_AZURE_OPENAI_API_KEY
-            ),
+            request.app.state.config.RAG_OPENAI_API_BASE_URL,
+            request.app.state.config.RAG_OPENAI_API_KEY,
             rag_config["RAG_EMBEDDING_BATCH_SIZE"],
-            azure_api_version=(
-                request.app.state.config.RAG_AZURE_OPENAI_API_VERSION
-                if rag_config["RAG_EMBEDDING_ENGINE"] == "azure_openai"
-                else None
-            ),
             enable_async=request.app.state.config.ENABLE_ASYNC_EMBEDDING,
         )
 

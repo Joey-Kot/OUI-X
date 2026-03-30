@@ -115,8 +115,9 @@ export const getModels = async (
 				const response = responses[idx];
 				const apiConfig = OPENAI_API_CONFIGS[idx.toString()] ?? {};
 				const providerType =
-					apiConfig?.provider_type ??
-					(apiConfig?.azure ? 'azure_openai' : 'openai_responses');
+					apiConfig?.provider_type === 'azure_openai'
+						? 'openai'
+						: (apiConfig?.provider_type ?? (apiConfig?.azure ? 'openai' : 'openai_responses'));
 
 				let models = Array.isArray(response) ? response : (response?.data ?? []);
 				models = models.map((model) => ({

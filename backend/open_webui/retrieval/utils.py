@@ -1285,95 +1285,6 @@ async def agenerate_openai_batch_embeddings(
         return None
 
 
-def generate_azure_openai_batch_embeddings(
-    model: str,
-    texts: list[str],
-    url: str,
-    key: str = "",
-    version: str = "",
-    prefix: str = None,
-    user: UserModel = None,
-) -> Optional[list[list[float]]]:
-    try:
-        log.debug(
-            f"generate_azure_openai_batch_embeddings:deployment {model} batch size: {len(texts)}"
-        )
-        json_data = {"input": texts}
-        if isinstance(RAG_EMBEDDING_PREFIX_FIELD_NAME, str) and isinstance(prefix, str):
-            json_data[RAG_EMBEDDING_PREFIX_FIELD_NAME] = prefix
-
-        url = f"{url}/openai/deployments/{model}/embeddings?api-version={version}"
-
-        for _ in range(5):
-            headers = {
-                "Content-Type": "application/json",
-                "api-key": key,
-            }
-            if ENABLE_FORWARD_USER_INFO_HEADERS and user:
-                headers = include_user_info_headers(headers, user)
-
-            r = requests.post(
-                url,
-                headers=headers,
-                json=json_data,
-            )
-            if r.status_code == 429:
-                retry = float(r.headers.get("Retry-After", "1"))
-                time.sleep(retry)
-                continue
-            r.raise_for_status()
-            data = r.json()
-            if "data" in data:
-                return [elem["embedding"] for elem in data["data"]]
-            else:
-                raise Exception("Something went wrong :/")
-        return None
-    except Exception as e:
-        log.exception(f"Error generating azure openai batch embeddings: {e}")
-        return None
-
-
-async def agenerate_azure_openai_batch_embeddings(
-    model: str,
-    texts: list[str],
-    url: str,
-    key: str = "",
-    version: str = "",
-    prefix: str = None,
-    user: UserModel = None,
-) -> Optional[list[list[float]]]:
-    try:
-        log.debug(
-            f"agenerate_azure_openai_batch_embeddings:deployment {model} batch size: {len(texts)}"
-        )
-        form_data = {"input": texts}
-        if isinstance(RAG_EMBEDDING_PREFIX_FIELD_NAME, str) and isinstance(prefix, str):
-            form_data[RAG_EMBEDDING_PREFIX_FIELD_NAME] = prefix
-
-        full_url = f"{url}/openai/deployments/{model}/embeddings?api-version={version}"
-
-        headers = {
-            "Content-Type": "application/json",
-            "api-key": key,
-        }
-        if ENABLE_FORWARD_USER_INFO_HEADERS and user:
-            headers = include_user_info_headers(headers, user)
-
-        async with aiohttp.ClientSession(
-            trust_env=True, timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
-        ) as session:
-            async with session.post(full_url, headers=headers, json=form_data) as r:
-                r.raise_for_status()
-                data = await r.json()
-                if "data" in data:
-                    return [item["embedding"] for item in data["data"]]
-                else:
-                    raise Exception("Something went wrong :/")
-    except Exception as e:
-        log.exception(f"Error generating azure openai batch embeddings: {e}")
-        return None
-
-
 def get_embedding_function(
     embedding_engine,
     embedding_model,
@@ -1381,10 +1292,9 @@ def get_embedding_function(
     url,
     key,
     embedding_batch_size,
-    azure_api_version=None,
     enable_async=True,
 ) -> Awaitable:
-    if embedding_engine in ["openai", "azure_openai"]:
+    if embedding_engine in ["openai"]:
         embedding_function = lambda query, prefix=None, user=None: generate_embeddings(
             engine=embedding_engine,
             model=embedding_model,
@@ -1393,7 +1303,6 @@ def get_embedding_function(
             url=url,
             key=key,
             user=user,
-            azure_api_version=azure_api_version,
         )
 
         async def async_embedding_function(query, prefix=None, user=None):
@@ -1464,18 +1373,7 @@ async def generate_embeddings(
             model, text if isinstance(text, list) else [text], url, key, prefix, user
         )
         return embeddings[0] if isinstance(text, str) else embeddings
-    elif engine == "azure_openai":
-        azure_api_version = kwargs.get("azure_api_version", "")
-        embeddings = await agenerate_azure_openai_batch_embeddings(
-            model,
-            text if isinstance(text, list) else [text],
-            url,
-            key,
-            azure_api_version,
-            prefix,
-            user,
-        )
-        return embeddings[0] if isinstance(text, str) else embeddings
+    raise ValueError(f"Unknown embedding engine: {engine}")
 
 
 def get_reranking_function(reranking_engine, reranking_model, reranking_function):
@@ -1507,26 +1405,18 @@ def _build_collection_runtime_functions(request, collection_name: str):
         knowledge.meta, request.app.state.config
     )["effective"]
 
+    engine = (
+        "openai"
+        if effective_config["RAG_EMBEDDING_ENGINE"] == "azure_openai"
+        else effective_config["RAG_EMBEDDING_ENGINE"]
+    )
     embedding_function = get_embedding_function(
-        effective_config["RAG_EMBEDDING_ENGINE"],
+        engine,
         effective_config["RAG_EMBEDDING_MODEL"],
         request.app.state.ef,
-        (
-            request.app.state.config.RAG_OPENAI_API_BASE_URL
-            if effective_config["RAG_EMBEDDING_ENGINE"] == "openai"
-            else request.app.state.config.RAG_AZURE_OPENAI_BASE_URL
-        ),
-        (
-            request.app.state.config.RAG_OPENAI_API_KEY
-            if effective_config["RAG_EMBEDDING_ENGINE"] == "openai"
-            else request.app.state.config.RAG_AZURE_OPENAI_API_KEY
-        ),
+        request.app.state.config.RAG_OPENAI_API_BASE_URL,
+        request.app.state.config.RAG_OPENAI_API_KEY,
         effective_config["RAG_EMBEDDING_BATCH_SIZE"],
-        azure_api_version=(
-            request.app.state.config.RAG_AZURE_OPENAI_API_VERSION
-            if effective_config["RAG_EMBEDDING_ENGINE"] == "azure_openai"
-            else None
-        ),
         enable_async=request.app.state.config.ENABLE_ASYNC_EMBEDDING,
     )
 

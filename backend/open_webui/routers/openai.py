@@ -8,8 +8,6 @@ import aiohttp
 from aiocache import cached
 import requests
 
-from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-
 from fastapi import Depends, HTTPException, Request, APIRouter
 from fastapi.responses import (
     FileResponse,
@@ -124,13 +122,31 @@ def get_provider_type(api_config: Optional[dict]) -> str:
         return "openai"
 
     provider_type = api_config.get("provider_type")
-    if provider_type in {"openai", "azure_openai", "openai_responses"}:
+    if provider_type in {"openai", "openai_responses"}:
         return provider_type
 
-    if api_config.get("azure", False):
-        return "azure_openai"
+    if provider_type == "azure_openai" or api_config.get("azure", False):
+        return "openai"
 
     return "openai"
+
+
+def normalize_openai_api_config(api_config: Optional[dict]) -> dict:
+    if not isinstance(api_config, dict):
+        return {}
+
+    normalized = {**api_config}
+    normalized["provider_type"] = get_provider_type(api_config)
+
+    auth_type = normalized.get("auth_type")
+    if auth_type in {"azure_ad", "microsoft_entra_id"}:
+        normalized["auth_type"] = "bearer"
+
+    # Azure OpenAI provider is removed. Drop legacy keys.
+    normalized.pop("azure", None)
+    normalized.pop("api_version", None)
+
+    return normalized
 
 
 def normalize_connection_type(connection_type: Optional[str]) -> str:
@@ -221,9 +237,6 @@ async def get_headers_and_cookies(
         if oauth_token:
             token = f"{oauth_token.get('access_token', '')}"
 
-    elif auth_type in ("azure_ad", "microsoft_entra_id"):
-        token = get_microsoft_entra_id_access_token()
-
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
@@ -231,21 +244,6 @@ async def get_headers_and_cookies(
         headers = {**headers, **config.get("headers")}
 
     return headers, cookies
-
-
-def get_microsoft_entra_id_access_token():
-    """
-    Get Microsoft Entra ID access token using DefaultAzureCredential for Azure OpenAI.
-    Returns the token string or None if authentication fails.
-    """
-    try:
-        token_provider = get_bearer_token_provider(
-            DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
-        )
-        return token_provider()
-    except Exception as e:
-        log.error(f"Error getting Microsoft Entra ID access token: {e}")
-        return None
 
 
 ##########################################
@@ -259,11 +257,17 @@ router = APIRouter()
 
 @router.get("/config")
 async def get_config(request: Request, user=Depends(get_admin_user)):
+    normalized_api_configs = {
+        key: normalize_openai_api_config(value)
+        if isinstance(value, dict)
+        else value
+        for key, value in (request.app.state.config.OPENAI_API_CONFIGS or {}).items()
+    }
     return {
         "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
         "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
         "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
-        "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
+        "OPENAI_API_CONFIGS": normalized_api_configs,
     }
 
 
@@ -300,7 +304,15 @@ async def update_config(
                 - len(request.app.state.config.OPENAI_API_KEYS)
             )
 
-    request.app.state.config.OPENAI_API_CONFIGS = form_data.OPENAI_API_CONFIGS
+    raw_api_configs = form_data.OPENAI_API_CONFIGS or {}
+    normalized_api_configs = {}
+    for key, value in raw_api_configs.items():
+        if isinstance(value, dict):
+            normalized_api_configs[key] = normalize_openai_api_config(value)
+        else:
+            normalized_api_configs[key] = value
+
+    request.app.state.config.OPENAI_API_CONFIGS = normalized_api_configs
 
     # Remove the API configs that are not in the API URLS
     keys = list(map(str, range(len(request.app.state.config.OPENAI_API_BASE_URLS))))
@@ -344,6 +356,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             str(idx),
             request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
         )
+        api_config = normalize_openai_api_config(api_config)
 
         headers, cookies = await get_headers_and_cookies(
             request, url, key, api_config, user=user
@@ -429,6 +442,8 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
                     url, {}
                 ),  # Legacy support
             )
+            api_config = normalize_openai_api_config(api_config)
+            api_config = normalize_openai_api_config(api_config)
 
             enable = api_config.get("enable", True)
             model_ids = api_config.get("model_ids", [])
@@ -614,6 +629,7 @@ async def get_models(
             str(url_idx),
             request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
         )
+        api_config = normalize_openai_api_config(api_config)
 
         r = None
         async with aiohttp.ClientSession(
@@ -625,48 +641,42 @@ async def get_models(
                     request, url, key, api_config, user=user
                 )
 
-                if get_provider_type(api_config) == "azure_openai":
-                    models = {
-                        "data": api_config.get("model_ids", []) or [],
-                        "object": "list",
-                    }
-                else:
-                    async with session.get(
-                        f"{url}/models",
-                        headers=headers,
-                        cookies=cookies,
-                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
-                    ) as r:
-                        if r.status != 200:
-                            # Extract response error details if available
-                            error_detail = f"HTTP Error: {r.status}"
-                            res = await r.json()
-                            if "error" in res:
-                                error_detail = f"External Error: {res['error']}"
-                            raise Exception(error_detail)
+                async with session.get(
+                    f"{url}/models",
+                    headers=headers,
+                    cookies=cookies,
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                ) as r:
+                    if r.status != 200:
+                        # Extract response error details if available
+                        error_detail = f"HTTP Error: {r.status}"
+                        res = await r.json()
+                        if "error" in res:
+                            error_detail = f"External Error: {res['error']}"
+                        raise Exception(error_detail)
 
-                        response_data = await r.json()
+                    response_data = await r.json()
 
-                        # Check if we're calling OpenAI API based on the URL
-                        if "api.openai.com" in url:
-                            # Filter models according to the specified conditions
-                            response_data["data"] = [
-                                model
-                                for model in response_data.get("data", [])
-                                if not any(
-                                    name in model["id"]
-                                    for name in [
-                                        "babbage",
-                                        "dall-e",
-                                        "davinci",
-                                        "embedding",
-                                        "tts",
-                                        "whisper",
-                                    ]
-                                )
-                            ]
+                    # Check if we're calling OpenAI API based on the URL
+                    if "api.openai.com" in url:
+                        # Filter models according to the specified conditions
+                        response_data["data"] = [
+                            model
+                            for model in response_data.get("data", [])
+                            if not any(
+                                name in model["id"]
+                                for name in [
+                                    "babbage",
+                                    "dall-e",
+                                    "davinci",
+                                    "embedding",
+                                    "tts",
+                                    "whisper",
+                                ]
+                            )
+                        ]
 
-                        models = response_data
+                    models = response_data
             except aiohttp.ClientError as e:
                 # ClientError covers all aiohttp requests issues
                 log.exception(f"Client error: {str(e)}")
@@ -701,6 +711,7 @@ async def verify_connection(
     key = form_data.key
 
     api_config = form_data.config or {}
+    api_config = normalize_openai_api_config(api_config)
 
     async with aiohttp.ClientSession(
         trust_env=True,
@@ -711,58 +722,28 @@ async def verify_connection(
                 request, url, key, api_config, user=user
             )
 
-            if get_provider_type(api_config) == "azure_openai":
-                # Only set api-key header if not using Azure Entra ID authentication
-                auth_type = api_config.get("auth_type", "bearer")
-                if auth_type not in ("azure_ad", "microsoft_entra_id"):
-                    headers["api-key"] = key
+            async with session.get(
+                f"{url}/models",
+                headers=headers,
+                cookies=cookies,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as r:
+                try:
+                    response_data = await r.json()
+                except Exception:
+                    response_data = await r.text()
 
-                api_version = api_config.get("api_version", "") or "2023-03-15-preview"
-                async with session.get(
-                    url=f"{url}/openai/models?api-version={api_version}",
-                    headers=headers,
-                    cookies=cookies,
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
-                ) as r:
-                    try:
-                        response_data = await r.json()
-                    except Exception:
-                        response_data = await r.text()
+                if r.status != 200:
+                    if isinstance(response_data, (dict, list)):
+                        return JSONResponse(
+                            status_code=r.status, content=response_data
+                        )
+                    else:
+                        return PlainTextResponse(
+                            status_code=r.status, content=response_data
+                        )
 
-                    if r.status != 200:
-                        if isinstance(response_data, (dict, list)):
-                            return JSONResponse(
-                                status_code=r.status, content=response_data
-                            )
-                        else:
-                            return PlainTextResponse(
-                                status_code=r.status, content=response_data
-                            )
-
-                    return response_data
-            else:
-                async with session.get(
-                    f"{url}/models",
-                    headers=headers,
-                    cookies=cookies,
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
-                ) as r:
-                    try:
-                        response_data = await r.json()
-                    except Exception:
-                        response_data = await r.text()
-
-                    if r.status != 200:
-                        if isinstance(response_data, (dict, list)):
-                            return JSONResponse(
-                                status_code=r.status, content=response_data
-                            )
-                        else:
-                            return PlainTextResponse(
-                                status_code=r.status, content=response_data
-                            )
-
-                    return response_data
+                return response_data
 
         except aiohttp.ClientError as e:
             # ClientError covers all aiohttp requests issues
@@ -777,77 +758,8 @@ async def verify_connection(
             )
 
 
-def get_azure_allowed_params(api_version: str) -> set[str]:
-    allowed_params = {
-        "messages",
-        "temperature",
-        "role",
-        "content",
-        "contentPart",
-        "contentPartImage",
-        "enhancements",
-        "dataSources",
-        "n",
-        "stream",
-        "stop",
-        "max_tokens",
-        "presence_penalty",
-        "frequency_penalty",
-        "logit_bias",
-        "user",
-        "function_call",
-        "functions",
-        "tools",
-        "tool_choice",
-        "top_p",
-        "log_probs",
-        "top_logprobs",
-        "response_format",
-        "seed",
-        "max_completion_tokens",
-        "reasoning_effort",
-    }
-
-    try:
-        if api_version >= "2024-09-01-preview":
-            allowed_params.add("stream_options")
-    except ValueError:
-        log.debug(
-            f"Invalid API version {api_version} for Azure OpenAI. Defaulting to allowed parameters."
-        )
-
-    return allowed_params
-
-
 def is_openai_reasoning_model(model: str) -> bool:
     return model.lower().startswith(("o1", "o3", "o4", "gpt-5"))
-
-
-def convert_to_azure_payload(url, payload: dict, api_version: str):
-    model = payload.get("model", "")
-
-    # Filter allowed parameters based on Azure OpenAI API
-    allowed_params = get_azure_allowed_params(api_version)
-
-    # Special handling for o-series models
-    if is_openai_reasoning_model(model):
-        # Convert max_tokens to max_completion_tokens for o-series models
-        if "max_tokens" in payload:
-            payload["max_completion_tokens"] = payload["max_tokens"]
-            del payload["max_tokens"]
-
-        # Remove temperature if not 1 for o-series models
-        if "temperature" in payload and payload["temperature"] != 1:
-            log.debug(
-                f"Removing temperature parameter for o-series model {model} as only default value (1) is supported"
-            )
-            del payload["temperature"]
-
-    # Filter out unsupported parameters
-    payload = {k: v for k, v in payload.items() if k in allowed_params}
-
-    url = f"{url}/openai/deployments/{model}"
-    return url, payload
 
 
 def _validate_provider_for_endpoint(
@@ -943,6 +855,7 @@ async def _generate_completion_with_endpoint(
             request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
         ),  # Legacy support
     )
+    api_config = normalize_openai_api_config(api_config)
 
     prefix_id = api_config.get("prefix_id", None)
     if prefix_id:
@@ -1002,18 +915,7 @@ async def _generate_completion_with_endpoint(
         request, url, key, api_config, metadata, user=user
     )
 
-    if provider_type == "azure_openai":
-        api_version = api_config.get("api_version", "2023-03-15-preview")
-        request_url, payload = convert_to_azure_payload(url, payload, api_version)
-
-        # Only set api-key header if not using Azure Entra ID authentication
-        auth_type = api_config.get("auth_type", "bearer")
-        if auth_type not in ("azure_ad", "microsoft_entra_id"):
-            headers["api-key"] = key
-
-        headers["api-version"] = api_version
-        request_url = f"{request_url}/chat/completions?api-version={api_version}"
-    elif endpoint == "responses":
+    if endpoint == "responses":
         prompt_cache_retention_mode = api_config.get(
             "prompt_cache_retention_mode", "force_24h"
         )
@@ -1172,6 +1074,7 @@ async def embeddings(request: Request, form_data: dict, user):
         str(idx),
         request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
     )
+    api_config = normalize_openai_api_config(api_config)
 
     r = None
     session = None
@@ -1243,6 +1146,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
         ),  # Legacy support
     )
+    api_config = normalize_openai_api_config(api_config)
 
     r = None
     session = None
@@ -1253,23 +1157,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             request, url, key, api_config, user=user
         )
 
-        if get_provider_type(api_config) == "azure_openai":
-            api_version = api_config.get("api_version", "2023-03-15-preview")
-
-            # Only set api-key header if not using Azure Entra ID authentication
-            auth_type = api_config.get("auth_type", "bearer")
-            if auth_type not in ("azure_ad", "microsoft_entra_id"):
-                headers["api-key"] = key
-
-            headers["api-version"] = api_version
-
-            payload = json.loads(body)
-            url, payload = convert_to_azure_payload(url, payload, api_version)
-            body = json.dumps(payload).encode()
-
-            request_url = f"{url}/{path}?api-version={api_version}"
-        else:
-            request_url = f"{url}/{path}"
+        request_url = f"{url}/{path}"
 
         session = aiohttp.ClientSession(trust_env=True)
         r = await session.request(

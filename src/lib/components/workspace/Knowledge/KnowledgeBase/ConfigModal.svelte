@@ -39,8 +39,7 @@
       label: 'Embedding Model Engine',
       type: 'select',
       options: [
-        { value: 'openai', label: 'OpenAI' },
-        { value: 'azure_openai', label: 'Azure OpenAI' }
+        { value: 'openai', label: 'OpenAI' }
       ]
     },
     { key: 'RAG_EMBEDDING_MODEL', label: 'Embedding Model', type: 'text', hint: reindexHint },
@@ -232,7 +231,10 @@
     for (const field of fields) {
       const hasOverride = overrides[field.key] !== undefined;
       nextFieldModes[field.key] = hasOverride ? 'custom' : 'default';
-      const value = hasOverride ? overrides[field.key] : globalDefaults[field.key];
+      let value = hasOverride ? overrides[field.key] : globalDefaults[field.key];
+      if (field.key === 'RAG_EMBEDDING_ENGINE' && value === 'azure_openai') {
+        value = 'openai';
+      }
       nextLocalValues[field.key] = field.type === 'boolean' ? normalizeBoolean(value) : value;
     }
 
@@ -274,7 +276,7 @@
   const handleSelectChange = (key: string, value: string) => {
     setFieldValue(key, value);
 
-    if (key === 'RAG_EMBEDDING_ENGINE' && ['openai', 'azure_openai'].includes(value)) {
+    if (key === 'RAG_EMBEDDING_ENGINE' && value === 'openai') {
       if (fieldModes.RAG_EMBEDDING_MODEL === 'custom') {
         setFieldValue('RAG_EMBEDDING_MODEL', 'text-embedding-3-small');
       }
