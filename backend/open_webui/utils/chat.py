@@ -1,6 +1,7 @@
 import time
 import logging
 import sys
+import json
 
 from aiocache import cached
 from typing import Any, Optional
@@ -9,7 +10,7 @@ import uuid
 import asyncio
 
 from fastapi import Request, status
-from starlette.responses import Response, JSONResponse
+from starlette.responses import Response, JSONResponse, StreamingResponse
 
 
 from open_webui.models.users import UserModel
@@ -23,6 +24,7 @@ from open_webui.functions import generate_function_chat_completion
 
 from open_webui.routers.openai import (
     generate_chat_completion as generate_openai_chat_completion,
+    generate_responses as generate_openai_responses,
 )
 
 
@@ -151,6 +153,75 @@ async def generate_direct_chat_completion(
         return res
 
 
+async def generate_direct_responses(
+    request: Request,
+    form_data: dict,
+    user: Any,
+    models: dict,
+):
+    log.info("generate_direct_responses")
+
+    metadata = form_data.pop("metadata", {})
+    user_id = metadata.get("user_id")
+    session_id = metadata.get("session_id")
+    request_id = str(uuid.uuid4())
+
+    event_caller = get_event_call(metadata)
+    channel = f"{user_id}:{session_id}:{request_id}"
+    logging.info(f"WebSocket channel: {channel}")
+
+    event_payload = {
+        "type": "request:responses:completion",
+        "data": {
+            "form_data": form_data,
+            "model": models[form_data["model"]],
+            "channel": channel,
+            "session_id": session_id,
+        },
+    }
+
+    if form_data.get("stream"):
+        q = asyncio.Queue()
+
+        async def message_listener(sid, data):
+            await q.put(data)
+
+        sio.on(channel, message_listener)
+        res = await event_caller(event_payload)
+        if res.get("status", False):
+            async def event_generator():
+                nonlocal q
+                try:
+                    while True:
+                        data = await q.get()
+                        if isinstance(data, dict):
+                            if "done" in data and data["done"]:
+                                break
+                            yield f"data: {json.dumps(data)}\n\n"
+                        elif isinstance(data, str):
+                            # Forward raw SSE lines from browser-side direct Responses calls.
+                            yield f"{data}\n"
+                except Exception as e:
+                    log.debug(f"Error in responses event generator: {e}")
+                    pass
+
+            async def background():
+                try:
+                    del sio.handlers["/"][channel]
+                except Exception:
+                    pass
+
+            return StreamingResponse(
+                event_generator(), media_type="text/event-stream", background=background
+            )
+        raise Exception(str(res))
+
+    res = await event_caller(event_payload)
+    if "error" in res and res["error"]:
+        raise Exception(res["error"])
+    return res
+
+
 async def generate_chat_completion(
     request: Request,
     form_data: dict,
@@ -207,6 +278,54 @@ async def generate_chat_completion(
             user=user,
             bypass_filter=bypass_filter,
         )
+
+
+async def generate_responses(
+    request: Request,
+    form_data: dict,
+    user: Any,
+    bypass_filter: bool = False,
+):
+    log.debug(f"generate_responses: {form_data}")
+    if BYPASS_MODEL_ACCESS_CONTROL:
+        bypass_filter = True
+
+    if hasattr(request.state, "metadata"):
+        if "metadata" not in form_data:
+            form_data["metadata"] = request.state.metadata
+        else:
+            form_data["metadata"] = {
+                **form_data["metadata"],
+                **request.state.metadata,
+            }
+
+    if getattr(request.state, "direct", False) and hasattr(request.state, "model"):
+        models = {request.state.model["id"]: request.state.model}
+        log.debug(f"direct connection to model: {models}")
+    else:
+        models = request.app.state.MODELS
+
+    model_id = form_data["model"]
+    if model_id not in models:
+        raise Exception("Model not found")
+
+    model = models[model_id]
+
+    if getattr(request.state, "direct", False):
+        return await generate_direct_responses(request, form_data, user=user, models=models)
+
+    if not bypass_filter and user.role == "user":
+        check_model_access(user, model)
+
+    if model.get("pipe"):
+        raise Exception("Responses endpoint is not supported for pipeline models")
+
+    return await generate_openai_responses(
+        request=request,
+        form_data=form_data,
+        user=user,
+        bypass_filter=bypass_filter,
+    )
 
 
 chat_completion = generate_chat_completion

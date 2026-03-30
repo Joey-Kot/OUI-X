@@ -39,6 +39,36 @@ type OpenAIConfig = {
 	OPENAI_API_CONFIGS: object;
 };
 
+export type ChatCompletionRequest = {
+	model: string;
+	messages: Array<Record<string, unknown>>;
+	stream?: boolean;
+	[key: string]: unknown;
+};
+
+export type ChatCompletionResponse = {
+	id?: string;
+	choices?: Array<Record<string, unknown>>;
+	usage?: Record<string, unknown>;
+	[key: string]: unknown;
+};
+
+export type ResponsesRequest = {
+	model: string;
+	input: unknown;
+	stream?: boolean;
+	[key: string]: unknown;
+};
+
+export type ResponsesResponse = {
+	id?: string;
+	output?: Array<Record<string, unknown>>;
+	usage?: Record<string, unknown>;
+	[key: string]: unknown;
+};
+
+export type CompletionEndpointKind = 'chat_completions' | 'responses';
+
 export const updateOpenAIConfig = async (token: string = '', config: OpenAIConfig) => {
 	let error = null;
 
@@ -390,12 +420,23 @@ export const responsesCompletion = async (
 
 export const generateOpenAIChatCompletion = async (
 	token: string = '',
-	body: object,
+	body: object & { endpointKind?: CompletionEndpointKind },
 	url: string = `${WEBUI_BASE_URL}/api`
 ) => {
+	const requestBody = body as
+		| (ChatCompletionRequest & { model_item?: { provider_type?: string } })
+		| (ResponsesRequest & { model_item?: { provider_type?: string } })
+		| { endpointKind?: CompletionEndpointKind };
+	const endpointKind =
+		requestBody?.endpointKind ??
+		(requestBody?.model_item?.provider_type === 'openai_responses'
+			? 'responses'
+			: 'chat_completions');
+	const endpoint = endpointKind === 'responses' ? 'responses' : 'chat/completions';
+
 	let error = null;
 
-	const res = await fetch(`${url}/chat/completions`, {
+	const res = await fetch(`${url}/${endpoint}`, {
 		method: 'POST',
 		headers: {
 			Authorization: `Bearer ${token}`,

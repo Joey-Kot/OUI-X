@@ -820,6 +820,267 @@ def get_image_urls(delta_images, request, metadata, user) -> list[str]:
     return image_urls
 
 
+def _map_responses_event_to_chat_chunk(payload: dict, state: dict) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+
+    event_type = payload.get("type")
+    if not isinstance(event_type, str) or not event_type.startswith("response."):
+        return payload
+
+    if event_type == "response.output_text.delta":
+        delta = payload.get("delta", "")
+        if isinstance(delta, str) and delta:
+            state["text_emitted"] = True
+            return {
+                "choices": [{"delta": {"content": delta}}],
+                "raw_event": payload,
+            }
+        return None
+
+    if event_type in {"response.function_call_arguments.delta", "response.function_call.delta"}:
+        call_id = payload.get("call_id") or payload.get("item_id")
+        if call_id:
+            current = state["function_calls"].setdefault(
+                call_id, {"name": payload.get("name", ""), "arguments": ""}
+            )
+            if payload.get("name"):
+                current["name"] = payload.get("name")
+            if isinstance(payload.get("delta"), str):
+                current["arguments"] += payload.get("delta", "")
+        return None
+
+    if event_type == "response.output_item.done":
+        item = payload.get("item", {})
+        if isinstance(item, dict) and item.get("type") == "function_call":
+            call_id = item.get("call_id") or item.get("id")
+            if call_id and call_id not in state["emitted_call_ids"]:
+                current = state["function_calls"].setdefault(
+                    call_id,
+                    {"name": item.get("name", ""), "arguments": ""},
+                )
+                if item.get("name"):
+                    current["name"] = item.get("name")
+                if isinstance(item.get("arguments"), str):
+                    current["arguments"] = item.get("arguments")
+
+                index = state["call_indexes"].setdefault(
+                    call_id, len(state["call_indexes"])
+                )
+                state["emitted_call_ids"].add(call_id)
+                return {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": index,
+                                        "id": call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": current.get("name", ""),
+                                            "arguments": current.get("arguments", "{}"),
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                    "raw_event": payload,
+                }
+        return None
+
+    if event_type == "response.completed":
+        response = payload.get("response", {})
+        if not isinstance(response, dict):
+            response = {}
+
+        delta = {}
+
+        reasoning_text = ""
+        output_items = response.get("output", [])
+        if isinstance(output_items, list):
+            for item in output_items:
+                if not isinstance(item, dict) or item.get("type") != "reasoning":
+                    continue
+                summary_items = item.get("summary", [])
+                if isinstance(summary_items, list):
+                    reasoning_text = "\n".join(
+                        s.get("text", "")
+                        for s in summary_items
+                        if isinstance(s, dict) and isinstance(s.get("text"), str)
+                    ).strip()
+                if reasoning_text:
+                    break
+
+        if not reasoning_text and isinstance(response.get("reasoning"), dict):
+            summary = response["reasoning"].get("summary")
+            if isinstance(summary, str):
+                reasoning_text = summary
+            elif isinstance(summary, list):
+                reasoning_text = "\n".join(
+                    s.get("text", "")
+                    for s in summary
+                    if isinstance(s, dict) and isinstance(s.get("text"), str)
+                ).strip()
+
+        if reasoning_text:
+            delta["reasoning_content"] = reasoning_text
+
+        if not state.get("text_emitted", False):
+            text_parts = []
+            if isinstance(output_items, list):
+                for item in output_items:
+                    if not isinstance(item, dict) or item.get("type") != "message":
+                        continue
+                    for part in item.get("content", []) or []:
+                        if isinstance(part, dict) and part.get("type") == "output_text":
+                            text_parts.append(part.get("text", ""))
+            fallback_text = "".join(text_parts)
+            if fallback_text:
+                delta["content"] = fallback_text
+
+        unresolved_tool_calls = []
+        if isinstance(output_items, list):
+            for item in output_items:
+                if not isinstance(item, dict) or item.get("type") != "function_call":
+                    continue
+                call_id = item.get("call_id") or item.get("id")
+                if not call_id or call_id in state["emitted_call_ids"]:
+                    continue
+                index = state["call_indexes"].setdefault(
+                    call_id, len(state["call_indexes"])
+                )
+                unresolved_tool_calls.append(
+                    {
+                        "index": index,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": item.get("name", ""),
+                            "arguments": item.get("arguments", "{}")
+                            if isinstance(item.get("arguments"), str)
+                            else json.dumps(item.get("arguments", {})),
+                        },
+                    }
+                )
+                state["emitted_call_ids"].add(call_id)
+
+        if unresolved_tool_calls:
+            delta["tool_calls"] = unresolved_tool_calls
+
+        mapped = {"raw_event": payload}
+        if delta:
+            mapped["choices"] = [{"delta": delta}]
+
+        usage = response.get("usage")
+        if isinstance(usage, dict):
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            prompt_tokens = input_tokens if isinstance(input_tokens, (int, float)) else 0
+            completion_tokens = (
+                output_tokens if isinstance(output_tokens, (int, float)) else 0
+            )
+            total_tokens = usage.get("total_tokens")
+            mapped["usage"] = {
+                **usage,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens
+                if isinstance(total_tokens, (int, float))
+                else prompt_tokens + completion_tokens,
+            }
+
+        return mapped if any(k in mapped for k in ("choices", "usage")) else None
+
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        return {"usage": usage, "raw_event": payload}
+    return {"raw_event": payload}
+
+
+def _chat_messages_to_responses_input(messages: list[dict]) -> list[dict]:
+    input_items: list[dict] = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+
+        role = message.get("role", "user")
+        content = message.get("content", "")
+
+        if role == "tool":
+            input_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": message.get("tool_call_id", ""),
+                    "output": content if isinstance(content, str) else json.dumps(content),
+                }
+            )
+            continue
+
+        tool_calls = message.get("tool_calls")
+        if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function", {})
+                arguments = function.get("arguments", "{}")
+                if not isinstance(arguments, str):
+                    arguments = json.dumps(arguments)
+                input_items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": tool_call.get("id", ""),
+                        "name": function.get("name", ""),
+                        "arguments": arguments,
+                    }
+                )
+
+            if content:
+                text_content = content if isinstance(content, str) else str(content)
+                input_items.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text_content}],
+                    }
+                )
+            continue
+
+        if isinstance(content, str):
+            input_items.append({"role": role, "content": content})
+            continue
+
+        if isinstance(content, list):
+            normalized_parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_type = part.get("type")
+                if part_type == "text":
+                    normalized_parts.append(
+                        {
+                            "type": "output_text" if role == "assistant" else "input_text",
+                            "text": part.get("text", ""),
+                        }
+                    )
+                elif part_type == "image_url":
+                    image_url = part.get("image_url", {})
+                    normalized_parts.append(
+                        {
+                            "type": "input_image",
+                            "image_url": image_url.get("url", "")
+                            if isinstance(image_url, dict)
+                            else image_url,
+                        }
+                    )
+                elif part_type in {"input_text", "output_text", "input_image", "input_file"}:
+                    normalized_parts.append(part)
+            if normalized_parts:
+                input_items.append({"role": role, "content": normalized_parts})
+
+    return input_items
+
+
 async def chat_image_generation_handler(
     request: Request, form_data: dict, extra_params: dict, user
 ):
@@ -2679,6 +2940,12 @@ async def process_chat_response(
                         ),
                     )
                     last_delta_data = None
+                    responses_stream_state = {
+                        "text_emitted": False,
+                        "function_calls": {},
+                        "emitted_call_ids": set(),
+                        "call_indexes": {},
+                    }
 
                     async def flush_pending_delta_data(threshold: int = 0):
                         nonlocal delta_count
@@ -2715,6 +2982,13 @@ async def process_chat_response(
 
                         try:
                             data = json.loads(data)
+
+                            mapped_data = _map_responses_event_to_chat_chunk(
+                                data, responses_stream_state
+                            )
+                            if mapped_data is None:
+                                continue
+                            data = mapped_data
 
                             data, _ = await process_filter_functions(
                                 request=request,
@@ -3057,11 +3331,31 @@ async def process_chat_response(
                     tool_call_retries += 1
 
                     response_tool_calls = tool_calls.pop(0)
+                    endpoint_kind = (
+                        form_data.get("endpoint_kind")
+                        if isinstance(form_data, dict)
+                        else None
+                    ) or (
+                        "responses"
+                        if (
+                            metadata.get("model", {})
+                            .get("provider_type", "")
+                            == "openai_responses"
+                        )
+                        else "chat_completions"
+                    )
+                    provider_type = (
+                        metadata.get("model", {}).get("provider_type")
+                        if isinstance(metadata.get("model", {}), dict)
+                        else None
+                    )
                     log.info(
-                        "round_index=%s tool_calls_count=%s model=%s",
+                        "round_index=%s tool_calls_count=%s model=%s endpoint=%s provider=%s",
                         tool_call_retries,
                         len(response_tool_calls),
                         model_id,
+                        endpoint_kind,
+                        provider_type,
                     )
 
                     content_blocks.append(
@@ -3140,19 +3434,54 @@ async def process_chat_response(
                                 ),
                             ],
                         }
+                        if endpoint_kind == "responses":
+                            responses_payload = {
+                                **new_form_data,
+                                "input": _chat_messages_to_responses_input(
+                                    new_form_data.get("messages", [])
+                                ),
+                            }
+                            responses_payload.pop("messages", None)
+                            responses_payload["endpoint_kind"] = "responses"
+                            new_form_data = responses_payload
+                        else:
+                            new_form_data["endpoint_kind"] = "chat_completions"
 
-                        res = await generate_chat_completion(
-                            request,
-                            new_form_data,
-                            user,
-                        )
+                        if endpoint_kind == "responses":
+                            from open_webui.utils.chat import generate_responses
+
+                            res = await generate_responses(request, new_form_data, user)
+                        else:
+                            res = await generate_chat_completion(
+                                request,
+                                new_form_data,
+                                user,
+                            )
 
                         if isinstance(res, StreamingResponse):
                             await stream_body_handler(res, new_form_data)
                         else:
                             break
                     except Exception as e:
-                        log.debug(e)
+                        log.exception(
+                            "tool_followup_failed endpoint=%s provider=%s round_index=%s",
+                            endpoint_kind,
+                            provider_type,
+                            tool_call_retries,
+                        )
+                        await event_emitter(
+                            {
+                                "type": "chat:message:error",
+                                "data": {
+                                    "error": {
+                                        "content": (
+                                            "Tool follow-up request failed "
+                                            f"(endpoint={endpoint_kind}, provider={provider_type}): {e}"
+                                        )
+                                    }
+                                },
+                            }
+                        )
                         break
 
                 if len(tool_calls) > 0:

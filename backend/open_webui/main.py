@@ -476,6 +476,7 @@ from open_webui.utils.models import (
 )
 from open_webui.utils.chat import (
     generate_chat_completion as chat_completion_handler,
+    generate_responses as responses_handler,
     chat_completed as chat_completed_handler,
     chat_action as chat_action_handler,
 )
@@ -1545,6 +1546,9 @@ async def chat_completion(
     if not request.app.state.MODELS:
         await get_all_models(request, user=user)
 
+    endpoint_kind = form_data.pop("endpoint_kind", "chat_completions")
+    responses_upstream_payload = form_data.pop("_responses_upstream_payload", None)
+
     model_id = form_data.get("model", None)
     model_item = form_data.pop("model_item", {})
     tasks = form_data.pop("background_tasks", None)
@@ -1705,7 +1709,46 @@ async def chat_completion(
                 request, form_data, user, metadata, model
             )
 
-            response = await chat_completion_handler(request, form_data, user)
+            if endpoint_kind == "responses":
+                upstream_payload = (
+                    responses_upstream_payload
+                    if isinstance(responses_upstream_payload, dict)
+                    else {**form_data}
+                )
+                if isinstance(form_data.get("messages"), list):
+                    upstream_payload["input"] = _chat_messages_to_responses_input(
+                        form_data.get("messages", [])
+                    )
+                if isinstance(form_data.get("tools"), list):
+                    upstream_payload["tools"] = form_data.get("tools")
+                if "tool_choice" in form_data:
+                    upstream_payload["tool_choice"] = form_data.get("tool_choice")
+                if "parallel_tool_calls" in form_data:
+                    upstream_payload["parallel_tool_calls"] = form_data.get(
+                        "parallel_tool_calls"
+                    )
+                for internal_key in [
+                    "model_item",
+                    "endpointKind",
+                    "endpoint_kind",
+                    "_responses_upstream_payload",
+                    "chat_id",
+                    "id",
+                    "parent_id",
+                    "parent_message",
+                    "session_id",
+                    "background_tasks",
+                    "filter_ids",
+                    "tool_ids",
+                    "files",
+                    "features",
+                    "variables",
+                ]:
+                    upstream_payload.pop(internal_key, None)
+                upstream_payload["metadata"] = metadata
+                response = await responses_handler(request, upstream_payload, user)
+            else:
+                response = await chat_completion_handler(request, form_data, user)
             if metadata.get("chat_id") and metadata.get("message_id"):
                 try:
                     if not metadata["chat_id"].startswith("local:"):
@@ -1792,6 +1835,152 @@ async def chat_completion(
 # Alias for chat_completion (Legacy)
 generate_chat_completions = chat_completion
 generate_chat_completion = chat_completion
+
+
+def _responses_input_to_chat_messages(input_items: list) -> list[dict]:
+    messages: list[dict] = []
+    for item in input_items or []:
+        if not isinstance(item, dict):
+            continue
+
+        item_type = item.get("type")
+        if item_type == "function_call_output":
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": item.get("call_id", ""),
+                    "content": item.get("output", ""),
+                }
+            )
+            continue
+
+        role = item.get("role")
+        if role not in {"user", "assistant", "system", "developer"}:
+            continue
+
+        content = item.get("content", "")
+        if isinstance(content, str):
+            messages.append({"role": role, "content": content})
+            continue
+
+        if isinstance(content, list):
+            text_parts = []
+            normalized_parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+
+                part_type = part.get("type")
+                if part_type == "input_text":
+                    text = part.get("text", "")
+                    text_parts.append(text)
+                    normalized_parts.append({"type": "text", "text": text})
+                elif part_type == "output_text":
+                    text = part.get("text", "")
+                    text_parts.append(text)
+                    normalized_parts.append({"type": "text", "text": text})
+                elif part_type == "input_image":
+                    image_url = part.get("image_url", "")
+                    normalized_parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": image_url}
+                            if isinstance(image_url, str)
+                            else image_url,
+                        }
+                    )
+
+            if normalized_parts:
+                messages.append(
+                    {
+                        "role": role,
+                        "content": normalized_parts if len(normalized_parts) > 1 else "".join(text_parts),
+                    }
+                )
+    return messages
+
+
+def _chat_messages_to_responses_input(messages: list[dict]) -> list[dict]:
+    input_items: list[dict] = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+
+        role = message.get("role", "user")
+        content = message.get("content", "")
+
+        if role == "tool":
+            input_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": message.get("tool_call_id", ""),
+                    "output": content if isinstance(content, str) else json.dumps(content),
+                }
+            )
+            continue
+
+        if isinstance(content, str):
+            input_items.append({"role": role, "content": content})
+            continue
+
+        if isinstance(content, list):
+            normalized_parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_type = part.get("type")
+                if part_type == "text":
+                    normalized_parts.append(
+                        {
+                            "type": "output_text" if role == "assistant" else "input_text",
+                            "text": part.get("text", ""),
+                        }
+                    )
+                elif part_type == "image_url":
+                    image_url = part.get("image_url", {})
+                    normalized_parts.append(
+                        {
+                            "type": "input_image",
+                            "image_url": image_url.get("url", "")
+                            if isinstance(image_url, dict)
+                            else image_url,
+                        }
+                    )
+                elif part_type in {"input_text", "output_text", "input_image", "input_file"}:
+                    normalized_parts.append(part)
+            if normalized_parts:
+                input_items.append({"role": role, "content": normalized_parts})
+    return input_items
+
+
+@app.post("/api/responses")
+@app.post("/api/v1/responses")  # Experimental: Compatibility with OpenAI API
+async def responses(
+    request: Request,
+    form_data: dict,
+    user=Depends(get_verified_user),
+):
+    try:
+        form_data = {**form_data}
+        responses_upstream_payload = {**form_data}
+
+        if "messages" not in form_data:
+            derived_messages = _responses_input_to_chat_messages(form_data.get("input", []))
+            if derived_messages:
+                form_data["messages"] = derived_messages
+
+        form_data["_responses_upstream_payload"] = responses_upstream_payload
+        form_data["endpoint_kind"] = "responses"
+
+        return await chat_completion(request, form_data, user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("Error in /api/responses")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
 
 
 @app.post("/api/chat/completed")
