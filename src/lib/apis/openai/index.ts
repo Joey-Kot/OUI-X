@@ -69,6 +69,19 @@ export type ResponsesResponse = {
 
 export type CompletionEndpointKind = 'chat_completions' | 'responses';
 
+const resolveCompletionEndpointKind = (
+	body:
+		| (ChatCompletionRequest & { model_item?: { provider_type?: string } })
+		| (ResponsesRequest & { model_item?: { provider_type?: string } })
+		| { endpointKind?: CompletionEndpointKind; endpoint_kind?: CompletionEndpointKind }
+): CompletionEndpointKind => {
+	return (
+		body?.endpointKind ??
+		body?.endpoint_kind ??
+		(body?.model_item?.provider_type === 'openai_responses' ? 'responses' : 'chat_completions')
+	);
+};
+
 export const updateOpenAIConfig = async (token: string = '', config: OpenAIConfig) => {
 	let error = null;
 
@@ -427,11 +440,7 @@ export const generateOpenAIChatCompletion = async (
 		| (ChatCompletionRequest & { model_item?: { provider_type?: string } })
 		| (ResponsesRequest & { model_item?: { provider_type?: string } })
 		| { endpointKind?: CompletionEndpointKind };
-	const endpointKind =
-		requestBody?.endpointKind ??
-		(requestBody?.model_item?.provider_type === 'openai_responses'
-			? 'responses'
-			: 'chat_completions');
+	const endpointKind = resolveCompletionEndpointKind(requestBody);
 	const endpoint = endpointKind === 'responses' ? 'responses' : 'chat/completions';
 
 	let error = null;
@@ -459,6 +468,42 @@ export const generateOpenAIChatCompletion = async (
 	}
 
 	return res;
+};
+
+export const generateOpenAIChatCompletionStream = async (
+	token: string = '',
+	body: object & { endpointKind?: CompletionEndpointKind; endpoint_kind?: CompletionEndpointKind },
+	url: string = `${WEBUI_BASE_URL}/api`
+): Promise<[Response | null, AbortController]> => {
+	const requestBody = body as
+		| (ChatCompletionRequest & { model_item?: { provider_type?: string } })
+		| (ResponsesRequest & { model_item?: { provider_type?: string } })
+		| { endpointKind?: CompletionEndpointKind; endpoint_kind?: CompletionEndpointKind };
+	const endpointKind = resolveCompletionEndpointKind(requestBody);
+	const endpoint = endpointKind === 'responses' ? 'responses' : 'chat/completions';
+
+	const controller = new AbortController();
+	let error = null;
+
+	const res = await fetch(`${url}/${endpoint}`, {
+		signal: controller.signal,
+		method: 'POST',
+		headers: {
+			Authorization: `Bearer ${token}`,
+			'Content-Type': 'application/json'
+		},
+		body: JSON.stringify(body)
+	}).catch((err) => {
+		console.error(err);
+		error = err;
+		return null;
+	});
+
+	if (error) {
+		throw error;
+	}
+
+	return [res, controller];
 };
 
 export const synthesizeOpenAISpeech = async (

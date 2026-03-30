@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import uuid
 from typing import Any, Optional
 
 import aiohttp
@@ -42,6 +41,10 @@ from open_webui.constants import ERROR_MESSAGES
 from open_webui.utils.payload import (
     apply_model_params_as_defaults_openai,
 )
+from open_webui.utils.completion_adapter import (
+    apply_prompt_cache_policy,
+    resolve_prompt_cache_key_for_completion_request as adapter_resolve_prompt_cache_key,
+)
 from open_webui.utils.misc import (
     convert_logit_bias_input_to_json,
     stream_chunks_handler,
@@ -53,7 +56,6 @@ from open_webui.utils.headers import include_user_info_headers
 
 
 log = logging.getLogger(__name__)
-ALLOW_RESPONSES_PROVIDER_ON_CHAT_COMPLETIONS = False
 
 
 ##########################################
@@ -135,95 +137,28 @@ def is_responses_provider(api_config: Optional[dict]) -> bool:
     return get_provider_type(api_config) == "openai_responses"
 
 
-def _mask_prompt_cache_key(prompt_cache_key: Optional[str]) -> str:
-    if not isinstance(prompt_cache_key, str) or not prompt_cache_key:
-        return "<none>"
-    if len(prompt_cache_key) <= 8:
-        return prompt_cache_key
-    return f"{prompt_cache_key[:8]}..."
-
-
-def _resolve_prompt_cache_key_for_responses(
+def _resolve_prompt_cache_key_for_completion_request(
     payload: dict, metadata: Optional[dict], user: UserModel
 ) -> Optional[str]:
-    explicit_key = payload.get("prompt_cache_key")
-    if isinstance(explicit_key, str) and explicit_key.strip():
-        resolved_key = explicit_key.strip()
-        log.debug(
-            "Responses prompt_cache_key source=explicit key=%s",
-            _mask_prompt_cache_key(resolved_key),
-        )
-        return resolved_key
-
-    chat_id = metadata.get("chat_id") if isinstance(metadata, dict) else None
-    if not isinstance(chat_id, str) or not chat_id:
-        log.debug("Responses prompt_cache_key source=none key=<none>")
-        return None
-
-    if chat_id.startswith("local:"):
-        derived_key = f"pc:v1:local:{hashlib.sha256(chat_id.encode()).hexdigest()[:16]}"
-        log.debug(
-            "Responses prompt_cache_key source=local_derived chat_id=%s key=%s",
-            chat_id,
-            _mask_prompt_cache_key(derived_key),
-        )
-        return derived_key
-
-    chat = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
-    if chat is None and user.role == "admin":
-        chat = Chats.get_chat_by_id(chat_id)
-
-    if chat is None:
-        log.debug(
-            "Responses prompt_cache_key source=none chat_id=%s key=<none>", chat_id
-        )
-        return None
-
-    chat_meta = chat.meta if isinstance(chat.meta, dict) else {}
-    chat_meta_key = chat_meta.get("prompt_cache_key")
-    if isinstance(chat_meta_key, str) and chat_meta_key.strip():
-        resolved_key = chat_meta_key.strip()
-        log.debug(
-            "Responses prompt_cache_key source=chat_meta chat_id=%s key=%s",
-            chat_id,
-            _mask_prompt_cache_key(resolved_key),
-        )
-        return resolved_key
-
-    generated_key = f"pc:v1:{uuid.uuid4().hex}"
-    updated_chat = Chats.update_chat_metadata_by_id(
-        chat_id,
-        {
-            "prompt_cache_key": generated_key,
-            "prompt_cache_key_version": "v1",
-        },
-    )
-
-    log.debug(
-        "Responses prompt_cache_key source=generated_persisted chat_id=%s persisted=%s key=%s",
-        chat_id,
-        bool(updated_chat),
-        _mask_prompt_cache_key(generated_key),
-    )
-    return generated_key
+    return adapter_resolve_prompt_cache_key(payload, metadata, user)
 
 
-def _inject_prompt_cache_key_for_responses(
-    provider_type: str, payload: dict, metadata: Optional[dict], user: UserModel
+def _inject_prompt_cache_params_for_completion_request(
+    provider_type: str,
+    endpoint: str,
+    payload: dict,
+    metadata: Optional[dict],
+    user: UserModel,
+    retention_mode: str = "force_24h",
 ) -> None:
-    if provider_type != "openai_responses":
-        return
-
-    resolved_prompt_cache_key = _resolve_prompt_cache_key_for_responses(
-        payload, metadata, user
+    apply_prompt_cache_policy(
+        provider_type=provider_type,
+        endpoint_kind=endpoint,
+        payload=payload,
+        metadata=metadata,
+        user=user,
+        retention_mode=retention_mode,
     )
-    explicit_prompt_cache_key = payload.get("prompt_cache_key")
-    has_explicit_prompt_cache_key = (
-        isinstance(explicit_prompt_cache_key, str)
-        and bool(explicit_prompt_cache_key.strip())
-    )
-    if resolved_prompt_cache_key and not has_explicit_prompt_cache_key:
-        payload["prompt_cache_key"] = resolved_prompt_cache_key
 
 
 async def get_headers_and_cookies(
@@ -907,11 +842,7 @@ def convert_to_azure_payload(url, payload: dict, api_version: str):
 def _validate_provider_for_endpoint(
     provider_type: str, endpoint: str, model_name: str
 ) -> None:
-    if (
-        endpoint == "chat_completions"
-        and provider_type == "openai_responses"
-        and not ALLOW_RESPONSES_PROVIDER_ON_CHAT_COMPLETIONS
-    ):
+    if endpoint == "chat_completions" and provider_type == "openai_responses":
         raise HTTPException(
             status_code=400,
             detail=(
@@ -1072,10 +1003,45 @@ async def _generate_completion_with_endpoint(
         headers["api-version"] = api_version
         request_url = f"{request_url}/chat/completions?api-version={api_version}"
     elif endpoint == "responses":
-        _inject_prompt_cache_key_for_responses(provider_type, payload, metadata, user)
+        prompt_cache_retention_mode = api_config.get(
+            "prompt_cache_retention_mode", "force_24h"
+        )
+        _inject_prompt_cache_params_for_completion_request(
+            provider_type,
+            endpoint,
+            payload,
+            metadata,
+            user,
+            retention_mode=prompt_cache_retention_mode,
+        )
         request_url = f"{url}/responses"
     else:
+        prompt_cache_retention_mode = api_config.get(
+            "prompt_cache_retention_mode", "force_24h"
+        )
+        _inject_prompt_cache_params_for_completion_request(
+            provider_type,
+            endpoint,
+            payload,
+            metadata,
+            user,
+            retention_mode=prompt_cache_retention_mode,
+        )
         request_url = f"{url}/chat/completions"
+
+    tools_shape_summary = "<none>"
+    if isinstance(payload.get("tools"), list) and payload["tools"]:
+        first_tool = payload["tools"][0]
+        if isinstance(first_tool, dict):
+            tools_shape_summary = ",".join(sorted(first_tool.keys()))
+        else:
+            tools_shape_summary = type(first_tool).__name__
+    log.debug(
+        "Completion upstream payload endpoint=%s provider=%s tools_shape=%s",
+        endpoint,
+        provider_type,
+        tools_shape_summary,
+    )
 
     payload = json.dumps(payload)
 

@@ -40,19 +40,6 @@ def test_validate_provider_for_endpoint_rejects_chat_provider_on_responses_endpo
     assert "/chat/completions" in str(exc.value.detail)
 
 
-def test_validate_provider_for_endpoint_allows_responses_provider_on_chat_when_compat_enabled(
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        openai_router, "ALLOW_RESPONSES_PROVIDER_ON_CHAT_COMPLETIONS", True
-    )
-    openai_router._validate_provider_for_endpoint(
-        provider_type="openai_responses",
-        endpoint="chat_completions",
-        model_name="gpt-5",
-    )
-
-
 @pytest.mark.asyncio
 async def test_get_all_models_responses_includes_provider_type(monkeypatch):
     async def fake_send_get_request(_url, _key=None, user=None):

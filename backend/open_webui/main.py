@@ -480,6 +480,11 @@ from open_webui.utils.chat import (
     chat_completed as chat_completed_handler,
     chat_action as chat_action_handler,
 )
+from open_webui.utils.completion_adapter import (
+    build_upstream_payload,
+    chat_messages_to_responses_input,
+    normalize_tools_for_responses,
+)
 from open_webui.utils.embeddings import generate_embeddings
 from open_webui.utils.middleware import process_chat_payload, process_chat_response
 from open_webui.utils.access_control import has_access
@@ -1710,42 +1715,16 @@ async def chat_completion(
             )
 
             if endpoint_kind == "responses":
-                upstream_payload = (
-                    responses_upstream_payload
+                upstream_payload = build_upstream_payload(
+                    form_data=form_data,
+                    endpoint_kind="responses",
+                    metadata=metadata,
+                    base_payload=responses_upstream_payload
                     if isinstance(responses_upstream_payload, dict)
-                    else {**form_data}
+                    else None,
+                    strip_internal_keys=True,
+                    include_endpoint_kind=False,
                 )
-                if isinstance(form_data.get("messages"), list):
-                    upstream_payload["input"] = _chat_messages_to_responses_input(
-                        form_data.get("messages", [])
-                    )
-                if isinstance(form_data.get("tools"), list):
-                    upstream_payload["tools"] = form_data.get("tools")
-                if "tool_choice" in form_data:
-                    upstream_payload["tool_choice"] = form_data.get("tool_choice")
-                if "parallel_tool_calls" in form_data:
-                    upstream_payload["parallel_tool_calls"] = form_data.get(
-                        "parallel_tool_calls"
-                    )
-                for internal_key in [
-                    "model_item",
-                    "endpointKind",
-                    "endpoint_kind",
-                    "_responses_upstream_payload",
-                    "chat_id",
-                    "id",
-                    "parent_id",
-                    "parent_message",
-                    "session_id",
-                    "background_tasks",
-                    "filter_ids",
-                    "tool_ids",
-                    "files",
-                    "features",
-                    "variables",
-                ]:
-                    upstream_payload.pop(internal_key, None)
-                upstream_payload["metadata"] = metadata
                 response = await responses_handler(request, upstream_payload, user)
             else:
                 response = await chat_completion_handler(request, form_data, user)
@@ -1901,56 +1880,11 @@ def _responses_input_to_chat_messages(input_items: list) -> list[dict]:
 
 
 def _chat_messages_to_responses_input(messages: list[dict]) -> list[dict]:
-    input_items: list[dict] = []
-    for message in messages or []:
-        if not isinstance(message, dict):
-            continue
+    return chat_messages_to_responses_input(messages)
 
-        role = message.get("role", "user")
-        content = message.get("content", "")
 
-        if role == "tool":
-            input_items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": message.get("tool_call_id", ""),
-                    "output": content if isinstance(content, str) else json.dumps(content),
-                }
-            )
-            continue
-
-        if isinstance(content, str):
-            input_items.append({"role": role, "content": content})
-            continue
-
-        if isinstance(content, list):
-            normalized_parts = []
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                part_type = part.get("type")
-                if part_type == "text":
-                    normalized_parts.append(
-                        {
-                            "type": "output_text" if role == "assistant" else "input_text",
-                            "text": part.get("text", ""),
-                        }
-                    )
-                elif part_type == "image_url":
-                    image_url = part.get("image_url", {})
-                    normalized_parts.append(
-                        {
-                            "type": "input_image",
-                            "image_url": image_url.get("url", "")
-                            if isinstance(image_url, dict)
-                            else image_url,
-                        }
-                    )
-                elif part_type in {"input_text", "output_text", "input_image", "input_file"}:
-                    normalized_parts.append(part)
-            if normalized_parts:
-                input_items.append({"role": role, "content": normalized_parts})
-    return input_items
+def _chat_tools_to_responses_tools(tools: list[dict]) -> list[dict]:
+    return normalize_tools_for_responses(tools)
 
 
 @app.post("/api/responses")

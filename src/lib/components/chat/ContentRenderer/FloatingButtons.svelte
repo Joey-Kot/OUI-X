@@ -7,7 +7,7 @@
 	import { getContext, tick, onDestroy } from 'svelte';
 	const i18n = getContext('i18n');
 
-	import { chatCompletion } from '$lib/apis/openai';
+	import { generateOpenAIChatCompletionStream } from '$lib/apis/openai';
 
 	import ChatBubble from '$lib/components/icons/ChatBubble.svelte';
 	import LightBulb from '$lib/components/icons/LightBulb.svelte';
@@ -129,8 +129,14 @@
 			stream: true
 		};
 
-		const endpointType = 'chat_completions(proxy)';
-		const [res, requestController] = await chatCompletion(localStorage.token, requestBody);
+		const endpointType =
+			requestBody?.model_item?.provider_type === 'openai_responses'
+				? 'responses'
+				: 'chat_completions';
+		const [res, requestController] = await generateOpenAIChatCompletionStream(
+			localStorage.token,
+			requestBody
+		);
 		controller = requestController;
 
 		const handleLine = (line: string) => {

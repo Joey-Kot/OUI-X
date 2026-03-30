@@ -6,7 +6,12 @@ from typing import Optional, Any, Dict, List
 import logging
 import re
 
-from open_webui.utils.chat import generate_chat_completion
+from open_webui.utils.chat import generate_chat_completion, generate_responses
+from open_webui.utils.completion_adapter import (
+    build_upstream_payload,
+    provider_type_from_model_id,
+    resolve_endpoint_kind,
+)
 from open_webui.utils.task import (
     title_generation_template,
     follow_up_generation_template,
@@ -108,6 +113,28 @@ def _build_recent_context(messages: List[Dict[str, Any]], max_turns: int = 6, ma
     if len(s) > max_chars:
         s = s[-max_chars:]
     return s
+
+
+async def _generate_task_completion(
+    request: Request, payload: Dict[str, Any], user, models: Dict[str, Any]
+):
+    model_id = payload.get("model")
+    provider_type = provider_type_from_model_id(
+        model_id=model_id,
+        models=models,
+        openai_models=getattr(request.app.state, "OPENAI_MODELS", {}) or {},
+    )
+    endpoint_kind = resolve_endpoint_kind(provider_type=provider_type)
+    upstream_payload = build_upstream_payload(
+        form_data=payload,
+        endpoint_kind=endpoint_kind,
+        include_endpoint_kind=True,
+    )
+
+    if endpoint_kind == "responses":
+        return await generate_responses(request, form_data=upstream_payload, user=user)
+
+    return await generate_chat_completion(request, form_data=upstream_payload, user=user)
 
 
 # ================================
@@ -396,7 +423,7 @@ async def generate_title(
         raise e
 
     try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
+        return await _generate_task_completion(request, payload, user, models)
     except Exception as e:
         log.error("Exception occurred", exc_info=True)
         return JSONResponse(
@@ -466,7 +493,7 @@ async def generate_follow_ups(
         raise e
 
     try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
+        return await _generate_task_completion(request, payload, user, models)
     except Exception as e:
         log.error("Exception occurred", exc_info=True)
         return JSONResponse(
@@ -536,7 +563,7 @@ async def generate_chat_tags(
         raise e
 
     try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
+        return await _generate_task_completion(request, payload, user, models)
     except Exception as e:
         log.error(f"Error generating chat completion: {e}")
         return JSONResponse(
@@ -599,7 +626,7 @@ async def generate_image_prompt(
         raise e
 
     try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
+        return await _generate_task_completion(request, payload, user, models)
     except Exception as e:
         log.error("Exception occurred", exc_info=True)
         return JSONResponse(
@@ -725,7 +752,7 @@ async def generate_queries(
         raise e
 
     try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
+        return await _generate_task_completion(request, payload, user, models)
     except Exception as e:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -807,7 +834,7 @@ async def generate_autocompletion(
         raise e
 
     try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
+        return await _generate_task_completion(request, payload, user, models)
     except Exception as e:
         log.error(f"Error generating chat completion: {e}")
         return JSONResponse(
@@ -867,7 +894,7 @@ async def generate_emoji(
         raise e
 
     try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
+        return await _generate_task_completion(request, payload, user, models)
     except Exception as e:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -921,7 +948,7 @@ async def generate_moa_response(
         raise e
 
     try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
+        return await _generate_task_completion(request, payload, user, models)
     except Exception as e:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
