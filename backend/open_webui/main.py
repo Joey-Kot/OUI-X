@@ -1878,6 +1878,44 @@ def _chat_tools_to_responses_tools(tools: list[dict]) -> list[dict]:
     return normalize_tools_for_responses(tools)
 
 
+RESPONSES_NULLABLE_PARAM_KEYS = {
+    "temperature",
+    "top_p",
+    "stop",
+    "verbosity",
+    "max_output_tokens",
+}
+
+
+def _sanitize_responses_upstream_payload(payload: dict) -> dict:
+    """
+    Drop null-valued model parameter keys so model preset defaults can still apply.
+    Keep non-parameter metadata/business keys unchanged.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    sanitized = {**payload}
+    for key in RESPONSES_NULLABLE_PARAM_KEYS:
+        if key in sanitized and sanitized[key] is None:
+            del sanitized[key]
+
+    reasoning = sanitized.get("reasoning")
+    if isinstance(reasoning, dict):
+        reasoning_sanitized = {**reasoning}
+        if reasoning_sanitized.get("effort") is None:
+            reasoning_sanitized.pop("effort", None)
+        if reasoning_sanitized.get("summary") is None:
+            reasoning_sanitized.pop("summary", None)
+
+        if len(reasoning_sanitized) == 0:
+            sanitized.pop("reasoning", None)
+        else:
+            sanitized["reasoning"] = reasoning_sanitized
+
+    return sanitized
+
+
 @app.post("/api/responses")
 @app.post("/api/v1/responses")  # Experimental: Compatibility with OpenAI API
 async def responses(
@@ -1887,7 +1925,7 @@ async def responses(
 ):
     try:
         form_data = {**form_data}
-        responses_upstream_payload = {**form_data}
+        responses_upstream_payload = _sanitize_responses_upstream_payload({**form_data})
 
         if "messages" not in form_data:
             derived_messages = _responses_input_to_chat_messages(form_data.get("input", []))

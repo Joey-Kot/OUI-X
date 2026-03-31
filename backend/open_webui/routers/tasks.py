@@ -129,7 +129,7 @@ async def _generate_task_completion(
     upstream_payload = build_upstream_payload(
         form_data=payload,
         endpoint_kind=endpoint_kind,
-        include_endpoint_kind=True,
+        include_endpoint_kind=False,
     )
 
     if endpoint_kind == "responses":
