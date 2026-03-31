@@ -1686,18 +1686,17 @@
 
 	const buildResponsesRequestBody = (chatPayload) => {
 		const params = chatPayload?.params ?? {};
+		const reasoningConfig = {
+			...(chatPayload?.reasoning ?? {}),
+			...(params?.reasoning_effort ? { effort: params.reasoning_effort } : {}),
+			...(params?.summary ? { summary: params.summary } : {})
+		};
 		const body = {
 			model: chatPayload.model,
 			input: toResponsesInputFromMessages(chatPayload.messages ?? []),
 			stream: Boolean(chatPayload.stream),
 			metadata: chatPayload.metadata,
-			reasoning:
-				chatPayload?.reasoning || params?.reasoning_effort
-					? {
-							...(chatPayload?.reasoning ?? {}),
-							...(params?.reasoning_effort ? { effort: params.reasoning_effort } : {})
-						}
-					: undefined,
+			reasoning: Object.keys(reasoningConfig).length > 0 ? reasoningConfig : undefined,
 			verbosity: params?.verbosity,
 			temperature: params?.temperature,
 			top_p: params?.top_p,
