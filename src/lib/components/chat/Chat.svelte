@@ -274,6 +274,12 @@
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
 						disableRagEnabled = input.disableRagEnabled ?? false;
+						if (input?.params?.reasoning_effort) {
+							params = {
+								...params,
+								reasoning_effort: input.params.reasoning_effort
+							};
+						}
 					}
 				} catch (e) {}
 			} else {
@@ -671,6 +677,12 @@
 					imageGenerationEnabled = input.imageGenerationEnabled;
 					codeInterpreterEnabled = input.codeInterpreterEnabled;
 					disableRagEnabled = input.disableRagEnabled ?? false;
+					if (input?.params?.reasoning_effort) {
+						params = {
+							...params,
+							reasoning_effort: input.params.reasoning_effort
+						};
+					}
 				}
 			} catch (e) {}
 		}
@@ -2706,6 +2718,7 @@
 									bind:codeInterpreterEnabled
 									bind:webSearchEnabled
 									bind:disableRagEnabled
+									bind:params
 									bind:atSelectedModel
 									bind:showCommands
 									{generating}
@@ -2748,6 +2761,7 @@
 									bind:codeInterpreterEnabled
 									bind:webSearchEnabled
 									bind:disableRagEnabled
+									bind:params
 									bind:atSelectedModel
 									bind:showCommands
 									{stopResponse}

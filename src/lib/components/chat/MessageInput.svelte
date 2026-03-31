@@ -85,6 +85,7 @@
 	import CommandSuggestionList from './MessageInput/CommandSuggestionList.svelte';
 	import Knobs from '../icons/Knobs.svelte';
 	import BookOpen from '../icons/BookOpen.svelte';
+	import LightBulb from '../icons/LightBulb.svelte';
 	import ValvesModal from '../workspace/common/ValvesModal.svelte';
 	import PageEdit from '../icons/PageEdit.svelte';
 	import { goto } from '$app/navigation';
@@ -121,8 +122,27 @@
 	export let webSearchEnabled = false;
 	export let codeInterpreterEnabled = false;
 	export let disableRagEnabled = false;
+	export let params = {};
+
+	const REASONING_EFFORT_LEVELS = [
+		'default',
+		'none',
+		'minimal',
+		'low',
+		'medium',
+		'high',
+		'xhigh'
+	] as const;
+	const MODEL_REASONING_EFFORT_LEVELS = REASONING_EFFORT_LEVELS.slice(1) as readonly string[];
+	type ReasoningEffortLevel = (typeof REASONING_EFFORT_LEVELS)[number];
 
 	let inputContent = null;
+
+	let showReasoningEffortPopover = false;
+	let isReasoningEffortSliding = false;
+	let reasoningEffortHoverIndex: number | null = null;
+	let reasoningEffortButtonElement: HTMLButtonElement | null = null;
+	let reasoningEffortPopoverElement: HTMLDivElement | null = null;
 
 	let showInputVariablesModal = false;
 	let inputVariablesModalCallback = (variableValues) => {};
@@ -154,8 +174,142 @@
 		imageGenerationEnabled,
 		webSearchEnabled,
 		codeInterpreterEnabled,
-		disableRagEnabled
+		disableRagEnabled,
+		params: {
+			reasoning_effort: params?.reasoning_effort ?? undefined
+		}
 	});
+
+	const normalizeReasoningEffort = (value: unknown): Exclude<ReasoningEffortLevel, 'default'> | null => {
+		if (typeof value !== 'string') {
+			return null;
+		}
+
+		const normalized = value.trim().toLowerCase();
+		if (!normalized || normalized === 'default') {
+			return null;
+		}
+
+		return MODEL_REASONING_EFFORT_LEVELS.includes(normalized)
+			? (normalized as Exclude<ReasoningEffortLevel, 'default'>)
+			: null;
+	};
+
+	const getReasoningEffortIndex = (value: unknown) => {
+		const normalized = normalizeReasoningEffort(value);
+		if (normalized === null) {
+			return 0;
+		}
+
+		const modelIndex = MODEL_REASONING_EFFORT_LEVELS.indexOf(normalized);
+		return modelIndex === -1 ? 0 : modelIndex + 1;
+	};
+
+	const setReasoningEffortByIndex = (index: number) => {
+		const boundedIndex = Math.max(0, Math.min(REASONING_EFFORT_LEVELS.length - 1, Math.round(index)));
+		const nextLevel = REASONING_EFFORT_LEVELS[boundedIndex];
+
+		if (nextLevel === 'default') {
+			params = {
+				...(params ?? {}),
+				reasoning_effort: null
+			};
+			return;
+		}
+
+		params = {
+			...(params ?? {}),
+			reasoning_effort: nextLevel
+		};
+	};
+
+	const toggleReasoningEffortPopover = () => {
+		showReasoningEffortPopover = !showReasoningEffortPopover;
+		if (!showReasoningEffortPopover) {
+			isReasoningEffortSliding = false;
+			reasoningEffortHoverIndex = null;
+		}
+	};
+
+	const closeReasoningEffortPopover = (focusInput = false) => {
+		showReasoningEffortPopover = false;
+		isReasoningEffortSliding = false;
+		reasoningEffortHoverIndex = null;
+
+		if (focusInput) {
+			document.getElementById('chat-input')?.focus();
+		}
+	};
+
+	const handleReasoningEffortButtonKeydown = (event: KeyboardEvent) => {
+		if (event.key === 'Enter' || event.key === ' ') {
+			event.preventDefault();
+			toggleReasoningEffortPopover();
+			return;
+		}
+
+		if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+			event.preventDefault();
+			const currentIndex = getReasoningEffortIndex(params?.reasoning_effort);
+			const delta = event.key === 'ArrowRight' ? 1 : -1;
+			setReasoningEffortByIndex(currentIndex + delta);
+			showReasoningEffortPopover = true;
+		}
+	};
+
+	const handleReasoningEffortPointerMove = (event: PointerEvent) => {
+		if (!isReasoningEffortSliding || !reasoningEffortPopoverElement) {
+			return;
+		}
+
+		const rangeElement = reasoningEffortPopoverElement.querySelector(
+			'#reasoning-effort-inline-range'
+		) as HTMLInputElement | null;
+
+		if (!rangeElement) {
+			return;
+		}
+
+		const rect = rangeElement.getBoundingClientRect();
+		const clampedRatio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+		const index = Math.round(clampedRatio * (REASONING_EFFORT_LEVELS.length - 1));
+		reasoningEffortHoverIndex = index;
+	};
+
+	const handleReasoningEffortPointerEnd = () => {
+		if (isReasoningEffortSliding) {
+			isReasoningEffortSliding = false;
+			reasoningEffortHoverIndex = null;
+		}
+	};
+
+	const handleDocumentPointerDown = (event: PointerEvent) => {
+		if (!showReasoningEffortPopover) {
+			return;
+		}
+
+		const targetNode = event.target as Node;
+		const clickedInsidePopover = reasoningEffortPopoverElement?.contains(targetNode);
+		const clickedButton = reasoningEffortButtonElement?.contains(targetNode);
+		if (!clickedInsidePopover && !clickedButton) {
+			closeReasoningEffortPopover(true);
+		}
+	};
+
+	const getReasoningEffortBubbleStyle = (index: number) => {
+		const boundedIndex = Math.max(0, Math.min(REASONING_EFFORT_LEVELS.length - 1, index));
+		const leftPercent = (boundedIndex / (REASONING_EFFORT_LEVELS.length - 1)) * 100;
+
+		if (boundedIndex === 0) {
+			return `left: ${leftPercent}%; transform: translateX(0);`;
+		}
+
+		if (boundedIndex === REASONING_EFFORT_LEVELS.length - 1) {
+			return `left: ${leftPercent}%; transform: translateX(-100%);`;
+		}
+
+		return `left: ${leftPercent}%; transform: translateX(-50%);`;
+	};
 
 	const inputVariableHandler = async (text: string): Promise<string> => {
 		inputVariables = extractInputVariables(text);
@@ -789,6 +943,7 @@
 		if (e.key === 'Escape') {
 			console.log('Escape');
 			dragged = false;
+			closeReasoningEffortPopover(true);
 		}
 	};
 
@@ -921,6 +1076,10 @@
 
 		window.addEventListener('keydown', onKeyDown);
 		window.addEventListener('keyup', onKeyUp);
+		window.addEventListener('pointerup', handleReasoningEffortPointerEnd);
+		window.addEventListener('pointercancel', handleReasoningEffortPointerEnd);
+		window.addEventListener('pointermove', handleReasoningEffortPointerMove);
+		document.addEventListener('pointerdown', handleDocumentPointerDown);
 
 		window.addEventListener('focus', onFocus);
 		window.addEventListener('blur', onBlur);
@@ -940,6 +1099,10 @@
 		console.log('destroy');
 		window.removeEventListener('keydown', onKeyDown);
 		window.removeEventListener('keyup', onKeyUp);
+		window.removeEventListener('pointerup', handleReasoningEffortPointerEnd);
+		window.removeEventListener('pointercancel', handleReasoningEffortPointerEnd);
+		window.removeEventListener('pointermove', handleReasoningEffortPointerMove);
+		document.removeEventListener('pointerdown', handleDocumentPointerDown);
 
 		window.removeEventListener('focus', onFocus);
 		window.removeEventListener('blur', onBlur);
@@ -1552,6 +1715,109 @@
 														</div>
 													</ToolsMenu>
 												{/if}
+
+												<div class="relative" bind:this={reasoningEffortPopoverElement}>
+													<Tooltip content={$i18n.t('Reasoning Effort')} placement="top">
+														<button
+															bind:this={reasoningEffortButtonElement}
+															type="button"
+															id="reasoning-effort-button"
+															aria-label={$i18n.t('Reasoning Effort')}
+															aria-expanded={showReasoningEffortPopover}
+															aria-controls="reasoning-effort-popover"
+															on:click={toggleReasoningEffortPopover}
+															on:keydown={handleReasoningEffortButtonKeydown}
+															class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden border transition-colors {showReasoningEffortPopover
+																? 'text-sky-600 dark:text-sky-300 bg-sky-50 dark:bg-sky-900/20 border-sky-200 dark:border-sky-700'
+																: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 border-transparent'}"
+														>
+															<LightBulb className="size-4.5" strokeWidth="1.75" />
+														</button>
+													</Tooltip>
+
+													{#if showReasoningEffortPopover}
+														<div
+															id="reasoning-effort-popover"
+															class="absolute bottom-11 -left-10 z-40 w-64 rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 dark:text-white shadow-lg px-3 py-2"
+														>
+															<div class="relative pt-1 pb-0.5">
+																{#if isReasoningEffortSliding}
+																	{@const bubbleIndex =
+																		reasoningEffortHoverIndex ??
+																		getReasoningEffortIndex(params?.reasoning_effort)}
+																	<div
+																		class="absolute -top-1 px-2 py-0.5 rounded-md bg-gray-800 text-white dark:bg-gray-200 dark:text-gray-900 text-[10px] leading-4 pointer-events-none whitespace-nowrap"
+																		style={getReasoningEffortBubbleStyle(bubbleIndex)}
+																	>
+																		{REASONING_EFFORT_LEVELS[bubbleIndex]}
+																	</div>
+																{/if}
+
+																<div class="relative h-7 flex items-center">
+																	<div class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-4 pointer-events-none">
+																		{#each REASONING_EFFORT_LEVELS as _, idx}
+																			{#if idx > 0 && idx <= getReasoningEffortIndex(params?.reasoning_effort)}
+																				<div
+																					class="absolute h-[2px] -translate-y-1/2"
+																					style="left: {((idx - 1) / (REASONING_EFFORT_LEVELS.length - 1)) * 100}%; width: {(
+																						1 / (REASONING_EFFORT_LEVELS.length - 1)
+																					) * 100}%; top: 50%; background-color: #d8f1ff;"
+																				/>
+																			{/if}
+																		{/each}
+																	</div>
+
+																	<input
+																		id="reasoning-effort-inline-range"
+																		type="range"
+																		min="0"
+																		max={REASONING_EFFORT_LEVELS.length - 1}
+																		step="1"
+																		value={getReasoningEffortIndex(params?.reasoning_effort)}
+																		on:pointerdown={() => {
+																			isReasoningEffortSliding = true;
+																			reasoningEffortHoverIndex = getReasoningEffortIndex(
+																				params?.reasoning_effort
+																			);
+																		}}
+																		on:input={(event) => {
+																			const index = Number(
+																				(event.currentTarget as HTMLInputElement).value
+																			);
+																			setReasoningEffortByIndex(index);
+																			if (isReasoningEffortSliding) {
+																				reasoningEffortHoverIndex = index;
+																			}
+																		}}
+																		class="relative z-20 w-full h-4 bg-transparent cursor-pointer opacity-0"
+																	/>
+
+																	<div class="absolute inset-x-0 flex justify-between pointer-events-none">
+																		{#each REASONING_EFFORT_LEVELS as level, idx}
+																			<button
+																				type="button"
+																				class="size-3 rounded-full border transition-colors pointer-events-auto"
+																				style={idx <= getReasoningEffortIndex(params?.reasoning_effort)
+																					? 'background-color: #d8f1ff; border-color: #d8f1ff;'
+																					: 'background-color: transparent; border-color: #a1a1a173;'}
+																				aria-label={`Set reasoning effort to ${level}`}
+																				on:click={() => {
+																					setReasoningEffortByIndex(idx);
+																					reasoningEffortHoverIndex = idx;
+																				}}
+																				on:mouseenter={() => {
+																					if (isReasoningEffortSliding) {
+																						reasoningEffortHoverIndex = idx;
+																					}
+																				}}
+																			/>
+																		{/each}
+																	</div>
+																</div>
+															</div>
+														</div>
+													{/if}
+												</div>
 
 												<Tooltip content={$i18n.t('Disable RAG')} placement="top">
 													<button

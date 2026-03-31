@@ -144,6 +144,14 @@ OUI-X 的 Completion/Responses 已收敛到统一适配层（`completion_adapter
   * 不处理文件 sources
 * 目标：让用户能稳定地把“工具/模型对话”与“RAG 对话”分离开
 
+同时，聊天输入区（Tools 与 Disable RAG 之间）新增 **Reasoning Effort 灯泡滑块**：
+* 点击灯泡按钮弹出轻量滑块，不影响原有 Tools / Integrations / Disable RAG 交互
+* 档位与侧栏保持一致并双向同步：`default` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh`
+  * `default` 表示不下发 chat 级 `reasoning_effort`，回退使用模型预设 / fallback 参数
+* 该控件直接读写当前 chat 的 `params.reasoning_effort`，发送链路不变（仍走现有 params 合并与下发）
+* 拖动时显示当前档位提示，非拖动状态不显示提示；支持点击外部关闭与键盘操作（Enter/Space/Arrow）
+* 滑块视觉采用“节点 + 已通过区段连线”样式
+
 #### 5.5 Collection 级别的 RAG 独立配置覆写
 
 OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta 里保存配置覆写**，从而让不同 collection 使用不同策略。
@@ -313,6 +321,8 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 
 * 高级参数面板收敛与重排：
     * 新增并突出 reasoning_effort、verbosity、summary 三个参数入口（统一为标准化值）
+    * reasoning_effort 档位扩展为 7 档：`default` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh`
+    * 新增输入区灯泡滑块入口，与 Chat Controls 侧栏 `Reasoning Effort` 共用同一状态源（chat-level params）
     * 透传 summary/verbosity 等 Responses 语义参数
     * 非 Responses provider 会清理 summary 相关字段，避免不兼容参数污染请求
     * 移除旧采样参数在侧边栏与提交链路中的默认透传（如 min_p、repeat_penalty、tfs_z、mirostat*、use_mmap/use_mlock）
