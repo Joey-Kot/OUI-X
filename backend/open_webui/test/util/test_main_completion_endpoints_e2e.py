@@ -103,3 +103,44 @@ def test_api_chat_completions_routes_to_chat_handler_pipeline(monkeypatch):
     assert payload["endpoint"] == "chat_completions"
     assert payload["upstream"]["upstream"] == "ok"
     assert payload["upstream"]["echo_model"] == "gpt-4.1-mini"
+
+
+def test_api_responses_sanitizes_null_param_fields_before_chat_pipeline(monkeypatch):
+    from open_webui import main as main_module
+
+    app = main_module.app
+    captured = {}
+
+    async def fake_chat_completion(_request, form_data, _user):
+        captured["form_data"] = dict(form_data)
+        return {"ok": True}
+
+    monkeypatch.setattr(main_module, "chat_completion", fake_chat_completion)
+
+    body = {
+        "model": "gpt-5-mini",
+        "input": [{"role": "user", "content": "hello"}],
+        "temperature": None,
+        "top_p": None,
+        "stop": None,
+        "verbosity": None,
+        "max_output_tokens": None,
+        "reasoning": {"effort": None, "summary": None},
+        "chat_id": "chat-123",
+        "id": "msg-123",
+    }
+
+    with mock_user(app, id="u3", role="user"):
+        with TestClient(app) as client:
+            response = client.post("/api/responses", json=body)
+
+    assert response.status_code == 200
+    upstream_payload = captured["form_data"]["_responses_upstream_payload"]
+    assert "temperature" not in upstream_payload
+    assert "top_p" not in upstream_payload
+    assert "stop" not in upstream_payload
+    assert "verbosity" not in upstream_payload
+    assert "max_output_tokens" not in upstream_payload
+    assert "reasoning" not in upstream_payload
+    assert upstream_payload["chat_id"] == "chat-123"
+    assert upstream_payload["id"] == "msg-123"

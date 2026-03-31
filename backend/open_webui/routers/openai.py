@@ -117,6 +117,136 @@ def openai_reasoning_model_handler(payload):
     return payload
 
 
+CHAT_KNOWN_NULLABLE_PARAM_KEYS = {
+    "temperature",
+    "top_p",
+    "stop",
+    "reasoning_effort",
+    "verbosity",
+    "max_tokens",
+    "max_completion_tokens",
+    "frequency_penalty",
+    "presence_penalty",
+    "seed",
+    "logit_bias",
+}
+
+
+RESPONSES_KNOWN_NULLABLE_PARAM_KEYS = {
+    "temperature",
+    "top_p",
+    "stop",
+    "reasoning_effort",
+    "summary",
+    "verbosity",
+    "reasoning",
+    "text",
+    "max_output_tokens",
+    "max_tokens",
+    "max_completion_tokens",
+    "frequency_penalty",
+    "presence_penalty",
+    "seed",
+    "logit_bias",
+}
+
+
+def _remove_known_nulls(payload: dict, known_keys: set[str]) -> dict:
+    cleaned = {**payload}
+    for key in known_keys:
+        if key in cleaned and cleaned[key] is None:
+            del cleaned[key]
+    return cleaned
+
+
+def _normalize_chat_completions_payload_known_params(payload: dict) -> dict:
+    """
+    Normalize known Chat Completions params only.
+    Unknown fields are preserved as-is.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    return _remove_known_nulls(payload, CHAT_KNOWN_NULLABLE_PARAM_KEYS)
+
+
+def _normalize_responses_payload_known_params(payload: dict) -> dict:
+    """
+    Normalize /responses payload parameter semantics:
+    - Treat explicit nulls as unset so model defaults can apply.
+    - Map legacy known aliases to Responses schema.
+    - Normalize max token aliases to max_output_tokens.
+    Unknown fields are preserved as-is.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    sanitized = _remove_known_nulls(payload, RESPONSES_KNOWN_NULLABLE_PARAM_KEYS)
+
+    reasoning = sanitized.get("reasoning")
+    if isinstance(reasoning, dict):
+        reasoning_sanitized = {**reasoning}
+        if reasoning_sanitized.get("effort") is None:
+            reasoning_sanitized.pop("effort", None)
+        if reasoning_sanitized.get("summary") is None:
+            reasoning_sanitized.pop("summary", None)
+
+        if not reasoning_sanitized:
+            sanitized.pop("reasoning", None)
+        else:
+            sanitized["reasoning"] = reasoning_sanitized
+
+    # Map legacy alias keys when the canonical nested keys are missing.
+    if "reasoning_effort" in sanitized:
+        reasoning_obj = sanitized.get("reasoning")
+        if reasoning_obj is None:
+            reasoning_obj = {}
+        if isinstance(reasoning_obj, dict) and reasoning_obj.get("effort") is None:
+            reasoning_obj["effort"] = sanitized["reasoning_effort"]
+        if isinstance(reasoning_obj, dict) and reasoning_obj:
+            sanitized["reasoning"] = reasoning_obj
+
+    if "summary" in sanitized:
+        reasoning_obj = sanitized.get("reasoning")
+        if reasoning_obj is None:
+            reasoning_obj = {}
+        if isinstance(reasoning_obj, dict) and reasoning_obj.get("summary") is None:
+            reasoning_obj["summary"] = sanitized["summary"]
+        if isinstance(reasoning_obj, dict) and reasoning_obj:
+            sanitized["reasoning"] = reasoning_obj
+
+    if "verbosity" in sanitized:
+        text_obj = sanitized.get("text")
+        if text_obj is None:
+            text_obj = {}
+        if isinstance(text_obj, dict) and text_obj.get("verbosity") is None:
+            text_obj["verbosity"] = sanitized["verbosity"]
+        if isinstance(text_obj, dict) and text_obj:
+            sanitized["text"] = text_obj
+
+    # Legacy aliases are accepted as input but removed from outgoing payload.
+    sanitized.pop("reasoning_effort", None)
+    sanitized.pop("summary", None)
+    sanitized.pop("verbosity", None)
+
+    if "max_output_tokens" not in sanitized:
+        for alias in ("max_completion_tokens", "max_tokens"):
+            if alias in sanitized and sanitized[alias] is not None:
+                sanitized["max_output_tokens"] = sanitized[alias]
+                break
+
+    # /responses uses max_output_tokens; remove legacy aliases to avoid ambiguity.
+    sanitized.pop("max_completion_tokens", None)
+    sanitized.pop("max_tokens", None)
+
+    return sanitized
+
+
+def _normalize_payload_known_params_for_endpoint(payload: dict, endpoint: str) -> dict:
+    if endpoint == "responses":
+        return _normalize_responses_payload_known_params(payload)
+    return _normalize_chat_completions_payload_known_params(payload)
+
+
 def get_provider_type(api_config: Optional[dict]) -> str:
     if not isinstance(api_config, dict):
         return "openai"
@@ -796,6 +926,10 @@ async def _generate_completion_with_endpoint(
 
     payload = {**form_data}
     metadata = payload.pop("metadata", None)
+    payload.pop("endpoint_kind", None)
+    payload.pop("endpointKind", None)
+
+    payload = _normalize_payload_known_params_for_endpoint(payload, endpoint)
 
     model_id = form_data.get("model")
     model_info = Models.get_model_by_id(model_id)
@@ -816,6 +950,9 @@ async def _generate_completion_with_endpoint(
             payload = apply_model_params_as_defaults_openai(
                 params, payload, metadata, user
             )
+            payload.pop("endpoint_kind", None)
+            payload.pop("endpointKind", None)
+            payload = _normalize_payload_known_params_for_endpoint(payload, endpoint)
 
         # Check if user has access to the model
         if not bypass_filter and user.role == "user":

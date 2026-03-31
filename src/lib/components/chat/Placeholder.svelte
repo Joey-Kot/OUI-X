@@ -49,6 +49,7 @@
 	export let selectedFilterIds = [];
 
 	export let showCommands = false;
+	export let params = {};
 
 	export let imageGenerationEnabled = false;
 	export let codeInterpreterEnabled = false;
@@ -123,6 +124,7 @@
 									>
 										<img
 											src={`${WEBUI_API_BASE_URL}/models/model/profile/image?id=${model?.id}&lang=${$i18n.language}`}
+											alt=""
 											class=" size-9 @sm:size-10 rounded-full border-[1px] border-gray-100 dark:border-none"
 											aria-hidden="true"
 											draggable="false"
@@ -211,6 +213,7 @@
 					bind:codeInterpreterEnabled
 					bind:webSearchEnabled
 					bind:disableRagEnabled
+					bind:params
 					bind:atSelectedModel
 					bind:showCommands
 					{stopResponse}

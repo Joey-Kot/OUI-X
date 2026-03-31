@@ -3348,7 +3348,7 @@ async def process_chat_response(
                             new_form_data = build_upstream_payload(
                                 form_data=new_form_data,
                                 endpoint_kind="responses",
-                                include_endpoint_kind=True,
+                                include_endpoint_kind=False,
                             )
                         else:
                             new_form_data["endpoint_kind"] = "chat_completions"

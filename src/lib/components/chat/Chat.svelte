@@ -69,6 +69,7 @@
 		updateChatFolderIdById
 	} from '$lib/apis/chats';
 	import { generateOpenAIChatCompletion } from '$lib/apis/openai';
+	import { sanitizeResponsesRequestBody } from '$lib/apis/openai/responses-payload';
 	import { processWeb, processWebSearch, processYoutubeVideo } from '$lib/apis/retrieval';
 	import { getAndUpdateUserLocation, getUserSettings } from '$lib/apis/users';
 	import {
@@ -273,6 +274,12 @@
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
 						disableRagEnabled = input.disableRagEnabled ?? false;
+						if (input?.params?.reasoning_effort) {
+							params = {
+								...params,
+								reasoning_effort: input.params.reasoning_effort
+							};
+						}
 					}
 				} catch (e) {}
 			} else {
@@ -670,6 +677,12 @@
 					imageGenerationEnabled = input.imageGenerationEnabled;
 					codeInterpreterEnabled = input.codeInterpreterEnabled;
 					disableRagEnabled = input.disableRagEnabled ?? false;
+					if (input?.params?.reasoning_effort) {
+						params = {
+							...params,
+							reasoning_effort: input.params.reasoning_effort
+						};
+					}
 				}
 			} catch (e) {}
 		}
@@ -1731,8 +1744,7 @@
 			body.max_output_tokens = maxOutputTokens;
 		}
 
-		Object.keys(body).forEach((key) => body[key] === undefined && delete body[key]);
-		return body;
+		return sanitizeResponsesRequestBody(body);
 	};
 
 	const submitPrompt = async (userPrompt, { _raw = false } = {}) => {
@@ -2706,6 +2718,7 @@
 									bind:codeInterpreterEnabled
 									bind:webSearchEnabled
 									bind:disableRagEnabled
+									bind:params
 									bind:atSelectedModel
 									bind:showCommands
 									{generating}
@@ -2748,6 +2761,7 @@
 									bind:codeInterpreterEnabled
 									bind:webSearchEnabled
 									bind:disableRagEnabled
+									bind:params
 									bind:atSelectedModel
 									bind:showCommands
 									{stopResponse}

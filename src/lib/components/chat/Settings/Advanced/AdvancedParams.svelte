@@ -39,7 +39,7 @@
 	};
 
 	const LEVELS_BY_KEY = {
-		reasoning_effort: ['none', 'low', 'medium', 'high'],
+		reasoning_effort: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
 		verbosity: ['low', 'medium', 'high'],
 		summary: ['auto', 'concise', 'detailed']
 	} as const;
@@ -275,7 +275,7 @@
 						id="reasoning-effort-range"
 						type="range"
 						min="0"
-						max="3"
+						max="5"
 						step="1"
 						value={toSliderIndex('reasoning_effort', params.reasoning_effort)}
 						on:input={(event) => {
