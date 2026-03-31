@@ -313,9 +313,8 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 
 * 高级参数面板收敛与重排：
     * 新增并突出 reasoning_effort、verbosity、summary 三个参数入口（统一为标准化值）
-    * Provider 生效条件：
-        * 仅在 provider_type = openai_responses 时透传 summary/verbosity 等 Responses 语义参数
-        * 非 Responses provider 会清理 summary 相关字段，避免不兼容参数污染请求
+    * 透传 summary/verbosity 等 Responses 语义参数
+    * 非 Responses provider 会清理 summary 相关字段，避免不兼容参数污染请求
     * 移除旧采样参数在侧边栏与提交链路中的默认透传（如 min_p、repeat_penalty、tfs_z、mirostat*、use_mmap/use_mlock）
 * 参数标准化规则（前后端一致）：
     * reasoning_effort：去空白并转小写；空值不下发
@@ -406,6 +405,10 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * RAG Embedding Engine 不再提供 `azure_openai`
 * Knowledge collection overrides 不再接受 `azure_openai`
 * 历史 `azure_openai` 配置运行时自动归一化为 `openai`
+
+### 7) 移除 Azure OpenAI 相关组件与链路
+
+* 去掉 Provider Azure OpenAI 相关路由、前端管理组件
 
 ## 重构与稳定性改进（值得一提）
 
