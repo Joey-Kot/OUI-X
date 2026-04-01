@@ -144,14 +144,6 @@ OUI-X 的 Completion/Responses 已收敛到统一适配层（`completion_adapter
   * 不处理文件 sources
 * 目标：让用户能稳定地把“工具/模型对话”与“RAG 对话”分离开
 
-同时，聊天输入区（Tools 与 Disable RAG 之间）新增 **Reasoning Effort 灯泡滑块**：
-* 点击灯泡按钮弹出轻量滑块，不影响原有 Tools / Integrations / Disable RAG 交互
-* 档位与侧栏保持一致并双向同步：`default` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh`
-  * `default` 表示不下发 chat 级 `reasoning_effort`，回退使用模型预设 / fallback 参数
-* 该控件直接读写当前 chat 的 `params.reasoning_effort`，发送链路不变（仍走现有 params 合并与下发）
-* 拖动时显示当前档位提示，非拖动状态不显示提示；支持点击外部关闭与键盘操作（Enter/Space/Arrow）
-* 滑块视觉采用“节点 + 已通过区段连线”样式
-
 #### 5.5 Collection 级别的 RAG 独立配置覆写
 
 OUI-X 的一个关键变化：**每个 Knowledge Collection 可以在自身 meta 里保存配置覆写**，从而让不同 collection 使用不同策略。
@@ -322,7 +314,6 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * 高级参数面板收敛与重排：
     * 新增并突出 reasoning_effort、verbosity、summary 三个参数入口（统一为标准化值）
     * reasoning_effort 档位扩展为 7 档：`default` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh`
-    * 新增输入区灯泡滑块入口，与 Chat Controls 侧栏 `Reasoning Effort` 共用同一状态源（chat-level params）
     * 透传 summary/verbosity 等 Responses 语义参数
     * 非 Responses provider 会清理 summary 相关字段，避免不兼容参数污染请求
     * 移除旧采样参数在侧边栏与提交链路中的默认透传（如 min_p、repeat_penalty、tfs_z、mirostat*、use_mmap/use_mlock）
@@ -335,7 +326,17 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * Chat Controls 侧栏 `System Prompt` 交互增强：
     * `System Prompt` 输入区支持与对话输入框一致的 `/` Prompt 快捷建议，选中建议后会将当前命令位替换为对应内容，建议菜单在侧栏场景优先向下弹出，空间不足时自动翻转
 
-### 7) Chat 背景与代码块视觉增强
+### 7) 对话框新增 Reasoning Effort 滑块按钮
+
+新增一个聊天输入区按钮：**Reasoning Effort 滑块**
+* 点击灯泡按钮弹出轻量滑块，不影响原有 Tools / Integrations / Disable RAG 交互
+* 档位与侧栏保持一致并双向同步：`default` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh`
+  * `default` 表示不下发 chat 级 `reasoning_effort`，回退使用模型预设 / fallback 参数
+* 该控件直接读写当前 chat 的 `params.reasoning_effort`，发送链路不变（仍走现有 params 合并与下发）
+* 拖动时显示当前档位提示，非拖动状态不显示提示；支持点击外部关闭与键盘操作（Enter/Space/Arrow）
+* 滑块视觉采用“节点 + 已通过区段连线”样式
+
+### 8) Chat 背景与代码块视觉增强
 
 围绕聊天界面的背景可控性与代码块细节样式，新增以下能力：
 
@@ -351,9 +352,9 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * CodeBlock 样式微调：
   * 对内层代码块容器圆角进行微调，外层容器保持不变
 
-### 8) 图片上传/转码/压缩链路重构
+### 9) 图片上传/转码/压缩链路重构
 
-#### 8.1 图片压缩迁移到后端统一转码
+#### 9.1 图片压缩迁移到后端统一转码
 
 围绕聊天 / 频道 / 笔记中的图片上传链路，图片压缩从前端 canvas 缩放改为后端统一处理：
 
@@ -371,7 +372,7 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * 新增按用户维度的 ffmpeg 并发限制，避免单个用户批量上传抢占全部转码资源
 * 后端新增 HEIC / HEIF 解码支持，用于兼容苹果设备原图上传
 
-#### 8.2 图片 base64 Data URL MIME
+#### 9.2 图片 base64 Data URL MIME
 
 * 生成图片 Data URL 时，优先使用文件记录中的 `meta.content_type`
 * 若 `meta.content_type` 缺失，再回退到基于文件名的 MIME 推断
