@@ -349,7 +349,7 @@
 		}
 	};
 
-	const setDefaults = async () => {
+		const setDefaults = async () => {
 		if (!$tools) {
 			tools.set(await getTools(localStorage.token));
 		}
@@ -392,11 +392,231 @@
 					codeInterpreterEnabled = model.info.meta.defaultFeatureIds.includes('code_interpreter');
 				}
 			}
-		}
-	};
+			}
+		};
 
-	const showMessage = async (message, ignoreSettings = false) => {
-		await tick();
+		const STREAM_UI_FLUSH_INTERVAL_MS = 33;
+		const STREAM_TTS_FLUSH_INTERVAL_MS = 180;
+		const HAPTIC_CHUNK_INTERVAL_MS = 80;
+
+		let streamMessageFlushTimer: ReturnType<typeof setTimeout> | null = null;
+		const pendingStreamMessageUpdates = new Map<
+			string,
+			{
+				message: any;
+				shouldScroll: boolean;
+			}
+		>();
+
+		type StreamTTSState = {
+			deltaBuffer: string;
+			sentenceCarry: string;
+			flushTimer: ReturnType<typeof setTimeout> | null;
+		};
+
+		const streamTTSStates = new Map<string, StreamTTSState>();
+
+		const flushPendingStreamMessageUpdates = () => {
+			if (streamMessageFlushTimer !== null) {
+				clearTimeout(streamMessageFlushTimer);
+				streamMessageFlushTimer = null;
+			}
+
+			if (pendingStreamMessageUpdates.size === 0) {
+				return;
+			}
+
+			let shouldScroll = false;
+			for (const [messageId, update] of pendingStreamMessageUpdates.entries()) {
+				history.messages[messageId] = update.message;
+				shouldScroll = shouldScroll || update.shouldScroll;
+			}
+
+			pendingStreamMessageUpdates.clear();
+
+			if (shouldScroll && autoScroll) {
+				scrollToBottom();
+			}
+		};
+
+		const scheduleStreamMessageUpdate = (
+			messageId: string,
+			message: any,
+			options: { shouldScroll?: boolean } = {}
+		) => {
+			const shouldScroll = options.shouldScroll ?? false;
+			const previousUpdate = pendingStreamMessageUpdates.get(messageId);
+			pendingStreamMessageUpdates.set(messageId, {
+				message,
+				shouldScroll: shouldScroll || Boolean(previousUpdate?.shouldScroll)
+			});
+
+			if (streamMessageFlushTimer !== null) {
+				return;
+			}
+
+			streamMessageFlushTimer = window.setTimeout(() => {
+				streamMessageFlushTimer = null;
+				flushPendingStreamMessageUpdates();
+			}, STREAM_UI_FLUSH_INTERVAL_MS);
+		};
+
+		const getStreamTTSState = (messageId: string): StreamTTSState => {
+			let state = streamTTSStates.get(messageId);
+			if (state) {
+				return state;
+			}
+
+			state = {
+				deltaBuffer: '',
+				sentenceCarry: '',
+				flushTimer: null
+			};
+			streamTTSStates.set(messageId, state);
+			return state;
+		};
+
+		const dispatchTTSSentence = (messageId: string, content: string) => {
+			eventTarget.dispatchEvent(
+				new CustomEvent('chat', {
+					detail: { id: messageId, content }
+				})
+			);
+		};
+
+		const flushStreamTTSBuffer = (message: any, options: { forceFinal?: boolean } = {}) => {
+			const forceFinal = options.forceFinal ?? false;
+			if (!message?.id) {
+				return;
+			}
+
+			const state = streamTTSStates.get(message.id);
+			if (!state) {
+				return;
+			}
+
+			if (forceFinal && state.flushTimer !== null) {
+				clearTimeout(state.flushTimer);
+				state.flushTimer = null;
+			}
+
+			const rawInput = `${state.sentenceCarry}${state.deltaBuffer}`;
+			state.deltaBuffer = '';
+
+			if (!rawInput.trim()) {
+				if (forceFinal) {
+					state.sentenceCarry = '';
+					streamTTSStates.delete(message.id);
+				}
+				return;
+			}
+
+			const normalizedContent = removeAllDetails(rawInput);
+			if (!normalizedContent.trim()) {
+				if (forceFinal) {
+					state.sentenceCarry = '';
+					streamTTSStates.delete(message.id);
+				}
+				return;
+			}
+
+			const messageContentParts = getMessageContentParts(
+				normalizedContent,
+				$config?.audio?.tts?.split_on ?? 'punctuation'
+			);
+
+			if (!messageContentParts.length) {
+				if (forceFinal) {
+					state.sentenceCarry = '';
+					streamTTSStates.delete(message.id);
+				}
+				return;
+			}
+
+			if (forceFinal) {
+				state.sentenceCarry = '';
+				const lastSentence = messageContentParts.at(-1);
+				if (lastSentence && lastSentence !== message.lastSentence) {
+					message.lastSentence = lastSentence;
+					dispatchTTSSentence(message.id, lastSentence);
+				}
+				streamTTSStates.delete(message.id);
+				return;
+			}
+
+			const completeParts = messageContentParts.slice(0, -1);
+			state.sentenceCarry = messageContentParts.at(-1) ?? '';
+
+			const lastCompleteSentence = completeParts.at(-1);
+			if (lastCompleteSentence && lastCompleteSentence !== message.lastSentence) {
+				message.lastSentence = lastCompleteSentence;
+				dispatchTTSSentence(message.id, lastCompleteSentence);
+			}
+		};
+
+		const scheduleStreamTTSBufferFlush = (message: any) => {
+			if (!message?.id) {
+				return;
+			}
+			const state = getStreamTTSState(message.id);
+			if (state.flushTimer !== null) {
+				return;
+			}
+
+			state.flushTimer = window.setTimeout(() => {
+				state.flushTimer = null;
+				flushStreamTTSBuffer(message);
+			}, STREAM_TTS_FLUSH_INTERVAL_MS);
+		};
+
+		const queueStreamTTSChunk = (message: any, deltaContent: string) => {
+			if (!message?.id || !deltaContent) {
+				return;
+			}
+			const state = getStreamTTSState(message.id);
+			state.deltaBuffer += deltaContent;
+			scheduleStreamTTSBufferFlush(message);
+		};
+
+		const queueSnapshotTTSContent = (message: any, fullContent: string) => {
+			if (!message?.id) {
+				return;
+			}
+			const state = getStreamTTSState(message.id);
+			state.deltaBuffer = fullContent ?? '';
+			state.sentenceCarry = '';
+			scheduleStreamTTSBufferFlush(message);
+		};
+
+		const clearStreamTTSState = (messageId: string) => {
+			const state = streamTTSStates.get(messageId);
+			if (!state) {
+				return;
+			}
+			if (state.flushTimer !== null) {
+				clearTimeout(state.flushTimer);
+				state.flushTimer = null;
+			}
+			streamTTSStates.delete(messageId);
+		};
+
+		const maybeVibrateOnChunk = (message: any) => {
+			if (!navigator.vibrate || !($settings?.hapticFeedback ?? false)) {
+				return;
+			}
+
+			const now = Date.now();
+			const lastVibrationAt = message?.lastVibrationAt ?? 0;
+			if (now - lastVibrationAt < HAPTIC_CHUNK_INTERVAL_MS) {
+				return;
+			}
+
+			message.lastVibrationAt = now;
+			navigator.vibrate(5);
+		};
+
+		const showMessage = async (message, ignoreSettings = false) => {
+			await tick();
 
 		const _chatId = JSON.parse(JSON.stringify($chatId));
 		let _messageId = JSON.parse(JSON.stringify(message.id));
@@ -432,16 +652,21 @@
 		saveChatHandler(_chatId, history);
 	};
 
-	const chatEventHandler = async (event, cb) => {
-		console.log(event);
+		const chatEventHandler = async (event, cb) => {
+			console.log(event);
 
-		if (event.chat_id === $chatId) {
-			await tick();
+			if (event.chat_id !== $chatId) {
+				return;
+			}
+
 			let message = history.messages[event.message_id];
 
 			if (message) {
 				const type = event?.data?.type ?? null;
 				const data = event?.data?.data ?? null;
+				let shouldApplyMessageImmediately = true;
+				let shouldScheduleMessageUpdate = false;
+				let shouldScrollAfterFlush = false;
 
 				if (type === 'status') {
 					if (message?.statusHistory) {
@@ -449,38 +674,48 @@
 					} else {
 						message.statusHistory = [data];
 					}
+					shouldScheduleMessageUpdate = true;
 				} else if (type === 'chat:completion') {
-					chatCompletionEventHandler(data, message, event.chat_id);
+					void chatCompletionEventHandler(data, message, event.chat_id);
+					return;
 				} else if (type === 'chat:tasks:cancel') {
 					taskIds = null;
 					const responseMessage = history.messages[history.currentId];
 					// Set all response messages to done
 					for (const messageId of history.messages[responseMessage.parentId].childrenIds) {
 						history.messages[messageId].done = true;
+						pendingStreamMessageUpdates.delete(messageId);
+						clearStreamTTSState(messageId);
 					}
+					shouldApplyMessageImmediately = false;
 				} else if (type === 'chat:message:delta' || type === 'message') {
 					message.content += data.content;
+					shouldScheduleMessageUpdate = true;
 				} else if (type === 'chat:message' || type === 'replace') {
 					message.content = data.content;
+					shouldScheduleMessageUpdate = true;
 				} else if (type === 'chat:message:files' || type === 'files') {
 					message.files = data.files;
+					shouldScheduleMessageUpdate = true;
 				} else if (type === 'chat:message:embeds' || type === 'embeds') {
 					message.embeds = data.embeds;
+					shouldScheduleMessageUpdate = true;
 				} else if (type === 'chat:message:error') {
 					message.error = data.error;
+					shouldScheduleMessageUpdate = true;
 				} else if (type === 'chat:message:follow_ups') {
 					message.followUps = data.follow_ups;
-
-					if (autoScroll) {
-						scrollToBottom('smooth');
-					}
+					shouldScheduleMessageUpdate = true;
+					shouldScrollAfterFlush = true;
 				} else if (type === 'chat:title') {
 					chatTitle.set(data);
 					currentChatPage.set(1);
 					await chats.set(await getChatList(localStorage.token, $currentChatPage));
+					shouldApplyMessageImmediately = false;
 				} else if (type === 'chat:tags') {
 					chat = await getChatById(localStorage.token, $chatId);
 					allTags.set(await getAllTags(localStorage.token));
+					shouldApplyMessageImmediately = false;
 				} else if (type === 'source' || type === 'citation') {
 					if (data?.type === 'code_execution') {
 						// Code execution; update existing code execution by ID, or add new one.
@@ -507,6 +742,7 @@
 							message.sources = [data];
 						}
 					}
+					shouldScheduleMessageUpdate = true;
 				} else if (type === 'notification') {
 					const toastType = data?.type ?? 'info';
 					const toastContent = data?.content ?? '';
@@ -520,6 +756,7 @@
 					} else {
 						toast.info(toastContent);
 					}
+					shouldApplyMessageImmediately = false;
 				} else if (type === 'confirmation') {
 					eventCallback = cb;
 
@@ -528,6 +765,7 @@
 
 					eventConfirmationTitle = data.title;
 					eventConfirmationMessage = data.message;
+					shouldApplyMessageImmediately = false;
 				} else if (type === 'execute') {
 					eventCallback = cb;
 
@@ -542,6 +780,7 @@
 					} catch (error) {
 						console.error('Error executing code:', error);
 					}
+					shouldApplyMessageImmediately = false;
 				} else if (type === 'input') {
 					eventCallback = cb;
 
@@ -552,14 +791,23 @@
 					eventConfirmationMessage = data.message;
 					eventConfirmationInputPlaceholder = data.placeholder;
 					eventConfirmationInputValue = data?.value ?? '';
+					shouldApplyMessageImmediately = false;
 				} else {
 					console.log('Unknown message type', data);
 				}
 
-				history.messages[event.message_id] = message;
+				if (shouldScheduleMessageUpdate) {
+					scheduleStreamMessageUpdate(event.message_id, message, {
+						shouldScroll: shouldScrollAfterFlush
+					});
+					return;
+				}
+
+				if (shouldApplyMessageImmediately) {
+					history.messages[event.message_id] = message;
+				}
 			}
-		}
-	};
+		};
 
 	const onMessageHandler = async (event: {
 		origin: string;
@@ -725,16 +973,24 @@
 		chatInput?.focus();
 	});
 
-	onDestroy(() => {
-		try {
-			if (scrollToBottomFrameId !== null) {
-				window.cancelAnimationFrame(scrollToBottomFrameId);
-				scrollToBottomFrameId = null;
-			}
+		onDestroy(() => {
+			try {
+				if (scrollToBottomFrameId !== null) {
+					window.cancelAnimationFrame(scrollToBottomFrameId);
+					scrollToBottomFrameId = null;
+				}
+				if (streamMessageFlushTimer !== null) {
+					clearTimeout(streamMessageFlushTimer);
+					streamMessageFlushTimer = null;
+				}
+				pendingStreamMessageUpdates.clear();
+				for (const messageId of Array.from(streamTTSStates.keys())) {
+					clearStreamTTSState(messageId);
+				}
 
-			pageSubscribe();
-			showControlsSubscribe();
-			selectedFolderSubscribe();
+				pageSubscribe();
+				showControlsSubscribe();
+				selectedFolderSubscribe();
 			chatIdUnsubscriber?.();
 			window.removeEventListener('message', onMessageHandler);
 			$socket?.off('events', chatEventHandler);
@@ -1522,107 +1778,59 @@
 		}
 	};
 
-	const chatCompletionEventHandler = async (data, message, chatId) => {
-		const { id, done, choices, content, sources, selected_model_id, error, usage } = data;
+		const chatCompletionEventHandler = async (data, message, chatId) => {
+			const { done, choices, content, sources, selected_model_id, error, usage } = data;
 
-		if (error) {
-			await handleOpenAIError(error, message);
-		}
+			if (error) {
+				await handleOpenAIError(error, message);
+			}
 
-		if (sources && !message?.sources) {
-			message.sources = sources;
-		}
+			if (sources && !message?.sources) {
+				message.sources = sources;
+			}
 
-		if (choices) {
-			if (choices[0]?.message?.content) {
-				// Non-stream response
-				message.content += choices[0]?.message?.content;
-			} else {
-				// Stream response
-				let value = choices[0]?.delta?.content ?? '';
-				if (message.content == '' && value == '\n') {
-					console.log('Empty response');
+			if (choices) {
+				if (choices[0]?.message?.content) {
+					// Non-stream response
+					const nextContent = choices[0]?.message?.content ?? '';
+					message.content += nextContent;
+					queueStreamTTSChunk(message, nextContent);
 				} else {
-					message.content += value;
-
-					if (navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
-						navigator.vibrate(5);
-					}
-
-					// Emit chat event for TTS
-					const messageContentParts = getMessageContentParts(
-						removeAllDetails(message.content),
-						$config?.audio?.tts?.split_on ?? 'punctuation'
-					);
-					messageContentParts.pop();
-
-					// dispatch only last sentence and make sure it hasn't been dispatched before
-					if (
-						messageContentParts.length > 0 &&
-						messageContentParts[messageContentParts.length - 1] !== message.lastSentence
-					) {
-						message.lastSentence = messageContentParts[messageContentParts.length - 1];
-						eventTarget.dispatchEvent(
-							new CustomEvent('chat', {
-								detail: {
-									id: message.id,
-									content: messageContentParts[messageContentParts.length - 1]
-								}
-							})
-						);
+					// Stream response
+					const value = choices[0]?.delta?.content ?? '';
+					if (message.content == '' && value == '\n') {
+						console.log('Empty response');
+					} else {
+						message.content += value;
+						maybeVibrateOnChunk(message);
+						queueStreamTTSChunk(message, value);
 					}
 				}
 			}
-		}
 
-		if (content) {
-			// REALTIME_CHAT_SAVE is disabled
-			message.content = content;
-
-			if (navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
-				navigator.vibrate(5);
+			if (content) {
+				// REALTIME_CHAT_SAVE is disabled
+				message.content = content;
+				maybeVibrateOnChunk(message);
+				queueSnapshotTTSContent(message, content);
 			}
 
-			// Emit chat event for TTS
-			const messageContentParts = getMessageContentParts(
-				removeAllDetails(message.content),
-				$config?.audio?.tts?.split_on ?? 'punctuation'
-			);
-			messageContentParts.pop();
-
-			// dispatch only last sentence and make sure it hasn't been dispatched before
-			if (
-				messageContentParts.length > 0 &&
-				messageContentParts[messageContentParts.length - 1] !== message.lastSentence
-			) {
-				message.lastSentence = messageContentParts[messageContentParts.length - 1];
-				eventTarget.dispatchEvent(
-					new CustomEvent('chat', {
-						detail: {
-							id: message.id,
-							content: messageContentParts[messageContentParts.length - 1]
-						}
-					})
-				);
+			if (selected_model_id) {
+				message.selectedModelId = selected_model_id;
 			}
-		}
 
-		if (selected_model_id) {
-			message.selectedModelId = selected_model_id;
-		}
+			if (usage) {
+				message.usage = usage;
+			}
 
-		if (usage) {
-			message.usage = usage;
-		}
+			if (done) {
+				flushPendingStreamMessageUpdates();
+				flushStreamTTSBuffer(message, { forceFinal: true });
+				message.done = true;
 
-		history.messages[message.id] = message;
-
-		if (done) {
-			message.done = true;
-
-			if ($settings.responseAutoCopy) {
-				copyToClipboard(
-					buildMessageExportText(message, {
+				if ($settings.responseAutoCopy) {
+					copyToClipboard(
+						buildMessageExportText(message, {
 						removeDetails: true,
 						excludeCitations: true,
 						includeWatermark: true,
@@ -1631,55 +1839,40 @@
 				);
 			}
 
-			if ($settings.responseAutoPlayback && !$showCallOverlay) {
-				await tick();
-				document.getElementById(`speak-button-${message.id}`)?.click();
-			}
+				if ($settings.responseAutoPlayback && !$showCallOverlay) {
+					await tick();
+					document.getElementById(`speak-button-${message.id}`)?.click();
+				}
 
-			// Emit chat event for TTS
-			let lastMessageContentPart =
-				getMessageContentParts(
-					removeAllDetails(message.content),
-					$config?.audio?.tts?.split_on ?? 'punctuation'
-				)?.at(-1) ?? '';
-			if (lastMessageContentPart) {
 				eventTarget.dispatchEvent(
-					new CustomEvent('chat', {
-						detail: { id: message.id, content: lastMessageContentPart }
+					new CustomEvent('chat:finish', {
+						detail: {
+							id: message.id,
+							content: message.content
+					}
 					})
 				);
-			}
-			eventTarget.dispatchEvent(
-				new CustomEvent('chat:finish', {
-					detail: {
-						id: message.id,
-						content: message.content
-					}
-				})
-			);
 
-			history.messages[message.id] = message;
+				history.messages[message.id] = message;
 
-			await tick();
-			if (autoScroll) {
-				scrollToBottom();
-			}
+				if (autoScroll) {
+					scrollToBottom();
+				}
 
 			await chatCompletedHandler(
 				chatId,
 				message.model,
 				message.id,
-				createMessagesList(history, message.id)
-			);
-		}
+					createMessagesList(history, message.id)
+				);
 
-		console.log(data);
-		await tick();
+				console.log(data);
+				return;
+			}
 
-		if (autoScroll) {
-			scrollToBottom();
-		}
-	};
+			scheduleStreamMessageUpdate(message.id, message, { shouldScroll: true });
+			console.log(data);
+		};
 
 	//////////////////////////
 	// Chat functions
@@ -2300,11 +2493,13 @@
 
 			taskIds = null;
 
-			const responseMessage = history.messages[history.currentId];
-			// Set all response messages to done
-			for (const messageId of history.messages[responseMessage.parentId].childrenIds) {
-				history.messages[messageId].done = true;
-			}
+				const responseMessage = history.messages[history.currentId];
+				// Set all response messages to done
+				for (const messageId of history.messages[responseMessage.parentId].childrenIds) {
+					history.messages[messageId].done = true;
+					pendingStreamMessageUpdates.delete(messageId);
+					clearStreamTTSState(messageId);
+				}
 
 			history.messages[history.currentId] = responseMessage;
 
@@ -2442,22 +2637,19 @@
 						break;
 					}
 
-					if (mergedResponse.content == '' && value == '\n') {
-						continue;
-					} else {
-						mergedResponse.content += value;
-						history.messages[messageId] = message;
+						if (mergedResponse.content == '' && value == '\n') {
+							continue;
+						} else {
+							mergedResponse.content += value;
+							scheduleStreamMessageUpdate(messageId, message, { shouldScroll: true });
+						}
 					}
 
-					if (autoScroll) {
-						scrollToBottom();
-					}
+					flushPendingStreamMessageUpdates();
+					await saveChatHandler(_chatId, history);
+				} else {
+					console.error(res);
 				}
-
-				await saveChatHandler(_chatId, history);
-			} else {
-				console.error(res);
-			}
 		} catch (e) {
 			console.error(e);
 		}

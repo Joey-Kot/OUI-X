@@ -21,8 +21,11 @@
 		status = history.at(-1);
 	}
 
-	$: if (JSON.stringify(statusHistory) !== JSON.stringify(history)) {
-		history = statusHistory;
+	$: {
+		const nextHistory = Array.isArray(statusHistory) ? statusHistory : [];
+		if (history !== nextHistory) {
+			history = nextHistory;
+		}
 	}
 </script>
 

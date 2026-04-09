@@ -1,33 +1,12 @@
-<script lang="ts">
-	import { decode } from 'html-entities';
-	import { v4 as uuidv4 } from 'uuid';
+	<script lang="ts">
+		import { decode } from 'html-entities';
+		import { v4 as uuidv4 } from 'uuid';
 
-	import { getContext } from 'svelte';
-	const i18n = getContext('i18n');
+		import { getContext } from 'svelte';
+		const i18n = getContext('i18n');
 
-	import dayjs from '$lib/dayjs';
-	import duration from 'dayjs/plugin/duration';
-	import relativeTime from 'dayjs/plugin/relativeTime';
-
-	dayjs.extend(duration);
-	dayjs.extend(relativeTime);
-
-	async function loadLocale(locales) {
-		if (!locales || !Array.isArray(locales)) {
-			return;
-		}
-		for (const locale of locales) {
-			try {
-				dayjs.locale(locale);
-				break; // Stop after successfully loading the first available locale
-			} catch (error) {
-				console.error(`Could not load locale '${locale}':`, error);
-			}
-		}
-	}
-
-	// Assuming $i18n.languages is an array of language codes
-	$: loadLocale($i18n.languages);
+		import dayjs, { setDayjsLocaleIfNeeded } from '$lib/dayjs';
+		$: setDayjsLocaleIfNeeded($i18n.languages);
 
 	import { slide } from 'svelte/transition';
 	import { quintOut } from 'svelte/easing';
@@ -68,7 +47,7 @@
 		toolContextInjectionDisabled = attributes?.context_injection_disabled === 'true';
 	}
 
-	const collapsibleId = uuidv4();
+		const collapsibleId = uuidv4();
 
 	function parseJSONString(str) {
 		try {
@@ -78,9 +57,9 @@
 		}
 	}
 
-	function formatJSONString(str) {
-		try {
-			const parsed = parseJSONString(str);
+		function formatJSONString(str) {
+			try {
+				const parsed = parseJSONString(str);
 			// If parsed is an object/array, then it's valid JSON
 			if (typeof parsed === 'object') {
 				return JSON.stringify(parsed, null, 2);
@@ -90,34 +69,79 @@
 			}
 		} catch (e) {
 			// Not valid JSON, return as-is
-			return str;
+				return str;
+			}
 		}
-	}
-</script>
 
-<div {id} class={className}>
-	{#if attributes?.type === 'tool_calls'}
-		{@const args = decode(attributes?.arguments)}
-		{@const result = decode(attributes?.result ?? '')}
-		{@const files = parseJSONString(decode(attributes?.files ?? ''))}
-		{@const embeds = parseJSONString(decode(attributes?.embeds ?? ''))}
+		let decodedArgs = '';
+		let decodedResult = '';
+		let parsedFiles = null;
+		let parsedEmbeds = null;
+		let formattedArgs = '';
+		let formattedResult = '';
 
-		{#if embeds && Array.isArray(embeds) && embeds.length > 0}
-			<div class="py-1 w-full cursor-pointer">
-				<div class=" w-full text-xs text-gray-500">
-					<div class="">
-						{attributes.name}
+		let lastToolCallArguments = null;
+		let lastToolCallResult = null;
+		let lastToolCallFiles = null;
+		let lastToolCallEmbeds = null;
+
+		$: if (attributes?.type === 'tool_calls') {
+			const nextArguments = attributes?.arguments ?? '';
+			const nextResult = attributes?.result ?? '';
+			const nextFiles = attributes?.files ?? '';
+			const nextEmbeds = attributes?.embeds ?? '';
+
+			if (
+				nextArguments !== lastToolCallArguments ||
+				nextResult !== lastToolCallResult ||
+				nextFiles !== lastToolCallFiles ||
+				nextEmbeds !== lastToolCallEmbeds
+			) {
+				lastToolCallArguments = nextArguments;
+				lastToolCallResult = nextResult;
+				lastToolCallFiles = nextFiles;
+				lastToolCallEmbeds = nextEmbeds;
+
+				decodedArgs = decode(nextArguments);
+				decodedResult = decode(nextResult);
+				parsedFiles = parseJSONString(decode(nextFiles));
+				parsedEmbeds = parseJSONString(decode(nextEmbeds));
+				formattedArgs = formatJSONString(decodedArgs);
+				formattedResult = formatJSONString(decodedResult);
+			}
+		} else {
+			decodedArgs = '';
+			decodedResult = '';
+			parsedFiles = null;
+			parsedEmbeds = null;
+			formattedArgs = '';
+			formattedResult = '';
+
+			lastToolCallArguments = null;
+			lastToolCallResult = null;
+			lastToolCallFiles = null;
+			lastToolCallEmbeds = null;
+		}
+	</script>
+
+	<div {id} class={className}>
+		{#if attributes?.type === 'tool_calls'}
+			{#if parsedEmbeds && Array.isArray(parsedEmbeds) && parsedEmbeds.length > 0}
+				<div class="py-1 w-full cursor-pointer">
+					<div class=" w-full text-xs text-gray-500">
+						<div class="">
+							{attributes.name}
+						</div>
 					</div>
-				</div>
 
-				{#each embeds as embed, idx}
-					<div class="my-2" id={`${collapsibleId}-tool-calls-${attributes?.id}-embed-${idx}`}>
-						<FullHeightIframe
-							src={embed}
-							{args}
-							allowScripts={true}
-							allowForms={true}
-							allowSameOrigin={true}
+					{#each parsedEmbeds as embed, idx}
+						<div class="my-2" id={`${collapsibleId}-tool-calls-${attributes?.id}-embed-${idx}`}>
+							<FullHeightIframe
+								src={embed}
+								args={decodedArgs}
+								allowScripts={true}
+								allowForms={true}
+								allowSameOrigin={true}
 							allowPopups={true}
 						/>
 					</div>
@@ -194,36 +218,36 @@
 				{#if open && !hide}
 					<div transition:slide={{ duration: 300, easing: quintOut, axis: 'y' }}>
 						{#if attributes?.type === 'tool_calls'}
-							{#if attributes?.done === 'true'}
-								<Markdown
-									id={`${collapsibleId}-tool-calls-${attributes?.id}-result`}
-									content={`> \`\`\`json
-> ${formatJSONString(args)}
-> ${formatJSONString(result)}
-> \`\`\``}
-								/>
-							{:else}
-								<Markdown
-									id={`${collapsibleId}-tool-calls-${attributes?.id}-result`}
-									content={`> \`\`\`json
-> ${formatJSONString(args)}
-> \`\`\``}
-								/>
-							{/if}
+								{#if attributes?.done === 'true'}
+									<Markdown
+										id={`${collapsibleId}-tool-calls-${attributes?.id}-result`}
+										content={`> \`\`\`json
+	> ${formattedArgs}
+	> ${formattedResult}
+	> \`\`\``}
+									/>
+								{:else}
+									<Markdown
+										id={`${collapsibleId}-tool-calls-${attributes?.id}-result`}
+										content={`> \`\`\`json
+	> ${formattedArgs}
+	> \`\`\``}
+									/>
+								{/if}
 						{:else}
 							<slot name="content" />
 						{/if}
 					</div>
 				{/if}
 			{/if}
-		{/if}
+			{/if}
 
-		{#if attributes?.done === 'true'}
-			{#if typeof files === 'object'}
-				{#each files ?? [] as file, idx}
-					{#if typeof file === 'string'}
-						{#if file.startsWith('data:image/')}
-							<Image
+			{#if attributes?.done === 'true'}
+				{#if typeof parsedFiles === 'object'}
+					{#each parsedFiles ?? [] as file, idx}
+						{#if typeof file === 'string'}
+							{#if file.startsWith('data:image/')}
+								<Image
 								id={`${collapsibleId}-tool-calls-${attributes?.id}-result-${idx}`}
 								src={file}
 								alt="Image"
