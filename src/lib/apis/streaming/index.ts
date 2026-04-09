@@ -51,11 +51,19 @@ async function* openAIStreamToIterator(
 		functionCalls: Record<string, { name: string; arguments: string }>;
 		emittedCallIds: Set<string>;
 		callIndexes: Record<string, number>;
+		reasoningSummaryStreamed: boolean;
+		reasoningSummaryCurrentText: string;
+		reasoningSummaryEmittedLength: number;
+		reasoningSummaryPendingSeparator: boolean;
 	} = {
 		textEmitted: false,
 		functionCalls: {},
 		emittedCallIds: new Set(),
-		callIndexes: {}
+		callIndexes: {},
+		reasoningSummaryStreamed: false,
+		reasoningSummaryCurrentText: '',
+		reasoningSummaryEmittedLength: 0,
+		reasoningSummaryPendingSeparator: false
 	};
 
 	const normalizeResponsesUsage = (usage: any) => {
@@ -130,6 +138,80 @@ async function* openAIStreamToIterator(
 					continue;
 				}
 
+				if (responsesEventType === 'response.reasoning_summary_part.added') {
+					responsesState.reasoningSummaryCurrentText = '';
+					responsesState.reasoningSummaryEmittedLength = 0;
+					continue;
+				}
+
+				if (responsesEventType === 'response.reasoning_summary_text.delta') {
+					const delta = parsedData?.delta;
+					if (typeof delta === 'string' && delta) {
+						responsesState.reasoningSummaryCurrentText += delta;
+						responsesState.reasoningSummaryEmittedLength += delta.length;
+
+						let emitted = delta;
+						if (
+							responsesState.reasoningSummaryPendingSeparator &&
+							responsesState.reasoningSummaryStreamed
+						) {
+							emitted = `\n${emitted}`;
+							responsesState.reasoningSummaryPendingSeparator = false;
+						}
+
+						responsesState.reasoningSummaryStreamed = true;
+						yield { done: false, value: '', reasoning: emitted, rawEvent: parsedData };
+					}
+					continue;
+				}
+
+				if (responsesEventType === 'response.reasoning_summary_text.done') {
+					const finalText =
+						typeof parsedData?.text === 'string'
+							? parsedData.text
+							: responsesState.reasoningSummaryCurrentText;
+
+					let suffix = '';
+					if (finalText) {
+						if (responsesState.reasoningSummaryEmittedLength <= 0) {
+							suffix = finalText;
+						} else if (finalText.length > responsesState.reasoningSummaryEmittedLength) {
+							suffix = finalText.slice(responsesState.reasoningSummaryEmittedLength);
+						}
+					}
+
+					responsesState.reasoningSummaryCurrentText = finalText ?? '';
+					responsesState.reasoningSummaryEmittedLength = finalText?.length ?? 0;
+
+					if (suffix) {
+						let emitted = suffix;
+						if (
+							responsesState.reasoningSummaryPendingSeparator &&
+							responsesState.reasoningSummaryStreamed
+						) {
+							emitted = `\n${emitted}`;
+							responsesState.reasoningSummaryPendingSeparator = false;
+						}
+
+						responsesState.reasoningSummaryStreamed = true;
+						yield { done: false, value: '', reasoning: emitted, rawEvent: parsedData };
+					}
+					continue;
+				}
+
+				if (responsesEventType === 'response.reasoning_summary_part.done') {
+					const hadCurrentPartOutput =
+						responsesState.reasoningSummaryCurrentText.length > 0 ||
+						responsesState.reasoningSummaryEmittedLength > 0;
+					if (hadCurrentPartOutput && responsesState.reasoningSummaryStreamed) {
+						responsesState.reasoningSummaryPendingSeparator = true;
+					}
+
+					responsesState.reasoningSummaryCurrentText = '';
+					responsesState.reasoningSummaryEmittedLength = 0;
+					continue;
+				}
+
 				if (
 					responsesEventType === 'response.function_call_arguments.delta' ||
 					responsesEventType === 'response.function_call.delta'
@@ -188,9 +270,11 @@ async function* openAIStreamToIterator(
 
 				if (responsesEventType === 'response.completed') {
 					const response = parsedData?.response ?? {};
-					const reasoning = extractResponsesReasoning(response);
-					if (reasoning) {
-						yield { done: false, value: '', reasoning, rawEvent: parsedData };
+					if (!responsesState.reasoningSummaryStreamed) {
+						const reasoning = extractResponsesReasoning(response);
+						if (reasoning) {
+							yield { done: false, value: '', reasoning, rawEvent: parsedData };
+						}
 					}
 
 					if (!responsesState.textEmitted) {

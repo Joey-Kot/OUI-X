@@ -38,12 +38,14 @@ from open_webui.constants import ERROR_MESSAGES
 
 from open_webui.utils.payload import (
     apply_model_params_as_defaults_openai,
+    apply_model_params_to_body_openai,
 )
 from open_webui.utils.completion_adapter import (
     apply_prompt_cache_policy,
     resolve_prompt_cache_key_for_completion_request as adapter_resolve_prompt_cache_key,
 )
 from open_webui.utils.misc import (
+    deep_update,
     convert_logit_bias_input_to_json,
     stream_chunks_handler,
 )
@@ -139,6 +141,7 @@ RESPONSES_KNOWN_NULLABLE_PARAM_KEYS = {
     "reasoning_effort",
     "summary",
     "verbosity",
+    "response_format",
     "reasoning",
     "text",
     "max_output_tokens",
@@ -223,10 +226,25 @@ def _normalize_responses_payload_known_params(payload: dict) -> dict:
         if isinstance(text_obj, dict) and text_obj:
             sanitized["text"] = text_obj
 
+    if "response_format" in sanitized:
+        text_obj = sanitized.get("text")
+        if text_obj is None:
+            text_obj = {}
+        response_format = sanitized.get("response_format")
+        if (
+            isinstance(text_obj, dict)
+            and isinstance(response_format, dict)
+            and text_obj.get("format") is None
+        ):
+            text_obj["format"] = response_format
+        if isinstance(text_obj, dict) and text_obj:
+            sanitized["text"] = text_obj
+
     # Legacy aliases are accepted as input but removed from outgoing payload.
     sanitized.pop("reasoning_effort", None)
     sanitized.pop("summary", None)
     sanitized.pop("verbosity", None)
+    sanitized.pop("response_format", None)
 
     if "max_output_tokens" not in sanitized:
         for alias in ("max_completion_tokens", "max_tokens"):
@@ -245,6 +263,119 @@ def _normalize_payload_known_params_for_endpoint(payload: dict, endpoint: str) -
     if endpoint == "responses":
         return _normalize_responses_payload_known_params(payload)
     return _normalize_chat_completions_payload_known_params(payload)
+
+
+def _is_empty_default_param_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip() == "":
+        return True
+    if isinstance(value, (dict, list, tuple, set)) and len(value) == 0:
+        return True
+    return False
+
+
+def _sanitize_model_params_for_defaults(raw_params: dict) -> dict:
+    if not isinstance(raw_params, dict):
+        return {}
+
+    sanitized: dict = {}
+    for key, value in raw_params.items():
+        if key == "custom_params":
+            if not isinstance(value, dict):
+                continue
+
+            custom_params = {
+                custom_key: custom_value
+                for custom_key, custom_value in value.items()
+                if not _is_empty_default_param_value(custom_value)
+            }
+            if custom_params:
+                sanitized[key] = custom_params
+            continue
+
+        if _is_empty_default_param_value(value):
+            continue
+        sanitized[key] = value
+
+    return sanitized
+
+
+def _extract_model_params(model_info: Optional[Any]) -> dict:
+    if model_info and getattr(model_info, "params", None):
+        return model_info.params.model_dump()
+    return {}
+
+
+def _build_payload_with_layered_model_defaults(
+    *,
+    payload: dict,
+    endpoint: str,
+    metadata: Optional[dict],
+    user: UserModel,
+    custom_model_info: Optional[Any],
+    base_model_info: Optional[Any],
+) -> dict:
+    """
+    Build final upstream payload defaults in one place with precedence:
+    request > custom model params > base model params.
+    Empty values in all layers are treated as unset to avoid accidental override.
+    """
+    merged_payload = {**payload}
+
+    base_model_params = _sanitize_model_params_for_defaults(
+        _extract_model_params(base_model_info)
+    )
+    custom_model_params = _sanitize_model_params_for_defaults(
+        _extract_model_params(custom_model_info)
+    )
+    merged_model_params = deep_update(
+        {**base_model_params},
+        custom_model_params if isinstance(custom_model_params, dict) else {},
+    )
+
+    # Normalize request payload first so explicit nulls don't block default fallbacks.
+    merged_payload = _normalize_payload_known_params_for_endpoint(merged_payload, endpoint)
+    merged_model_params_for_defaults = (
+        {**merged_model_params} if isinstance(merged_model_params, dict) else {}
+    )
+    merged_model_system = merged_model_params_for_defaults.pop("system", None)
+    merged_model_defaults = apply_model_params_to_body_openai(
+        merged_model_params_for_defaults, {}
+    )
+
+    # Treat empty request values as unset only for keys that have model defaults.
+    default_keys: set[str] = set(merged_model_defaults.keys())
+    for key in list(default_keys):
+        if key in merged_payload and _is_empty_default_param_value(merged_payload[key]):
+            merged_payload.pop(key, None)
+
+    if endpoint == "responses":
+        # /responses expects `input` + optional `instructions`.
+        # Avoid injecting chat-only `messages` in upstream payload.
+        for key, value in merged_model_defaults.items():
+            if key not in merged_payload:
+                merged_payload[key] = value
+
+        if (
+            isinstance(merged_model_system, str)
+            and merged_model_system.strip()
+            and _is_empty_default_param_value(merged_payload.get("instructions"))
+        ):
+            merged_payload["instructions"] = merged_model_system
+
+        merged_payload.pop("messages", None)
+    else:
+        merged_payload = apply_model_params_as_defaults_openai(
+            merged_model_params, merged_payload, metadata, user
+        )
+
+    merged_payload.pop("endpoint_kind", None)
+    merged_payload.pop("endpointKind", None)
+    merged_payload = _normalize_payload_known_params_for_endpoint(
+        merged_payload, endpoint
+    )
+    return merged_payload
 
 
 def get_provider_type(api_config: Optional[dict]) -> str:
@@ -929,10 +1060,9 @@ async def _generate_completion_with_endpoint(
     payload.pop("endpoint_kind", None)
     payload.pop("endpointKind", None)
 
-    payload = _normalize_payload_known_params_for_endpoint(payload, endpoint)
-
     model_id = form_data.get("model")
     model_info = Models.get_model_by_id(model_id)
+    base_model_info = None
 
     # Check model info and override the payload
     if model_info:
@@ -942,17 +1072,18 @@ async def _generate_completion_with_endpoint(
                 if hasattr(request, "base_model_id")
                 else model_info.base_model_id
             )  # Use request's base_model_id if available
+            base_model_info = Models.get_model_by_id(base_model_id)
             payload["model"] = base_model_id
             model_id = base_model_id
 
-        params = model_info.params.model_dump()
-        if params:
-            payload = apply_model_params_as_defaults_openai(
-                params, payload, metadata, user
-            )
-            payload.pop("endpoint_kind", None)
-            payload.pop("endpointKind", None)
-            payload = _normalize_payload_known_params_for_endpoint(payload, endpoint)
+        payload = _build_payload_with_layered_model_defaults(
+            payload=payload,
+            endpoint=endpoint,
+            metadata=metadata,
+            user=user,
+            custom_model_info=model_info,
+            base_model_info=base_model_info,
+        )
 
         # Check if user has access to the model
         if not bypass_filter and user.role == "user":
@@ -972,6 +1103,9 @@ async def _generate_completion_with_endpoint(
                 status_code=403,
                 detail="Model not found",
             )
+
+    if not model_info:
+        payload = _normalize_payload_known_params_for_endpoint(payload, endpoint)
 
     await get_all_models(request, user=user)
     model = request.app.state.OPENAI_MODELS.get(model_id)

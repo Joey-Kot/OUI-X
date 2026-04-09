@@ -839,6 +839,11 @@ def _map_responses_event_to_chat_chunk(payload: dict, state: dict) -> dict | Non
     if not isinstance(payload, dict):
         return None
 
+    state.setdefault("reasoning_summary_streamed", False)
+    state.setdefault("reasoning_summary_current_text", "")
+    state.setdefault("reasoning_summary_emitted_len", 0)
+    state.setdefault("reasoning_summary_pending_separator", False)
+
     event_type = payload.get("type")
     if not isinstance(event_type, str) or not event_type.startswith("response."):
         return payload
@@ -902,7 +907,81 @@ def _map_responses_event_to_chat_chunk(payload: dict, state: dict) -> dict | Non
                         }
                     ],
                     "raw_event": payload,
-                }
+            }
+        return None
+
+    if event_type == "response.reasoning_summary_part.added":
+        state["reasoning_summary_current_text"] = ""
+        state["reasoning_summary_emitted_len"] = 0
+        return None
+
+    if event_type == "response.reasoning_summary_text.delta":
+        delta = payload.get("delta", "")
+        if isinstance(delta, str) and delta:
+            state["reasoning_summary_current_text"] = (
+                f'{state["reasoning_summary_current_text"]}{delta}'
+            )
+            state["reasoning_summary_emitted_len"] += len(delta)
+
+            emitted = delta
+            if (
+                state.get("reasoning_summary_pending_separator")
+                and state.get("reasoning_summary_streamed")
+            ):
+                emitted = f"\n{emitted}"
+                state["reasoning_summary_pending_separator"] = False
+
+            state["reasoning_summary_streamed"] = True
+            return {
+                "choices": [{"delta": {"reasoning_content": emitted}}],
+                "raw_event": payload,
+            }
+        return None
+
+    if event_type == "response.reasoning_summary_text.done":
+        final_text = payload.get("text")
+        if not isinstance(final_text, str):
+            final_text = state.get("reasoning_summary_current_text", "")
+
+        emitted_len = state.get("reasoning_summary_emitted_len", 0)
+        suffix = ""
+        if isinstance(final_text, str) and final_text:
+            if emitted_len <= 0:
+                suffix = final_text
+            elif len(final_text) > emitted_len:
+                suffix = final_text[emitted_len:]
+
+        state["reasoning_summary_current_text"] = final_text if isinstance(final_text, str) else ""
+        state["reasoning_summary_emitted_len"] = (
+            len(final_text) if isinstance(final_text, str) else 0
+        )
+
+        if suffix:
+            emitted = suffix
+            if (
+                state.get("reasoning_summary_pending_separator")
+                and state.get("reasoning_summary_streamed")
+            ):
+                emitted = f"\n{emitted}"
+                state["reasoning_summary_pending_separator"] = False
+
+            state["reasoning_summary_streamed"] = True
+            return {
+                "choices": [{"delta": {"reasoning_content": emitted}}],
+                "raw_event": payload,
+            }
+        return None
+
+    if event_type == "response.reasoning_summary_part.done":
+        had_current_part_output = (
+            bool(state.get("reasoning_summary_current_text"))
+            or int(state.get("reasoning_summary_emitted_len", 0)) > 0
+        )
+        if had_current_part_output and state.get("reasoning_summary_streamed"):
+            state["reasoning_summary_pending_separator"] = True
+
+        state["reasoning_summary_current_text"] = ""
+        state["reasoning_summary_emitted_len"] = 0
         return None
 
     if event_type == "response.completed":
@@ -914,7 +993,7 @@ def _map_responses_event_to_chat_chunk(payload: dict, state: dict) -> dict | Non
 
         reasoning_text = ""
         output_items = response.get("output", [])
-        if isinstance(output_items, list):
+        if not state.get("reasoning_summary_streamed") and isinstance(output_items, list):
             for item in output_items:
                 if not isinstance(item, dict) or item.get("type") != "reasoning":
                     continue
@@ -2855,6 +2934,10 @@ async def process_chat_response(
                         "function_calls": {},
                         "emitted_call_ids": set(),
                         "call_indexes": {},
+                        "reasoning_summary_streamed": False,
+                        "reasoning_summary_current_text": "",
+                        "reasoning_summary_emitted_len": 0,
+                        "reasoning_summary_pending_separator": False,
                     }
 
                     async def flush_pending_delta_data(threshold: int = 0):

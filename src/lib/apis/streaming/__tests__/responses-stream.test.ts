@@ -95,4 +95,80 @@ describe('createOpenAITextStream responses parsing', () => {
 
 		expect(reasoning).toBe('line 1\nline 2');
 	});
+
+	it('streams reasoning from response.reasoning_summary_text.delta events', async () => {
+		const stream = makeSseStream([
+			'event: response.reasoning_summary_text.delta\n',
+			'data: {"type":"response.reasoning_summary_text.delta","delta":"step "}\n\n',
+			'event: response.reasoning_summary_text.delta\n',
+			'data: {"type":"response.reasoning_summary_text.delta","delta":"one"}\n\n',
+			'event: response.completed\n',
+			'data: {"type":"response.completed","response":{"output":[]}}\n\n'
+		]);
+
+		const iterator = await createOpenAITextStream(stream, false);
+		let reasoning = '';
+		for await (const update of iterator) {
+			if (update.reasoning) {
+				reasoning += update.reasoning;
+			}
+			if (update.done) {
+				break;
+			}
+		}
+
+		expect(reasoning).toBe('step one');
+	});
+
+	it('inserts newline between streamed reasoning summary parts', async () => {
+		const stream = makeSseStream([
+			'event: response.reasoning_summary_part.added\n',
+			'data: {"type":"response.reasoning_summary_part.added"}\n\n',
+			'event: response.reasoning_summary_text.delta\n',
+			'data: {"type":"response.reasoning_summary_text.delta","delta":"line 1"}\n\n',
+			'event: response.reasoning_summary_part.done\n',
+			'data: {"type":"response.reasoning_summary_part.done"}\n\n',
+			'event: response.reasoning_summary_part.added\n',
+			'data: {"type":"response.reasoning_summary_part.added"}\n\n',
+			'event: response.reasoning_summary_text.delta\n',
+			'data: {"type":"response.reasoning_summary_text.delta","delta":"line 2"}\n\n',
+			'event: response.completed\n',
+			'data: {"type":"response.completed","response":{"output":[]}}\n\n'
+		]);
+
+		const iterator = await createOpenAITextStream(stream, false);
+		let reasoning = '';
+		for await (const update of iterator) {
+			if (update.reasoning) {
+				reasoning += update.reasoning;
+			}
+			if (update.done) {
+				break;
+			}
+		}
+
+		expect(reasoning).toBe('line 1\nline 2');
+	});
+
+	it('does not duplicate streamed reasoning on response.completed fallback extraction', async () => {
+		const stream = makeSseStream([
+			'event: response.reasoning_summary_text.delta\n',
+			'data: {"type":"response.reasoning_summary_text.delta","delta":"already streamed"}\n\n',
+			'event: response.completed\n',
+			'data: {"type":"response.completed","response":{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"already streamed"}]}]}}\n\n'
+		]);
+
+		const iterator = await createOpenAITextStream(stream, false);
+		let reasoning = '';
+		for await (const update of iterator) {
+			if (update.reasoning) {
+				reasoning += update.reasoning;
+			}
+			if (update.done) {
+				break;
+			}
+		}
+
+		expect(reasoning).toBe('already streamed');
+	});
 });
