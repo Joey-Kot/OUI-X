@@ -1,12 +1,11 @@
 <script lang="ts">
-	import { decode } from 'html-entities';
-	import { onMount, getContext } from 'svelte';
+	import { getContext } from 'svelte';
 	const i18n = getContext('i18n');
 
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
 
-	import { marked, type Token } from 'marked';
+	import type { Token } from 'marked';
 	import { copyToClipboard, unescapeHtml } from '$lib/utils';
 
 	import { WEBUI_BASE_URL } from '$lib/constants';
@@ -342,23 +341,23 @@
 			dir="auto"
 			{onToolCallContextInjectionChange}
 			{toolCallContextInjectionToggleEnabled}
-		>
-			<div class=" mb-1.5" slot="content">
-				<svelte:self
-					id={`${id}-${tokenIdx}-d`}
-					tokens={marked.lexer(decode(token.text))}
-					attributes={token?.attributes}
-					{done}
-					{editCodeBlock}
-					{onTaskClick}
-					{sourceIds}
-					{sourceLabels}
-					{onSourceClick}
-					{onToolCallContextInjectionChange}
-					{toolCallContextInjectionToggleEnabled}
-				/>
-			</div>
-		</Collapsible>
+			>
+				<div class=" mb-1.5" slot="content">
+					<svelte:self
+						id={`${id}-${tokenIdx}-d`}
+						tokens={token.tokens ?? []}
+						attributes={token?.attributes}
+						{done}
+						{editCodeBlock}
+						{onTaskClick}
+						{sourceIds}
+						{sourceLabels}
+						{onSourceClick}
+						{onToolCallContextInjectionChange}
+						{toolCallContextInjectionToggleEnabled}
+					/>
+				</div>
+			</Collapsible>
 	{:else if token.type === 'html'}
 		<HtmlToken {id} {token} {onSourceClick} />
 	{:else if token.type === 'iframe'}

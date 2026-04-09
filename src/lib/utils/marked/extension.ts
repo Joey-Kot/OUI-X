@@ -1,3 +1,5 @@
+import { decode } from 'html-entities';
+
 // Helper function to find matching closing tag
 function findMatchingClosingTag(src: string, openTag: string, closeTag: string): number {
 	let depth = 1;
@@ -26,7 +28,7 @@ function parseAttributes(tag: string): { [key: string]: string } {
 	return attributes;
 }
 
-function detailsTokenizer(src: string) {
+function detailsTokenizer(this: any, src: string) {
 	// Updated regex to capture attributes inside <details>
 	const detailsRegex = /^<details(\s+[^>]*)?>\n/;
 	const summaryRegex = /^<summary>(.*?)<\/summary>\n/;
@@ -49,18 +51,21 @@ function detailsTokenizer(src: string) {
 			content = content.slice(summaryMatch[0].length).trim();
 		}
 
+		const nestedTokens = this.lexer?.blockTokens ? this.lexer.blockTokens(decode(content), []) : [];
+
 		return {
 			type: 'details',
 			raw: fullMatch,
 			summary: summary,
 			text: content,
+			tokens: nestedTokens,
 			attributes: attributes // Include extracted attributes from <details>
 		};
 	}
 }
 
 function detailsStart(src: string) {
-	return src.match(/^<details>/) ? 0 : -1;
+	return src.match(/^<details(\s+[^>]*)?>/) ? 0 : -1;
 }
 
 function detailsRenderer(token: any) {
