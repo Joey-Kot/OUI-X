@@ -144,3 +144,89 @@ def test_api_responses_sanitizes_null_param_fields_before_chat_pipeline(monkeypa
     assert "reasoning" not in upstream_payload
     assert upstream_payload["chat_id"] == "chat-123"
     assert upstream_payload["id"] == "msg-123"
+
+
+def test_api_chat_completions_auto_reroutes_custom_model_to_responses(monkeypatch):
+    from open_webui import main as main_module
+
+    app = main_module.app
+    called = {"responses": False, "chat": False}
+
+    async def fake_get_all_models(request, user=None):
+        request.app.state.MODELS = {
+            "custom-model": {
+                "id": "custom-model",
+                "name": "Custom",
+                "info": {"base_model_id": "gpt-5-mini"},
+            },
+            "gpt-5-mini": {
+                "id": "gpt-5-mini",
+                "name": "Base",
+                "provider_type": "openai_responses",
+            },
+        }
+        return {"data": []}
+
+    async def fake_process_chat_payload(_request, form_data, _user, metadata, _model):
+        return form_data, metadata, []
+
+    async def fake_responses_handler(_request, form_data, _user):
+        called["responses"] = True
+        called["form_data"] = dict(form_data)
+        return {"ok": True, "endpoint": "responses"}
+
+    async def fake_chat_handler(_request, form_data, _user):
+        called["chat"] = True
+        return {"ok": True, "endpoint": "chat_completions"}
+
+    async def fake_process_chat_response(
+        _request,
+        response,
+        _form_data,
+        _user,
+        _metadata,
+        _model,
+        _events,
+        _tasks,
+    ):
+        return response
+
+    def fake_get_model_by_id(model_id: str):
+        if model_id == "custom-model":
+            return SimpleNamespace(
+                base_model_id="gpt-5-mini",
+                params=SimpleNamespace(model_dump=lambda: {}),
+                user_id="u4",
+                access_control=None,
+            )
+        if model_id == "gpt-5-mini":
+            return SimpleNamespace(
+                base_model_id=None,
+                params=SimpleNamespace(model_dump=lambda: {}),
+                user_id="u4",
+                access_control=None,
+            )
+        return None
+
+    monkeypatch.setattr(main_module, "get_all_models", fake_get_all_models)
+    monkeypatch.setattr(main_module, "process_chat_payload", fake_process_chat_payload)
+    monkeypatch.setattr(main_module, "responses_handler", fake_responses_handler)
+    monkeypatch.setattr(main_module, "chat_completion_handler", fake_chat_handler)
+    monkeypatch.setattr(main_module, "process_chat_response", fake_process_chat_response)
+    monkeypatch.setattr(main_module, "check_model_access", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main_module.Models, "get_model_by_id", fake_get_model_by_id)
+
+    body = {
+        "model": "custom-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": False,
+    }
+
+    with mock_user(app, id="u4", role="user"):
+        with TestClient(app) as client:
+            response = client.post("/api/chat/completions", json=body)
+
+    assert response.status_code == 200
+    assert response.json()["endpoint"] == "responses"
+    assert called["responses"] is True
+    assert called["chat"] is False

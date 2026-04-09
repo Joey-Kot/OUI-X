@@ -52,27 +52,63 @@ def provider_type_from_model_id(
     models: Optional[dict],
     openai_models: Optional[dict] = None,
 ) -> Optional[str]:
-    if isinstance(openai_models, dict) and isinstance(model_id, str):
-        openai_model = openai_models.get(model_id)
-        if isinstance(openai_model, dict):
-            provider_type = openai_model.get("provider_type")
-            if isinstance(provider_type, str):
-                return provider_type
+    def _resolve_provider_type(
+        current_model_id: Optional[str], visited: Optional[set[str]] = None
+    ) -> Optional[str]:
+        if not isinstance(current_model_id, str):
+            return None
 
-    if isinstance(models, dict) and isinstance(model_id, str):
-        model = models.get(model_id)
-        if isinstance(model, dict):
-            provider_type = model.get("provider_type")
-            if isinstance(provider_type, str):
-                return provider_type
+        visited = visited or set()
+        if current_model_id in visited:
+            return None
+        visited.add(current_model_id)
 
-            info = model.get("info")
-            if isinstance(info, dict):
-                info_provider_type = info.get("provider_type")
-                if isinstance(info_provider_type, str):
-                    return info_provider_type
+        if isinstance(openai_models, dict):
+            openai_model = openai_models.get(current_model_id)
+            if isinstance(openai_model, dict):
+                provider_type = openai_model.get("provider_type")
+                if isinstance(provider_type, str):
+                    return provider_type
 
-    return None
+        if isinstance(models, dict):
+            model = models.get(current_model_id)
+            if isinstance(model, dict):
+                provider_type = model.get("provider_type")
+                if isinstance(provider_type, str):
+                    return provider_type
+
+                info = model.get("info")
+                if isinstance(info, dict):
+                    info_provider_type = info.get("provider_type")
+                    if isinstance(info_provider_type, str):
+                        return info_provider_type
+
+                # Custom model in workspace may not carry provider_type directly.
+                # In that case, resolve route context through base_model_id.
+                base_model_id = (
+                    model.get("base_model_id")
+                    or (info.get("base_model_id") if isinstance(info, dict) else None)
+                )
+                if isinstance(base_model_id, str):
+                    resolved = _resolve_provider_type(base_model_id, visited)
+                    if isinstance(resolved, str):
+                        return resolved
+
+                    if ":" in base_model_id:
+                        base_model_without_tag = base_model_id.split(":", 1)[0]
+                        resolved = _resolve_provider_type(base_model_without_tag, visited)
+                        if isinstance(resolved, str):
+                            return resolved
+                    else:
+                        resolved = _resolve_provider_type(
+                            f"{base_model_id}:latest", visited
+                        )
+                        if isinstance(resolved, str):
+                            return resolved
+
+        return None
+
+    return _resolve_provider_type(model_id)
 
 
 def chat_messages_to_responses_input(messages: list[dict]) -> list[dict]:

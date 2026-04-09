@@ -126,6 +126,7 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
             # Custom model based on a base model
             owned_by = "openai"
             connection_type = None
+            provider_type = None
 
             pipe = None
 
@@ -139,6 +140,12 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
                         pipe = m["pipe"]
 
                     connection_type = m.get("connection_type", None)
+                    provider_type = m.get(
+                        "provider_type",
+                        m.get("info", {}).get("provider_type")
+                        if isinstance(m.get("info"), dict)
+                        else None,
+                    )
                     break
 
             model = {
@@ -150,6 +157,11 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
                 "connection_type": connection_type,
                 "preset": True,
                 **({"pipe": pipe} if pipe is not None else {}),
+                **(
+                    {"provider_type": provider_type}
+                    if isinstance(provider_type, str)
+                    else {}
+                ),
             }
 
             info = custom_model.model_dump()

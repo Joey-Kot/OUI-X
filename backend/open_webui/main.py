@@ -484,6 +484,7 @@ from open_webui.utils.completion_adapter import (
     build_upstream_payload,
     chat_messages_to_responses_input,
     normalize_tools_for_responses,
+    provider_type_from_model_id,
 )
 from open_webui.utils.embeddings import generate_embeddings
 from open_webui.utils.middleware import process_chat_payload, process_chat_response
@@ -1576,11 +1577,41 @@ async def chat_completion(
         model_info_params = (
             model_info.params.model_dump() if model_info and model_info.params else {}
         )
+        base_model_params = {}
 
-        # Check base model existence for custom models
-        if model_info_params.get("base_model_id"):
-            base_model_id = model_info_params.get("base_model_id")
+        def _is_empty_param_value(value):
+            if value is None:
+                return True
+            if isinstance(value, str) and value.strip() == "":
+                return True
+            if isinstance(value, (dict, list, tuple, set)) and len(value) == 0:
+                return True
+            return False
+
+        def _first_non_empty_value(*values):
+            for value in values:
+                if _is_empty_param_value(value):
+                    continue
+                return value
+            return None
+
+        # Check base model existence for custom models via model_info.base_model_id.
+        if model_info and model_info.base_model_id:
+            base_model_id = model_info.base_model_id
+            resolved_base_model_id = base_model_id
+
             if base_model_id not in request.app.state.MODELS:
+                # Accept `<id>` and `<id>:latest` as equivalent for lookup.
+                if ":" in base_model_id:
+                    base_without_tag = base_model_id.split(":", 1)[0]
+                    if base_without_tag in request.app.state.MODELS:
+                        resolved_base_model_id = base_without_tag
+                else:
+                    base_latest_id = f"{base_model_id}:latest"
+                    if base_latest_id in request.app.state.MODELS:
+                        resolved_base_model_id = base_latest_id
+
+            if resolved_base_model_id not in request.app.state.MODELS:
                 if ENABLE_CUSTOM_MODEL_FALLBACK:
                     default_models = (
                         request.app.state.config.DEFAULT_MODELS or ""
@@ -1591,40 +1622,64 @@ async def chat_completion(
                     )
 
                     if fallback_model_id:
-                        request.base_model_id = fallback_model_id
+                        resolved_base_model_id = fallback_model_id
                     else:
                         raise Exception("Model not found")
                 else:
                     raise Exception("Model not found")
 
-        # Chat Params
-        stream_delta_chunk_size = form_data.get("params", {}).get(
-            "stream_delta_chunk_size"
-        )
-        reasoning_tags = form_data.get("params", {}).get("reasoning_tags")
+            request.base_model_id = resolved_base_model_id
 
-        # Model Params (fallback only; request values take precedence)
-        if (
-            "stream" not in form_data
-            and model_info_params.get("stream_response") is not None
-        ):
-            form_data["stream"] = model_info_params.get("stream_response")
+            base_model_info = (
+                Models.get_model_by_id(resolved_base_model_id)
+                or Models.get_model_by_id(base_model_id)
+            )
+            if base_model_info and base_model_info.params:
+                base_model_params = base_model_info.params.model_dump()
+
+            # Route correction for custom models: if base model is responses provider,
+            # force endpoint to /responses even when request enters /chat/completions.
+            effective_provider_type = provider_type_from_model_id(
+                model_id=resolved_base_model_id,
+                models=request.app.state.MODELS,
+                openai_models=getattr(request.app.state, "OPENAI_MODELS", {}) or {},
+            )
+            if (
+                endpoint_kind == "chat_completions"
+                and effective_provider_type == "openai_responses"
+            ):
+                endpoint_kind = "responses"
 
         request_params = (
-            form_data.get("params", {}) if isinstance(form_data.get("params", {}), dict) else {}
+            form_data.get("params", {})
+            if isinstance(form_data.get("params", {}), dict)
+            else {}
         )
 
-        if (
-            "stream_delta_chunk_size" not in request_params
-            and model_info_params.get("stream_delta_chunk_size")
-        ):
-            stream_delta_chunk_size = model_info_params.get("stream_delta_chunk_size")
+        # Chat Params with layered fallback: request > custom model > base model.
+        stream_delta_chunk_size = _first_non_empty_value(
+            request_params.get("stream_delta_chunk_size"),
+            model_info_params.get("stream_delta_chunk_size"),
+            base_model_params.get("stream_delta_chunk_size"),
+        )
+        reasoning_tags = _first_non_empty_value(
+            request_params.get("reasoning_tags"),
+            model_info_params.get("reasoning_tags"),
+            base_model_params.get("reasoning_tags"),
+        )
 
-        if (
-            "reasoning_tags" not in request_params
-            and model_info_params.get("reasoning_tags") is not None
-        ):
-            reasoning_tags = model_info_params.get("reasoning_tags")
+        stream_response = _first_non_empty_value(
+            model_info_params.get("stream_response"),
+            base_model_params.get("stream_response"),
+        )
+        if "stream" not in form_data and stream_response is not None:
+            form_data["stream"] = stream_response
+
+        function_calling = _first_non_empty_value(
+            request_params.get("function_calling"),
+            model_info_params.get("function_calling"),
+            base_model_params.get("function_calling"),
+        )
 
         metadata = {
             "user_id": user.id,
@@ -1644,12 +1699,7 @@ async def chat_completion(
                 "stream_delta_chunk_size": stream_delta_chunk_size,
                 "reasoning_tags": reasoning_tags,
                 "function_calling": (
-                    "native"
-                    if (
-                        form_data.get("params", {}).get("function_calling") is not None
-                        or model_info_params.get("function_calling") is not None
-                    )
-                    else "default"
+                    "native" if function_calling is not None else "default"
                 ),
             },
         }

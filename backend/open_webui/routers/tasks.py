@@ -29,6 +29,7 @@ from open_webui.constants import TASKS
 from open_webui.routers.pipelines import process_pipeline_inlet_filter
 
 from open_webui.utils.task import get_task_model_id
+from open_webui.models.models import Models
 
 from open_webui.config import (
     DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE,
@@ -125,6 +126,14 @@ async def _generate_task_completion(
         models=models,
         openai_models=getattr(request.app.state, "OPENAI_MODELS", {}) or {},
     )
+    if provider_type is None and isinstance(model_id, str):
+        model_info = Models.get_model_by_id(model_id)
+        if model_info and model_info.base_model_id:
+            provider_type = provider_type_from_model_id(
+                model_id=model_info.base_model_id,
+                models=models,
+                openai_models=getattr(request.app.state, "OPENAI_MODELS", {}) or {},
+            )
     endpoint_kind = resolve_endpoint_kind(provider_type=provider_type)
     upstream_payload = build_upstream_payload(
         form_data=payload,

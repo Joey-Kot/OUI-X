@@ -38,6 +38,25 @@ def test_provider_type_from_model_id_prefers_openai_models():
     )
 
 
+def test_provider_type_from_model_id_resolves_custom_model_base_model_id():
+    models = {
+        "custom-1": {
+            "id": "custom-1",
+            "info": {"base_model_id": "gpt-5-mini"},
+        },
+        "gpt-5-mini": {"id": "gpt-5-mini", "provider_type": "openai_responses"},
+    }
+
+    assert (
+        adapter.provider_type_from_model_id(
+            model_id="custom-1",
+            models=models,
+            openai_models={},
+        )
+        == "openai_responses"
+    )
+
+
 def test_normalize_tools_for_responses_converts_chat_shape():
     tools = [
         {
