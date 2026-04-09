@@ -352,7 +352,10 @@
 
 	const toggleAllToolCallContextInjection = () => {
 		const currentContent = history.messages[message.id].content ?? '';
-		const currentToolCallDetails = getToolCallDetailsFromContent(currentContent);
+		const currentToolCallDetails =
+			currentContent === (message?.content ?? '')
+				? toolCallDetails
+				: getToolCallDetailsFromContent(currentContent);
 
 		if (
 			currentToolCallDetails.length === 0 ||

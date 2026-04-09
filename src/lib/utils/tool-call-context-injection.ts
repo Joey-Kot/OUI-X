@@ -7,6 +7,10 @@ export type ToolCallDetails = {
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const DETAILS_TAG_REGEX = /<details\s+([^>]*)>/gis;
+const TOOL_CALL_TYPE_REGEX = /\btype\s*=\s*"tool_calls"/i;
+
+let lastToolCallDetailsContent = '';
+let lastToolCallDetails: ToolCallDetails[] = [];
 
 const getAttributeValue = (attributes: string, attributeName: string) => {
 	const match = attributes.match(new RegExp(`\\b${escapeRegExp(attributeName)}="([^"]*)"`, 'i'));
@@ -28,6 +32,19 @@ const updateContextInjectionAttribute = (attributes: string, disabled: boolean) 
 
 export const getToolCallDetailsFromContent = (content: string): ToolCallDetails[] => {
 	if (!content) {
+		lastToolCallDetailsContent = '';
+		lastToolCallDetails = [];
+		return [];
+	}
+
+	if (content === lastToolCallDetailsContent) {
+		return lastToolCallDetails;
+	}
+
+	// Most responses do not contain tool call details; skip full regex scanning in that common case.
+	if (!content.includes('<details') || !TOOL_CALL_TYPE_REGEX.test(content)) {
+		lastToolCallDetailsContent = content;
+		lastToolCallDetails = [];
 		return [];
 	}
 
@@ -48,6 +65,8 @@ export const getToolCallDetailsFromContent = (content: string): ToolCallDetails[
 		return match;
 	});
 
+	lastToolCallDetailsContent = content;
+	lastToolCallDetails = toolCalls;
 	return toolCalls;
 };
 
@@ -56,7 +75,12 @@ export const updateToolCallContextInjectionStateInContent = (
 	toolCallId: string,
 	disabled: boolean
 ) => {
-	if (!content || !toolCallId) {
+	if (
+		!content ||
+		!toolCallId ||
+		!content.includes('<details') ||
+		!TOOL_CALL_TYPE_REGEX.test(content)
+	) {
 		return content;
 	}
 
@@ -79,7 +103,7 @@ export const updateAllToolCallContextInjectionStatesInContent = (
 	content: string,
 	disabled: boolean
 ) => {
-	if (!content) {
+	if (!content || !content.includes('<details') || !TOOL_CALL_TYPE_REGEX.test(content)) {
 		return content;
 	}
 

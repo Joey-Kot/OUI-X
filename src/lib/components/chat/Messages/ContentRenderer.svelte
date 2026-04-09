@@ -44,13 +44,64 @@
 
 	let contentContainerElement;
 	let floatingButtonsElement;
+	let hasDocumentListeners = false;
+	let hasContentSelectionListener = false;
+	let sourceIds = [];
+	let sourceLabels = [];
+	let floatingButtonMessages = [];
 
-	const updateButtonPosition = (event) => {
+	const bindContentSelectionListener = () => {
+		if (!contentContainerElement || hasContentSelectionListener) {
+			return;
+		}
+
+		contentContainerElement.addEventListener('mouseup', updateButtonPosition);
+		hasContentSelectionListener = true;
+	};
+
+	const unbindContentSelectionListener = () => {
+		if (!contentContainerElement || !hasContentSelectionListener) {
+			return;
+		}
+
+		contentContainerElement.removeEventListener('mouseup', updateButtonPosition);
+		hasContentSelectionListener = false;
+	};
+
+	const bindDocumentListeners = () => {
+		if (hasDocumentListeners) {
+			return;
+		}
+
+		document.addEventListener('mouseup', documentMouseupHandler);
+		document.addEventListener('keydown', keydownHandler);
+		hasDocumentListeners = true;
+	};
+
+	const unbindDocumentListeners = () => {
+		if (!hasDocumentListeners) {
+			return;
+		}
+
+		document.removeEventListener('mouseup', documentMouseupHandler);
+		document.removeEventListener('keydown', keydownHandler);
+		hasDocumentListeners = false;
+	};
+
+	const documentMouseupHandler = (event) => {
 		const buttonsContainerElement = document.getElementById(`floating-buttons-${id}`);
 		if (
-			!contentContainerElement?.contains(event.target) &&
-			!buttonsContainerElement?.contains(event.target)
+			contentContainerElement?.contains(event.target) ||
+			buttonsContainerElement?.contains(event.target)
 		) {
+			return;
+		}
+
+		closeFloatingButtons();
+	};
+
+	const updateButtonPosition = (event) => {
+		if (!contentContainerElement?.contains(event.target)) {
 			closeFloatingButtons();
 			return;
 		}
@@ -60,9 +111,14 @@
 
 			if (!contentContainerElement?.contains(event.target)) return;
 
-			let selection = window.getSelection();
+			const selection = window.getSelection();
 
-			if (selection.toString().trim().length > 0) {
+			if (selection && selection.rangeCount > 0 && selection.toString().trim().length > 0) {
+				const buttonsContainerElement = document.getElementById(`floating-buttons-${id}`);
+				if (!buttonsContainerElement) {
+					return;
+				}
+
 				const range = selection.getRangeAt(0);
 				const rect = range.getBoundingClientRect();
 
@@ -72,24 +128,24 @@
 				const top = rect.bottom - parentRect.top;
 				const left = rect.left - parentRect.left;
 
-				if (buttonsContainerElement) {
-					buttonsContainerElement.style.display = 'block';
+				buttonsContainerElement.style.display = 'block';
 
-					// Calculate space available on the right
-					const spaceOnRight = parentRect.width - left;
-					let halfScreenWidth = $mobile ? window.innerWidth / 2 : window.innerWidth / 3;
+				// Calculate space available on the right
+				const spaceOnRight = parentRect.width - left;
+				let halfScreenWidth = $mobile ? window.innerWidth / 2 : window.innerWidth / 3;
 
-					if (spaceOnRight < halfScreenWidth) {
-						const right = parentRect.right - rect.right;
-						buttonsContainerElement.style.right = `${right}px`;
-						buttonsContainerElement.style.left = 'auto'; // Reset left
-					} else {
-						// Enough space, position using 'left'
-						buttonsContainerElement.style.left = `${left}px`;
-						buttonsContainerElement.style.right = 'auto'; // Reset right
-					}
-					buttonsContainerElement.style.top = `${top + 5}px`; // +5 to add some spacing
+				if (spaceOnRight < halfScreenWidth) {
+					const right = parentRect.right - rect.right;
+					buttonsContainerElement.style.right = `${right}px`;
+					buttonsContainerElement.style.left = 'auto'; // Reset left
+				} else {
+					// Enough space, position using 'left'
+					buttonsContainerElement.style.left = `${left}px`;
+					buttonsContainerElement.style.right = 'auto'; // Reset right
 				}
+				buttonsContainerElement.style.top = `${top + 5}px`; // +5 to add some spacing
+
+				bindDocumentListeners();
 			} else {
 				closeFloatingButtons();
 			}
@@ -110,6 +166,8 @@
 				floatingButtonsElement?.closeHandler();
 			}
 		}
+
+		unbindDocumentListeners();
 	};
 
 	const keydownHandler = (e) => {
@@ -120,18 +178,57 @@
 
 	onMount(() => {
 		if (floatingButtons) {
-			contentContainerElement?.addEventListener('mouseup', updateButtonPosition);
-			document.addEventListener('mouseup', updateButtonPosition);
-			document.addEventListener('keydown', keydownHandler);
+			bindContentSelectionListener();
 		}
 	});
 
-	onDestroy(() => {
+	$: if (contentContainerElement) {
 		if (floatingButtons) {
-			contentContainerElement?.removeEventListener('mouseup', updateButtonPosition);
-			document.removeEventListener('mouseup', updateButtonPosition);
-			document.removeEventListener('keydown', keydownHandler);
+			bindContentSelectionListener();
+		} else {
+			closeFloatingButtons();
+			unbindContentSelectionListener();
 		}
+	}
+
+	const buildSourceMetadata = (sourceItems = [], currentModel = null) => {
+		const ids = [];
+		const labels = [];
+		const citationsDisabled = currentModel?.info?.meta?.capabilities?.citations == false;
+
+		for (const source of sourceItems ?? []) {
+			for (let index = 0; index < (source.document ?? []).length; index++) {
+				if (citationsDisabled) {
+					ids.push('N/A');
+					labels.push({ title: 'N/A', index: labels.length + 1 });
+					continue;
+				}
+
+				const metadata = source.metadata?.[index];
+				const sourceId = metadata?.source ?? 'N/A';
+				let title = source?.source?.name ?? sourceId;
+
+				if (metadata?.name) {
+					title = metadata.name;
+				} else if (sourceId.startsWith('http://') || sourceId.startsWith('https://')) {
+					title = sourceId;
+				}
+
+				ids.push(title);
+				labels.push({ title, index: labels.length + 1 });
+			}
+		}
+
+		return { ids, labels };
+	};
+
+	$: ({ ids: sourceIds, labels: sourceLabels } = buildSourceMetadata(sources, model));
+	$: floatingButtonMessages =
+		floatingButtons && model && history && messageId ? createMessagesList(history, messageId) : [];
+
+	onDestroy(() => {
+		unbindContentSelectionListener();
+		unbindDocumentListeners();
 	});
 </script>
 
@@ -145,57 +242,8 @@
 		{done}
 		{editCodeBlock}
 		{topPadding}
-		sourceIds={(sources ?? []).reduce((acc, source) => {
-			let ids = [];
-			(source.document ?? []).forEach((document, index) => {
-				if (model?.info?.meta?.capabilities?.citations == false) {
-					ids.push('N/A');
-					return ids;
-				}
-
-				const metadata = source.metadata?.[index];
-				const id = metadata?.source ?? 'N/A';
-
-				if (metadata?.name) {
-					ids.push(metadata.name);
-					return ids;
-				}
-
-				if (id.startsWith('http://') || id.startsWith('https://')) {
-					ids.push(id);
-				} else {
-					ids.push(source?.source?.name ?? id);
-				}
-
-				return ids;
-			});
-
-			return [...acc, ...ids];
-		}, [])}
-		sourceLabels={(sources ?? []).reduce((acc, source) => {
-			let labels = [];
-			(source.document ?? []).forEach((document, index) => {
-				if (model?.info?.meta?.capabilities?.citations == false) {
-					labels.push({ title: 'N/A', index: acc.length + labels.length + 1 });
-					return labels;
-				}
-
-				const metadata = source.metadata?.[index];
-				const id = metadata?.source ?? 'N/A';
-				let title = source?.source?.name ?? id;
-
-				if (metadata?.name) {
-					title = metadata.name;
-				} else if (id.startsWith('http://') || id.startsWith('https://')) {
-					title = id;
-				}
-
-				labels.push({ title, index: acc.length + labels.length + 1 });
-				return labels;
-			});
-
-			return [...acc, ...labels];
-		}, [])}
+		{sourceIds}
+		{sourceLabels}
 		{onSourceClick}
 		{onTaskClick}
 		{onToolCallContextInjectionChange}
@@ -237,7 +285,7 @@
 			: (selectedModels ?? []).length > 0
 				? selectedModels.at(0)
 				: model?.id}
-		messages={createMessagesList(history, messageId)}
+		messages={floatingButtonMessages}
 		onAdd={({ modelId, parentId, messages }) => {
 			console.log(modelId, parentId, messages);
 			onAddMessages({ modelId, parentId, messages });

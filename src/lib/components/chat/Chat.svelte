@@ -112,6 +112,8 @@
 	let autoScroll = true;
 	let processing = '';
 	let messagesContainerElement: HTMLDivElement;
+	let pendingScrollBehavior: ScrollBehavior = 'auto';
+	let scrollToBottomFrameId: number | null = null;
 
 	let navbarElement;
 
@@ -725,6 +727,11 @@
 
 	onDestroy(() => {
 		try {
+			if (scrollToBottomFrameId !== null) {
+				window.cancelAnimationFrame(scrollToBottomFrameId);
+				scrollToBottomFrameId = null;
+			}
+
 			pageSubscribe();
 			showControlsSubscribe();
 			selectedFolderSubscribe();
@@ -1230,14 +1237,44 @@
 		}
 	};
 
-	const scrollToBottom = async (behavior = 'auto') => {
-		await tick();
-		if (messagesContainerElement) {
-			messagesContainerElement.scrollTo({
-				top: messagesContainerElement.scrollHeight,
-				behavior
-			});
+	const flushScrollToBottom = () => {
+		scrollToBottomFrameId = null;
+
+		if (!messagesContainerElement) {
+			pendingScrollBehavior = 'auto';
+			return;
 		}
+
+		const targetTop = Math.max(
+			0,
+			messagesContainerElement.scrollHeight - messagesContainerElement.clientHeight
+		);
+		if (
+			pendingScrollBehavior === 'auto' &&
+			Math.abs(messagesContainerElement.scrollTop - targetTop) <= 1
+		) {
+			pendingScrollBehavior = 'auto';
+			return;
+		}
+
+		messagesContainerElement.scrollTo({
+			top: messagesContainerElement.scrollHeight,
+			behavior: pendingScrollBehavior
+		});
+		pendingScrollBehavior = 'auto';
+	};
+
+	const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
+		// Keep smooth scrolling intent if any caller requests it in the same frame.
+		if (behavior === 'smooth' || pendingScrollBehavior !== 'smooth') {
+			pendingScrollBehavior = behavior;
+		}
+
+		if (scrollToBottomFrameId !== null) {
+			return;
+		}
+
+		scrollToBottomFrameId = window.requestAnimationFrame(flushScrollToBottom);
 	};
 	const chatCompletedHandler = async (_chatId, modelId, responseMessageId, messages) => {
 		const res = await chatCompleted(localStorage.token, {
