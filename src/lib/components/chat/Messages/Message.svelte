@@ -42,6 +42,26 @@
 	export let readOnly = false;
 	export let editCodeBlock = true;
 	export let topPadding = false;
+
+	let message = null;
+	let parentMessage = null;
+	let siblingIds = [];
+	let isSingleModelResponseThread = true;
+
+	$: message = history?.messages?.[messageId] ?? null;
+	$: parentMessage = message?.parentId ? history?.messages?.[message.parentId] : null;
+	$: isSingleModelResponseThread = (parentMessage?.models?.length ?? 1) === 1;
+	$: {
+		if (!message || !history?.messages) {
+			siblingIds = [];
+		} else if (message.parentId !== null) {
+			siblingIds = parentMessage?.childrenIds ?? [];
+		} else {
+			siblingIds = Object.values(history.messages)
+				.filter((item) => item.parentId === null)
+				.map((item) => item.id);
+		}
+	}
 </script>
 
 <div
@@ -50,19 +70,15 @@
 		? 'max-w-full'
 		: 'max-w-5xl'} mx-auto rounded-lg group"
 >
-	{#if history.messages[messageId]}
-		{#if history.messages[messageId].role === 'user'}
+	{#if message}
+		{#if message.role === 'user'}
 			<UserMessage
 				{user}
 				{chatId}
 				{history}
 				{messageId}
 				isFirstMessage={idx === 0}
-				siblings={history.messages[messageId].parentId !== null
-					? (history.messages[history.messages[messageId].parentId]?.childrenIds ?? [])
-					: (Object.values(history.messages)
-							.filter((message) => message.parentId === null)
-							.map((message) => message.id) ?? [])}
+				siblings={siblingIds}
 				{gotoMessage}
 				{showPreviousMessage}
 				{showNextMessage}
@@ -72,14 +88,14 @@
 				{editCodeBlock}
 				{topPadding}
 			/>
-		{:else if (history.messages[history.messages[messageId].parentId]?.models?.length ?? 1) === 1}
+		{:else if isSingleModelResponseThread}
 			<ResponseMessage
 				{chatId}
 				{history}
 				{messageId}
 				{selectedModels}
-				isLastMessage={messageId === history.currentId}
-				siblings={history.messages[history.messages[messageId].parentId]?.childrenIds ?? []}
+				isLastMessage={message.id === history.currentId}
+				siblings={siblingIds}
 				{setInputText}
 				{gotoMessage}
 				{showPreviousMessage}
@@ -101,13 +117,13 @@
 			{#key messageId}
 				<MultiResponseMessages
 					bind:history
-					{chatId}
-					{messageId}
-					{selectedModels}
-					isLastMessage={messageId === history?.currentId}
-					{setInputText}
-					{updateChat}
-					{editMessage}
+						{chatId}
+						{messageId}
+						{selectedModels}
+						isLastMessage={message.id === history?.currentId}
+						{setInputText}
+						{updateChat}
+						{editMessage}
 					{saveMessage}
 					{actionMessage}
 					{submitMessage}

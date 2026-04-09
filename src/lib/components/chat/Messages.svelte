@@ -17,8 +17,8 @@
 	import { copyToClipboard, extractCurlyBraceWords } from '$lib/utils';
 
 	import Message from './Messages/Message.svelte';
-	import Loader from '../common/Loader.svelte';
 	import Spinner from '../common/Spinner.svelte';
+	import { computeVirtualWindow } from './virtualization';
 
 	import ChatPlaceholder from './ChatPlaceholder.svelte';
 
@@ -59,32 +59,276 @@
 
 	export let messagesCount: number | null = 20;
 	let messagesLoading = false;
+	let canLoadMoreOnTop = true;
+
+	const MESSAGE_ESTIMATED_HEIGHT = 220;
+	const MESSAGE_OVERSCAN_PX = 2000;
+	const MESSAGE_OVERSCAN_ITEMS = 4;
+
+	let containerElement: HTMLElement | null = null;
+	let viewportHeight = 0;
+	let scrollTop = 0;
+	let measuredHeights: Map<string, number> = new Map();
+
+	let visibleStartIdx = 0;
+	let renderedMessages = [];
+	let topSpacerHeight = 0;
+	let bottomSpacerHeight = 0;
+	let isAdjustingScrollTop = false;
+
+	const updateViewportMetrics = () => {
+		const element = containerElement ?? document.getElementById('messages-container');
+		if (!element) {
+			return;
+		}
+
+		containerElement = element;
+		scrollTop = element.scrollTop;
+		viewportHeight = element.clientHeight;
+	};
+
+	const normalizeContainerScrollTop = (nextScrollTop: number) => {
+		if (!containerElement) {
+			return;
+		}
+
+		if (Math.abs(containerElement.scrollTop - nextScrollTop) < 1) {
+			return;
+		}
+
+		isAdjustingScrollTop = true;
+		containerElement.scrollTop = nextScrollTop;
+		scrollTop = nextScrollTop;
+
+		window.requestAnimationFrame(() => {
+			isAdjustingScrollTop = false;
+		});
+	};
 
 	const loadMoreMessages = async () => {
 		// scroll slightly down to disable continuous loading
 		const element = document.getElementById('messages-container');
+		if (!element) {
+			return;
+		}
 		element.scrollTop = element.scrollTop + 100;
+		updateViewportMetrics();
 
 		messagesLoading = true;
-		messagesCount += 20;
+		if (messagesCount !== null) {
+			messagesCount += 20;
+		}
 
 		await tick();
+		updateViewportMetrics();
 
 		messagesLoading = false;
 	};
+
+	const maybeLoadMoreMessages = () => {
+		if (!containerElement || messagesLoading || messages.at(0)?.parentId === null) {
+			return;
+		}
+
+		if (containerElement.scrollTop > 260) {
+			canLoadMoreOnTop = true;
+			return;
+		}
+
+		if (canLoadMoreOnTop && containerElement.scrollTop <= 120) {
+			canLoadMoreOnTop = false;
+			loadMoreMessages();
+		}
+	};
+
+	const observeMessageHeight = (node: HTMLElement, messageId: string) => {
+		let currentMessageId = messageId;
+
+		const updateHeight = () => {
+			const nextHeight = node.offsetHeight;
+			if (!nextHeight) {
+				return;
+			}
+
+			if (measuredHeights.get(currentMessageId) === nextHeight) {
+				return;
+			}
+
+			const nextMeasuredHeights = new Map(measuredHeights);
+			nextMeasuredHeights.set(currentMessageId, nextHeight);
+			measuredHeights = nextMeasuredHeights;
+		};
+
+		updateHeight();
+
+		let resizeObserver: ResizeObserver | null = null;
+		if (typeof ResizeObserver !== 'undefined') {
+			resizeObserver = new ResizeObserver(() => {
+				updateHeight();
+			});
+			resizeObserver.observe(node);
+		}
+
+		return {
+			update(nextMessageId: string) {
+				if (nextMessageId === currentMessageId) {
+					return;
+				}
+				currentMessageId = nextMessageId;
+				updateHeight();
+			},
+			destroy() {
+				resizeObserver?.disconnect();
+			}
+		};
+	};
+
+	onMount(() => {
+		let animationFrameId = 0;
+
+		const handleScroll = () => {
+			updateViewportMetrics();
+
+			if (isAdjustingScrollTop) {
+				return;
+			}
+
+			maybeLoadMoreMessages();
+		};
+
+		const bindContainer = () => {
+			const element = document.getElementById('messages-container');
+			if (!element) {
+				return false;
+			}
+
+			containerElement = element;
+			updateViewportMetrics();
+			containerElement.addEventListener('scroll', handleScroll, { passive: true });
+			return true;
+		};
+
+		const bindWhenReady = () => {
+			if (!bindContainer()) {
+				animationFrameId = window.requestAnimationFrame(bindWhenReady);
+				return;
+			}
+
+			maybeLoadMoreMessages();
+		};
+
+		const handleResize = () => {
+			updateViewportMetrics();
+		};
+
+		bindWhenReady();
+		window.addEventListener('resize', handleResize, { passive: true });
+
+		return () => {
+			if (animationFrameId) {
+				window.cancelAnimationFrame(animationFrameId);
+			}
+			containerElement?.removeEventListener('scroll', handleScroll);
+			window.removeEventListener('resize', handleResize);
+		};
+	});
 
 	$: if (history.currentId) {
 		let _messages = [];
 
 		let message = history.messages[history.currentId];
 		while (message && (messagesCount !== null ? _messages.length <= messagesCount : true)) {
-			_messages.unshift({ ...message });
+			_messages.unshift(message);
 			message = message.parentId !== null ? history.messages[message.parentId] : null;
 		}
 
 		messages = _messages;
 	} else {
 		messages = [];
+	}
+
+	$: {
+		const messageIds = new Set(messages.map((message) => message.id));
+		let changed = false;
+		const nextMeasuredHeights = new Map<string, number>();
+
+		for (const [messageId, height] of measuredHeights.entries()) {
+			if (messageIds.has(messageId)) {
+				nextMeasuredHeights.set(messageId, height);
+			} else {
+				changed = true;
+			}
+		}
+
+		if (changed) {
+			measuredHeights = nextMeasuredHeights;
+		}
+	}
+
+	$: {
+		const messageCount = messages.length;
+
+		if (messageCount === 0) {
+			visibleStartIdx = 0;
+			renderedMessages = [];
+			topSpacerHeight = 0;
+			bottomSpacerHeight = 0;
+		} else if (viewportHeight <= 0) {
+			visibleStartIdx = 0;
+			renderedMessages = messages;
+			topSpacerHeight = 0;
+			bottomSpacerHeight = 0;
+		} else {
+			const offsets = new Array<number>(messageCount + 1);
+			offsets[0] = 0;
+
+			for (let index = 0; index < messageCount; index++) {
+				const messageId = messages[index].id;
+				const measuredHeight = measuredHeights.get(messageId) ?? MESSAGE_ESTIMATED_HEIGHT;
+				offsets[index + 1] = offsets[index] + measuredHeight;
+			}
+
+			const virtualWindow = computeVirtualWindow({
+				offsets,
+				messageCount,
+				scrollTop,
+				viewportHeight,
+				overscanPx: Math.max(MESSAGE_OVERSCAN_PX, viewportHeight * 2)
+			});
+
+			const containerMaxScrollTop = containerElement
+				? Math.max(0, containerElement.scrollHeight - containerElement.clientHeight)
+				: virtualWindow.maxScrollableTop;
+			const normalizedContainerScrollTop = Math.min(Math.max(0, scrollTop), containerMaxScrollTop);
+
+			if (Math.abs(normalizedContainerScrollTop - scrollTop) >= 1) {
+				normalizeContainerScrollTop(normalizedContainerScrollTop);
+			}
+
+			const renderStartIndex = Math.max(0, virtualWindow.startIndex - MESSAGE_OVERSCAN_ITEMS);
+			const renderEndIndex = Math.min(messageCount, virtualWindow.endIndex + MESSAGE_OVERSCAN_ITEMS);
+
+			visibleStartIdx = renderStartIndex;
+			renderedMessages = messages.slice(renderStartIndex, renderEndIndex);
+			topSpacerHeight = offsets[renderStartIndex] ?? 0;
+			bottomSpacerHeight = Math.max(
+				0,
+				virtualWindow.totalHeight - (offsets[renderEndIndex] ?? virtualWindow.totalHeight)
+			);
+
+			if (renderedMessages.length === 0) {
+				const fallbackStartIndex = Math.min(Math.max(virtualWindow.startIndex, 0), messageCount - 1);
+				const fallbackEndIndex = Math.min(messageCount, fallbackStartIndex + 1);
+
+				visibleStartIdx = fallbackStartIndex;
+				renderedMessages = messages.slice(fallbackStartIndex, fallbackEndIndex);
+				topSpacerHeight = offsets[fallbackStartIndex] ?? 0;
+				bottomSpacerHeight = Math.max(
+					0,
+					virtualWindow.totalHeight - (offsets[fallbackEndIndex] ?? virtualWindow.totalHeight)
+				);
+			}
+		}
 	}
 
 	$: if (autoScroll && bottomPadding) {
@@ -96,7 +340,11 @@
 
 	const scrollToBottom = () => {
 		const element = document.getElementById('messages-container');
+		if (!element) {
+			return;
+		}
 		element.scrollTop = element.scrollHeight;
+		updateViewportMetrics();
 	};
 
 	const updateChat = async () => {
@@ -398,50 +646,51 @@
 			{#key chatId}
 				<section class="w-full" aria-labelledby="chat-conversation">
 					<h2 class="sr-only" id="chat-conversation">{$i18n.t('Chat Conversation')}</h2>
-					{#if messages.at(0)?.parentId !== null}
-						<Loader
-							on:visible={(e) => {
-								console.log('visible');
-								if (!messagesLoading) {
-									loadMoreMessages();
-								}
-							}}
-						>
-							<div class="w-full flex justify-center py-1 text-xs animate-pulse items-center gap-2">
-								<Spinner className=" size-4" />
-								<div class=" ">{$i18n.t('Loading...')}</div>
-							</div>
-						</Loader>
+					{#if messagesLoading}
+						<div class="w-full flex justify-center py-1 text-xs animate-pulse items-center gap-2">
+							<Spinner className=" size-4" />
+							<div>{$i18n.t('Loading...')}</div>
+						</div>
 					{/if}
 					<ul role="log" aria-live="polite" aria-relevant="additions" aria-atomic="false">
-						{#each messages as message, messageIdx (message.id)}
-							<Message
-								{chatId}
-								bind:history
-								{selectedModels}
-								messageId={message.id}
-								idx={messageIdx}
-								{user}
-								{setInputText}
-								{gotoMessage}
-								{showPreviousMessage}
-								{showNextMessage}
-								{updateChat}
-								{editMessage}
-								{deleteMessage}
-								{actionMessage}
-								{saveMessage}
-								{submitMessage}
-								{regenerateResponse}
-								{continueResponse}
-								{mergeResponses}
-								{addMessages}
-								{triggerScroll}
-								{readOnly}
-								{editCodeBlock}
-								{topPadding}
-							/>
+						{#if topSpacerHeight > 0}
+							<div aria-hidden="true" style="height: {topSpacerHeight}px;" />
+						{/if}
+
+						{#each renderedMessages as message, virtualIdx (message.id)}
+							<div use:observeMessageHeight={message.id}>
+								<Message
+									{chatId}
+									bind:history
+									{selectedModels}
+									messageId={message.id}
+									idx={visibleStartIdx + virtualIdx}
+									{user}
+									{setInputText}
+									{gotoMessage}
+									{showPreviousMessage}
+									{showNextMessage}
+									{updateChat}
+									{editMessage}
+									{deleteMessage}
+									{actionMessage}
+									{saveMessage}
+									{submitMessage}
+									{regenerateResponse}
+									{continueResponse}
+									{mergeResponses}
+									{addMessages}
+									{triggerScroll}
+									{readOnly}
+									{editCodeBlock}
+									{topPadding}
+								/>
+							</div>
 						{/each}
+
+						{#if bottomSpacerHeight > 0}
+							<div aria-hidden="true" style="height: {bottomSpacerHeight}px;" />
+						{/if}
 					</ul>
 				</section>
 				<div class="pb-18" />

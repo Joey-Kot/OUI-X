@@ -1,4 +1,6 @@
 import dayjs from 'dayjs';
+import duration from 'dayjs/plugin/duration';
+import relativeTime from 'dayjs/plugin/relativeTime';
 
 // Import all locales
 import 'dayjs/locale/af';
@@ -102,5 +104,31 @@ import 'dayjs/locale/zh';
 import 'dayjs/locale/zh-tw';
 import 'dayjs/locale/et';
 import 'dayjs/locale/en-gb';
+
+dayjs.extend(duration);
+dayjs.extend(relativeTime);
+
+let currentLocale = dayjs.locale();
+
+export const setDayjsLocaleIfNeeded = (locales = []) => {
+	if (!Array.isArray(locales)) {
+		return;
+	}
+
+	for (const locale of locales) {
+		if (!locale) {
+			continue;
+		}
+		if (locale === currentLocale) {
+			break;
+		}
+
+		const nextLocale = dayjs.locale(locale);
+		if (nextLocale === locale) {
+			currentLocale = locale;
+			break;
+		}
+	}
+};
 
 export default dayjs;

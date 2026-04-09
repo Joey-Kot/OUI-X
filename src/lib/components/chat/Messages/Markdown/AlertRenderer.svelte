@@ -1,5 +1,7 @@
 <script lang="ts" context="module">
-	import { marked, type Token } from 'marked';
+	import type { Token } from 'marked';
+	import type { ComponentType } from 'svelte';
+	import { lexChatMarkdown } from '$lib/utils/marked/chat-markdown';
 
 	type AlertType = 'NOTE' | 'TIP' | 'IMPORTANT' | 'WARNING' | 'CAUTION';
 
@@ -14,6 +16,8 @@
 		text: string;
 		tokens: Token[];
 	}
+
+	const alertTokenCache = new WeakMap<Token, AlertData | false>();
 
 	const alertStyles: Record<AlertType, AlertTheme> = {
 		NOTE: {
@@ -44,6 +48,11 @@
 	};
 
 	export function alertComponent(token: Token): AlertData | false {
+		const cached = alertTokenCache.get(token);
+		if (cached !== undefined) {
+			return cached;
+		}
+
 		const regExpStr = `^(?:\\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\\])\\s*?\n*`;
 		const regExp = new RegExp(regExpStr);
 		const matches = token.text?.match(regExp);
@@ -51,13 +60,17 @@
 		if (matches && matches.length) {
 			const alertType = matches[1] as AlertType;
 			const newText = token.text.replace(regExp, '');
-			const newTokens = marked.lexer(newText);
-			return {
+			const newTokens = lexChatMarkdown(newText);
+			const result = {
 				type: alertType,
 				text: newText,
 				tokens: newTokens
 			};
+			alertTokenCache.set(token, result);
+			return result;
 		}
+
+		alertTokenCache.set(token, false);
 		return false;
 	}
 </script>
@@ -69,7 +82,7 @@
 	import Bolt from '$lib/components/icons/Bolt.svelte';
 	import ArrowRightCircle from '$lib/components/icons/ArrowRightCircle.svelte';
 	import MarkdownTokens from './MarkdownTokens.svelte';
-	import type { ComponentType } from 'svelte';
+	import type { Token } from 'marked';
 
 	export let token: Token;
 	export let alert: AlertData;

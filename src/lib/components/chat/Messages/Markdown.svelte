@@ -1,16 +1,11 @@
 <script>
-	import { marked } from 'marked';
+	import { onDestroy } from 'svelte';
 	import { replaceTokens, processResponseContent } from '$lib/utils';
 	import { user } from '$lib/stores';
 
-	import markedExtension from '$lib/utils/marked/extension';
-	import markedKatexExtension from '$lib/utils/marked/katex-extension';
-	import { disableSingleTilde } from '$lib/utils/marked/strikethrough-extension';
-	import { mentionExtension } from '$lib/utils/marked/mention-extension';
+	import { lexChatMarkdown } from '$lib/utils/marked/chat-markdown';
 
 	import MarkdownTokens from './Markdown/MarkdownTokens.svelte';
-	import footnoteExtension from '$lib/utils/marked/footnote-extension';
-	import citationExtension from '$lib/utils/marked/citation-extension';
 
 	export let id = '';
 	export let content;
@@ -37,28 +32,65 @@
 	export let toolCallContextInjectionToggleEnabled = false;
 
 	let tokens = [];
+	let processedContent = '';
+	let streamParseTimer = null;
+	let lastTokenizedAt = 0;
 
-	const options = {
-		throwOnError: false,
-		breaks: true
+	const STREAM_PARSE_THROTTLE_MS = 100;
+
+	const clearStreamParseTimer = () => {
+		if (streamParseTimer) {
+			clearTimeout(streamParseTimer);
+			streamParseTimer = null;
+		}
 	};
 
-	marked.use(markedKatexExtension(options));
-	marked.use(markedExtension(options));
-	marked.use(citationExtension(options));
-	marked.use(footnoteExtension(options));
-	marked.use(disableSingleTilde);
-	marked.use({
-		extensions: [mentionExtension({ triggerChar: '@' }), mentionExtension({ triggerChar: '#' })]
-	});
+	const tokenizeContent = (value) => {
+		tokens = lexChatMarkdown(value);
+		lastTokenizedAt = Date.now();
+	};
 
-	$: (async () => {
-		if (content) {
-			tokens = marked.lexer(
-				replaceTokens(processResponseContent(content), model?.name, $user?.name)
-			);
+	const scheduleTokenization = (value, isDone) => {
+		clearStreamParseTimer();
+
+		if (!value) {
+			tokens = [];
+			return;
 		}
-	})();
+
+		if (isDone) {
+			tokenizeContent(value);
+			return;
+		}
+
+		const elapsed = Date.now() - lastTokenizedAt;
+		const delay = Math.max(0, STREAM_PARSE_THROTTLE_MS - elapsed);
+
+		if (delay === 0) {
+			tokenizeContent(value);
+			return;
+		}
+
+		streamParseTimer = setTimeout(() => {
+			if (processedContent !== value || done) {
+				streamParseTimer = null;
+				return;
+			}
+
+			tokenizeContent(value);
+			streamParseTimer = null;
+		}, delay);
+	};
+
+	$: processedContent = content
+		? replaceTokens(processResponseContent(content), model?.name, $user?.name)
+		: '';
+
+	$: scheduleTokenization(processedContent, done);
+
+	onDestroy(() => {
+		clearStreamParseTimer();
+	});
 </script>
 
 {#key id}

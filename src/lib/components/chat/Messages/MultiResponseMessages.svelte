@@ -59,11 +59,9 @@
 
 	let selectedModelIdx = null;
 
-	let message = JSON.parse(JSON.stringify(history.messages[messageId]));
+	let message = history.messages[messageId];
 	$: if (history.messages) {
-		if (JSON.stringify(message) !== JSON.stringify(history.messages[messageId])) {
-			message = JSON.parse(JSON.stringify(history.messages[messageId]));
-		}
+		message = history.messages[messageId];
 	}
 
 	const gotoMessage = async (modelIdx, messageIdx) => {

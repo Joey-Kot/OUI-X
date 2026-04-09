@@ -58,6 +58,9 @@
 	};
 
 	let _token = null;
+	let lastTokenType = '';
+	let lastTokenRaw = '';
+	let lastTokenText = '';
 
 	let renderHTML = null;
 	let renderError = null;
@@ -363,7 +366,17 @@
 	};
 
 	$: if (token) {
-		if (JSON.stringify(token) !== JSON.stringify(_token)) {
+		const nextTokenType = token?.type ?? '';
+		const nextTokenRaw = token?.raw ?? '';
+		const nextTokenText = token?.text ?? '';
+		if (
+			nextTokenType !== lastTokenType ||
+			nextTokenRaw !== lastTokenRaw ||
+			nextTokenText !== lastTokenText
+		) {
+			lastTokenType = nextTokenType;
+			lastTokenRaw = nextTokenRaw;
+			lastTokenText = nextTokenText;
 			_token = token;
 		}
 	}
