@@ -120,11 +120,9 @@
 	export let messageId;
 	export let selectedModels = [];
 
-	let message: MessageType = JSON.parse(JSON.stringify(history.messages[messageId]));
+	let message: MessageType = history.messages[messageId];
 	$: if (history.messages) {
-		if (JSON.stringify(message) !== JSON.stringify(history.messages[messageId])) {
-			message = JSON.parse(JSON.stringify(history.messages[messageId]));
-		}
+		message = history.messages[messageId];
 	}
 
 	export let siblings;
