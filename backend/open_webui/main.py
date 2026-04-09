@@ -485,6 +485,7 @@ from open_webui.utils.completion_adapter import (
     chat_messages_to_responses_input,
     normalize_tools_for_responses,
 )
+from open_webui.utils.payload import merge_model_params_with_base
 from open_webui.utils.embeddings import generate_embeddings
 from open_webui.utils.middleware import process_chat_payload, process_chat_response
 from open_webui.utils.access_control import has_access
@@ -1550,6 +1551,7 @@ async def chat_completion(
     tasks = form_data.pop("background_tasks", None)
 
     metadata = {}
+
     try:
         model_info = None
         if not model_item.get("direct", False):
@@ -1573,13 +1575,14 @@ async def chat_completion(
             request.state.direct = True
             request.state.model = model
 
-        model_info_params = (
-            model_info.params.model_dump() if model_info and model_info.params else {}
+        model_info_params = merge_model_params_with_base(
+            model_info=model_info,
+            get_model_by_id=Models.get_model_by_id,
         )
 
         # Check base model existence for custom models
-        if model_info_params.get("base_model_id"):
-            base_model_id = model_info_params.get("base_model_id")
+        if model_info and model_info.base_model_id:
+            base_model_id = model_info.base_model_id
             if base_model_id not in request.app.state.MODELS:
                 if ENABLE_CUSTOM_MODEL_FALLBACK:
                     default_models = (

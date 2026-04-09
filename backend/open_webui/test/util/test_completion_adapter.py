@@ -110,6 +110,79 @@ def test_build_upstream_payload_for_responses_strips_internal_keys():
     assert payload["metadata"]["chat_id"] == "chat-1"
 
 
+def test_build_upstream_payload_for_responses_prefers_canonical_form_data_over_base_payload():
+    form_data = {
+        "model": "custom-model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 1,
+        "temperature": 0.2,
+    }
+    base_payload = {
+        "model": "custom-model",
+        "max_output_tokens": 1000,
+        "temperature": 0.9,
+        "future_unknown_field": {"x": 1},
+    }
+
+    payload = adapter.build_upstream_payload(
+        form_data=form_data,
+        endpoint_kind="responses",
+        base_payload=base_payload,
+        include_endpoint_kind=False,
+    )
+
+    assert payload["max_output_tokens"] == 1
+    assert payload["temperature"] == 0.2
+    assert payload["future_unknown_field"] == {"x": 1}
+
+
+def test_build_upstream_payload_for_responses_uses_form_data_messages_not_base_input():
+    form_data = {
+        "model": "custom-model",
+        "messages": [
+            {"role": "system", "content": "model system"},
+            {"role": "user", "content": "hello"},
+        ],
+    }
+    base_payload = {
+        "input": [{"role": "user", "content": "stale input"}],
+    }
+
+    payload = adapter.build_upstream_payload(
+        form_data=form_data,
+        endpoint_kind="responses",
+        base_payload=base_payload,
+        include_endpoint_kind=False,
+    )
+
+    assert payload["input"][0]["role"] == "system"
+    assert payload["input"][0]["content"] == "model system"
+    assert payload["input"][1]["role"] == "user"
+    assert payload["input"][1]["content"] == "hello"
+
+
+def test_build_upstream_payload_for_responses_normalizes_max_token_aliases():
+    form_data = {
+        "model": "custom-model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_completion_tokens": 42,
+    }
+    base_payload = {
+        "max_tokens": 99,
+    }
+
+    payload = adapter.build_upstream_payload(
+        form_data=form_data,
+        endpoint_kind="responses",
+        base_payload=base_payload,
+        include_endpoint_kind=False,
+    )
+
+    assert payload["max_output_tokens"] == 42
+    assert "max_tokens" not in payload
+    assert "max_completion_tokens" not in payload
+
+
 def test_apply_prompt_cache_policy_keeps_explicit_retention_unchanged(monkeypatch):
     monkeypatch.setattr(
         adapter,

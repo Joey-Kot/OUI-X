@@ -144,3 +144,69 @@ def test_api_responses_sanitizes_null_param_fields_before_chat_pipeline(monkeypa
     assert "reasoning" not in upstream_payload
     assert upstream_payload["chat_id"] == "chat-123"
     assert upstream_payload["id"] == "msg-123"
+
+
+def test_api_responses_builds_upstream_from_processed_form_data_first(monkeypatch):
+    from open_webui import main as main_module
+
+    app = main_module.app
+    captured = {}
+
+    async def fake_get_all_models(_request, user=None):
+        return {"data": []}
+
+    async def fake_process_chat_payload(_request, form_data, _user, metadata, _model):
+        updated = {**form_data}
+        updated["messages"] = [
+            {"role": "system", "content": "model system"},
+            {"role": "user", "content": "hello"},
+        ]
+        updated["max_output_tokens"] = 1
+        updated["temperature"] = 0.2
+        return updated, metadata, []
+
+    async def fake_responses_handler(_request, form_data, _user):
+        captured["form_data"] = dict(form_data)
+        return {"ok": True}
+
+    async def fake_process_chat_response(
+        _request,
+        response,
+        form_data,
+        _user,
+        _metadata,
+        _model,
+        _events,
+        _tasks,
+    ):
+        return {"ok": True, "upstream_payload": response}
+
+    monkeypatch.setattr(main_module, "get_all_models", fake_get_all_models)
+    monkeypatch.setattr(main_module, "process_chat_payload", fake_process_chat_payload)
+    monkeypatch.setattr(main_module, "responses_handler", fake_responses_handler)
+    monkeypatch.setattr(main_module, "process_chat_response", fake_process_chat_response)
+
+    body = {
+        "model": "gpt-5-mini",
+        "input": [{"role": "user", "content": "stale"}],
+        "stream": False,
+        "max_output_tokens": 1000,
+        "future_unknown_field": {"x": 1},
+        "model_item": {
+            "id": "gpt-5-mini",
+            "direct": True,
+            "provider_type": "openai_responses",
+        },
+    }
+
+    with mock_user(app, id="u4", role="user"):
+        with TestClient(app) as client:
+            response = client.post("/api/responses", json=body)
+
+    assert response.status_code == 200
+    upstream_payload = captured["form_data"]
+    assert upstream_payload["max_output_tokens"] == 1
+    assert upstream_payload["temperature"] == 0.2
+    assert upstream_payload["input"][0]["role"] == "system"
+    assert upstream_payload["input"][0]["content"] == "model system"
+    assert upstream_payload["future_unknown_field"] == {"x": 1}

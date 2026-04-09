@@ -27,6 +27,52 @@ INTERNAL_FORM_KEYS = {
     "variables",
 }
 
+RESPONSES_PARAM_KEYS = {
+    "temperature",
+    "top_p",
+    "stop",
+    "reasoning",
+    "reasoning_effort",
+    "summary",
+    "verbosity",
+    "text",
+    "max_output_tokens",
+    "max_tokens",
+    "max_completion_tokens",
+    "frequency_penalty",
+    "presence_penalty",
+    "seed",
+    "logit_bias",
+    "response_format",
+    "truncation",
+    "tool_choice",
+    "parallel_tool_calls",
+    "previous_response_id",
+    "conversation",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "store",
+    "user",
+}
+
+RESPONSES_PARAM_ALIAS_KEYS = {
+    "max_tokens",
+    "max_completion_tokens",
+    "max_output_tokens",
+}
+
+def _normalize_responses_max_tokens_aliases(payload: dict) -> dict:
+    normalized = {**payload}
+    if "max_output_tokens" not in normalized:
+        for alias in ("max_completion_tokens", "max_tokens"):
+            if alias in normalized and normalized[alias] is not None:
+                normalized["max_output_tokens"] = normalized[alias]
+                break
+
+    normalized.pop("max_completion_tokens", None)
+    normalized.pop("max_tokens", None)
+    return normalized
+
 
 def resolve_endpoint_kind(
     explicit_endpoint: Optional[str] = None,
@@ -155,6 +201,65 @@ def chat_messages_to_responses_input(messages: list[dict]) -> list[dict]:
                 input_items.append({"role": role, "content": normalized_parts})
 
     return input_items
+
+
+def responses_input_to_chat_messages(input_items: list[dict]) -> list[dict]:
+    messages: list[dict] = []
+    for item in input_items or []:
+        if not isinstance(item, dict):
+            continue
+
+        item_type = item.get("type")
+        if item_type == "function_call_output":
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": item.get("call_id", ""),
+                    "content": item.get("output", ""),
+                }
+            )
+            continue
+
+        role = item.get("role")
+        if role not in {"user", "assistant", "system", "developer"}:
+            continue
+
+        content = item.get("content", "")
+        if isinstance(content, str):
+            messages.append({"role": role, "content": content})
+            continue
+
+        if isinstance(content, list):
+            text_parts = []
+            normalized_parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+
+                part_type = part.get("type")
+                if part_type in {"input_text", "output_text"}:
+                    text = part.get("text", "")
+                    text_parts.append(text)
+                    normalized_parts.append({"type": "text", "text": text})
+                elif part_type == "input_image":
+                    image_url = part.get("image_url", "")
+                    normalized_parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": image_url}
+                            if isinstance(image_url, str)
+                            else image_url,
+                        }
+                    )
+
+            if normalized_parts:
+                messages.append(
+                    {
+                        "role": role,
+                        "content": normalized_parts if len(normalized_parts) > 1 else "".join(text_parts),
+                    }
+                )
+    return messages
 
 
 def normalize_tools_for_responses(tools: list[dict]) -> list[dict]:
@@ -309,22 +414,39 @@ def build_upstream_payload(
     strip_internal_keys: bool = False,
     include_endpoint_kind: bool = True,
 ) -> dict:
-    payload = {**(base_payload if isinstance(base_payload, dict) else form_data)}
+    payload = {**form_data}
 
     if endpoint_kind == "responses":
+        canonical_payload = {**form_data}
         if isinstance(form_data.get("messages"), list):
-            payload["input"] = chat_messages_to_responses_input(
+            canonical_payload["input"] = chat_messages_to_responses_input(
                 form_data.get("messages", [])
             )
+
         if isinstance(form_data.get("tools"), list):
-            payload["tools"] = normalize_tools_for_responses(
+            canonical_payload["tools"] = normalize_tools_for_responses(
                 form_data.get("tools", [])
             )
+
         if "tool_choice" in form_data:
-            payload["tool_choice"] = form_data.get("tool_choice")
+            canonical_payload["tool_choice"] = form_data.get("tool_choice")
+
         if "parallel_tool_calls" in form_data:
-            payload["parallel_tool_calls"] = form_data.get("parallel_tool_calls")
-        payload.pop("messages", None)
+            canonical_payload["parallel_tool_calls"] = form_data.get("parallel_tool_calls")
+
+        canonical_payload.pop("messages", None)
+        canonical_payload = _normalize_responses_max_tokens_aliases(canonical_payload)
+        payload = canonical_payload
+
+        if isinstance(base_payload, dict):
+            for key, value in base_payload.items():
+                if key in RESPONSES_PARAM_KEYS or key in RESPONSES_PARAM_ALIAS_KEYS:
+                    continue
+                if key in payload:
+                    continue
+                payload[key] = value
+    else:
+        payload = {**(base_payload if isinstance(base_payload, dict) else form_data)}
 
     if strip_internal_keys:
         for key in INTERNAL_FORM_KEYS:

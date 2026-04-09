@@ -5,7 +5,7 @@ from open_webui.utils.misc import (
     replace_system_message_content,
 )
 
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 import json
 
 
@@ -164,3 +164,67 @@ def apply_model_params_as_defaults_openai(
         )
 
     return form_data
+
+
+def merge_model_params_with_base(
+    model_info: Any,
+    get_model_by_id: Optional[Callable[[str], Any]] = None,
+) -> dict:
+    """
+    Build effective model default params with inheritance:
+      base_model.params < custom_model.params
+    """
+    if not model_info:
+        return {}
+
+    if get_model_by_id is None:
+        from open_webui.models.models import Models
+
+        get_model_by_id = Models.get_model_by_id
+
+    def _as_dict(value: Any) -> dict:
+        if not value:
+            return {}
+        if hasattr(value, "model_dump"):
+            dumped = value.model_dump()
+            return dumped if isinstance(dumped, dict) else {}
+        if isinstance(value, dict):
+            return {**value}
+        return {}
+
+    def _normalize_custom_params(raw: dict) -> dict:
+        normalized: dict = {}
+        for key, value in (raw or {}).items():
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                    if isinstance(parsed, (dict, list)):
+                        normalized[key] = parsed
+                        continue
+                except json.JSONDecodeError:
+                    pass
+            normalized[key] = value
+        return normalized
+
+    merged_params: dict = {}
+    base_params_dict: dict = {}
+
+    base_model_id = getattr(model_info, "base_model_id", None)
+    if base_model_id:
+        base_model_info = get_model_by_id(base_model_id)
+        base_params_dict = _as_dict(
+            getattr(base_model_info, "params", None) if base_model_info else None
+        )
+        merged_params = {**base_params_dict}
+
+    model_params = _as_dict(getattr(model_info, "params", None))
+    if model_params:
+        merged_params = deep_update(merged_params, model_params)
+
+    base_custom_params = _normalize_custom_params(base_params_dict.get("custom_params", {}))
+    custom_custom_params = _normalize_custom_params(model_params.get("custom_params", {}))
+    merged_custom_params = deep_update(base_custom_params, custom_custom_params)
+    if merged_custom_params:
+        merged_params["custom_params"] = merged_custom_params
+
+    return merged_params

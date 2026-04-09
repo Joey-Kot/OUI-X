@@ -1,4 +1,9 @@
-from open_webui.utils.payload import apply_model_params_as_defaults_openai
+from types import SimpleNamespace
+
+from open_webui.utils.payload import (
+    apply_model_params_as_defaults_openai,
+    merge_model_params_with_base,
+)
 
 
 def test_model_params_do_not_override_explicit_request_params():
@@ -83,3 +88,98 @@ def test_model_default_custom_cache_params_apply_and_request_can_override():
 
     assert result["prompt_cache_key"] == "request-key"
     assert result["prompt_cache_retention"] == "24h"
+
+
+def test_merge_model_params_with_base_uses_custom_over_base():
+    base_model = SimpleNamespace(
+        params=SimpleNamespace(model_dump=lambda: {"temperature": 0.2, "top_p": 0.7})
+    )
+    custom_model = SimpleNamespace(
+        base_model_id="base-id",
+        params=SimpleNamespace(model_dump=lambda: {"temperature": 0.9}),
+    )
+
+    result = merge_model_params_with_base(
+        model_info=custom_model,
+        get_model_by_id=lambda _model_id: base_model,
+    )
+
+    assert result["temperature"] == 0.9
+    assert result["top_p"] == 0.7
+
+
+def test_request_params_override_custom_and_base_defaults():
+    base_model = SimpleNamespace(
+        params=SimpleNamespace(model_dump=lambda: {"temperature": 0.2, "top_p": 0.7})
+    )
+    custom_model = SimpleNamespace(
+        base_model_id="base-id",
+        params=SimpleNamespace(model_dump=lambda: {"temperature": 0.9}),
+    )
+    defaults = merge_model_params_with_base(
+        model_info=custom_model,
+        get_model_by_id=lambda _model_id: base_model,
+    )
+
+    result = apply_model_params_as_defaults_openai(defaults, {"temperature": 0.1})
+
+    assert result["temperature"] == 0.1
+    assert result["top_p"] == 0.7
+
+
+def test_merge_model_params_with_base_recursively_merges_custom_params_json_strings():
+    base_model = SimpleNamespace(
+        params=SimpleNamespace(
+            model_dump=lambda: {
+                "custom_params": {
+                    "response_format": '{"type":"json_schema","json_schema":{"name":"base","schema":{"type":"object","properties":{"a":{"type":"string"}}}}}'
+                }
+            }
+        )
+    )
+    custom_model = SimpleNamespace(
+        base_model_id="base-id",
+        params=SimpleNamespace(
+            model_dump=lambda: {
+                "custom_params": {
+                    "response_format": '{"json_schema":{"schema":{"properties":{"b":{"type":"number"}}}}}'
+                }
+            }
+        ),
+    )
+
+    merged = merge_model_params_with_base(
+        model_info=custom_model,
+        get_model_by_id=lambda _model_id: base_model,
+    )
+
+    response_format = merged["custom_params"]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "base"
+    assert response_format["json_schema"]["schema"]["properties"]["a"]["type"] == "string"
+    assert response_format["json_schema"]["schema"]["properties"]["b"]["type"] == "number"
+
+
+def test_merge_model_params_with_base_keeps_non_json_custom_params_values():
+    base_model = SimpleNamespace(
+        params=SimpleNamespace(
+            model_dump=lambda: {
+                "custom_params": {"response_format": "not-json"}
+            }
+        )
+    )
+    custom_model = SimpleNamespace(
+        base_model_id="base-id",
+        params=SimpleNamespace(
+            model_dump=lambda: {
+                "custom_params": {"response_format": "still-not-json"}
+            }
+        ),
+    )
+
+    merged = merge_model_params_with_base(
+        model_info=custom_model,
+        get_model_by_id=lambda _model_id: base_model,
+    )
+
+    assert merged["custom_params"]["response_format"] == "still-not-json"

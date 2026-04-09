@@ -48,6 +48,7 @@ from open_webui.utils.misc import (
 )
 from open_webui.utils.payload import (
     apply_model_params_as_defaults_openai,
+    merge_model_params_with_base,
 )
 
 
@@ -280,7 +281,11 @@ async def generate_function_chat_completion(
         if model_info.base_model_id:
             form_data["model"] = model_info.base_model_id
 
-        params = model_info.params.model_dump()
+        params = merge_model_params_with_base(
+            model_info=model_info,
+            get_model_by_id=Models.get_model_by_id,
+        )
+
         if params:
             form_data = apply_model_params_as_defaults_openai(
                 params, form_data, metadata, user

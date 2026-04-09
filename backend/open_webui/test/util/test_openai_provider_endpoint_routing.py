@@ -544,6 +544,308 @@ async def test_generate_chat_completions_known_nulls_allow_model_default_fallbac
 
 
 @pytest.mark.asyncio
+async def test_generate_chat_completions_priority_request_over_custom_over_base(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self):
+            self.status = 200
+            self.headers = {"Content-Type": "application/json"}
+
+        async def json(self):
+            return {"id": "chatcmpl_priority", "object": "chat.completion", "ok": True}
+
+        async def text(self):
+            return ""
+
+        def close(self):
+            return None
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def request(self, method, url, data, headers, cookies, ssl):
+            captured["payload"] = json.loads(data)
+            return FakeResponse()
+
+        async def close(self):
+            return None
+
+    async def fake_get_all_models(_request, user=None):
+        return {"data": []}
+
+    async def fake_headers_and_cookies(*args, **kwargs):
+        return {}, {}
+
+    base_model_info = SimpleNamespace(
+        base_model_id=None,
+        params=SimpleNamespace(model_dump=lambda: {"temperature": 0.2, "top_p": 0.8}),
+        user_id="admin",
+        access_control=None,
+    )
+    custom_model_info = SimpleNamespace(
+        base_model_id="base-model",
+        params=SimpleNamespace(model_dump=lambda: {"temperature": 0.6}),
+        user_id="admin",
+        access_control=None,
+    )
+
+    def fake_get_model_by_id(model_id):
+        if model_id == "custom-model":
+            return custom_model_info
+        if model_id == "base-model":
+            return base_model_info
+        return None
+
+    monkeypatch.setattr(openai_router, "get_all_models", fake_get_all_models)
+    monkeypatch.setattr(openai_router, "get_headers_and_cookies", fake_headers_and_cookies)
+    monkeypatch.setattr(openai_router.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(openai_router.Models, "get_model_by_id", fake_get_model_by_id)
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                OPENAI_MODELS={"base-model": {"urlIdx": 0}},
+                config=SimpleNamespace(
+                    OPENAI_API_BASE_URLS=["https://api.openai.com/v1"],
+                    OPENAI_API_KEYS=["sk-test"],
+                    OPENAI_API_CONFIGS={"0": {"provider_type": "openai"}},
+                ),
+            )
+        )
+    )
+
+    response = await openai_router.generate_chat_completion(
+        request=request,
+        form_data={
+            "model": "custom-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": False,
+            "temperature": 0.1,
+        },
+        user=_user(role="admin"),
+    )
+
+    assert response["id"] == "chatcmpl_priority"
+    assert captured["payload"]["temperature"] == 0.1
+    assert captured["payload"]["top_p"] == 0.8
+
+
+@pytest.mark.asyncio
+async def test_generate_responses_priority_request_over_custom_over_base_with_custom_params(
+    monkeypatch,
+):
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self):
+            self.status = 200
+            self.headers = {"Content-Type": "application/json"}
+
+        async def json(self):
+            return {"id": "resp_priority", "object": "response", "ok": True}
+
+        async def text(self):
+            return ""
+
+        def close(self):
+            return None
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def request(self, method, url, data, headers, cookies, ssl):
+            captured["payload"] = json.loads(data)
+            return FakeResponse()
+
+        async def close(self):
+            return None
+
+    async def fake_get_all_models(_request, user=None):
+        return {"data": []}
+
+    async def fake_headers_and_cookies(*args, **kwargs):
+        return {}, {}
+
+    base_model_info = SimpleNamespace(
+        base_model_id=None,
+        params=SimpleNamespace(
+            model_dump=lambda: {
+                "temperature": 0.2,
+                "custom_params": {
+                    "response_format": '{"type":"json_schema","json_schema":{"name":"base","schema":{"type":"object","properties":{"a":{"type":"string"}}}}}'
+                },
+            }
+        ),
+        user_id="admin",
+        access_control=None,
+    )
+    custom_model_info = SimpleNamespace(
+        base_model_id="base-model",
+        params=SimpleNamespace(
+            model_dump=lambda: {
+                "temperature": 0.6,
+                "custom_params": {
+                    "response_format": '{"json_schema":{"schema":{"properties":{"b":{"type":"number"}}}}}'
+                },
+            }
+        ),
+        user_id="admin",
+        access_control=None,
+    )
+
+    def fake_get_model_by_id(model_id):
+        if model_id == "custom-model":
+            return custom_model_info
+        if model_id == "base-model":
+            return base_model_info
+        return None
+
+    monkeypatch.setattr(openai_router, "get_all_models", fake_get_all_models)
+    monkeypatch.setattr(openai_router, "get_headers_and_cookies", fake_headers_and_cookies)
+    monkeypatch.setattr(openai_router.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(openai_router.Models, "get_model_by_id", fake_get_model_by_id)
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                OPENAI_MODELS={"base-model": {"urlIdx": 0}},
+                config=SimpleNamespace(
+                    OPENAI_API_BASE_URLS=["https://api.openai.com/v1"],
+                    OPENAI_API_KEYS=["sk-test"],
+                    OPENAI_API_CONFIGS={"0": {"provider_type": "openai_responses"}},
+                ),
+            )
+        )
+    )
+
+    response = await openai_router.generate_responses(
+        request=request,
+        form_data={
+            "model": "custom-model",
+            "input": [{"role": "user", "content": "hello"}],
+            "stream": False,
+            "temperature": 0.1,
+        },
+        user=_user(role="admin"),
+    )
+
+    assert response["id"] == "resp_priority"
+    assert captured["payload"]["temperature"] == 0.1
+    assert captured["payload"]["response_format"]["type"] == "json_schema"
+    assert captured["payload"]["response_format"]["json_schema"]["name"] == "base"
+    assert (
+        captured["payload"]["response_format"]["json_schema"]["schema"]["properties"]["a"]["type"]
+        == "string"
+    )
+    assert (
+        captured["payload"]["response_format"]["json_schema"]["schema"]["properties"]["b"]["type"]
+        == "number"
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_responses_custom_model_defaults_include_system_and_reasoning(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self):
+            self.status = 200
+            self.headers = {"Content-Type": "application/json"}
+
+        async def json(self):
+            return {"id": "resp_system_defaults", "object": "response", "ok": True}
+
+        async def text(self):
+            return ""
+
+        def close(self):
+            return None
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def request(self, method, url, data, headers, cookies, ssl):
+            captured["payload"] = json.loads(data)
+            return FakeResponse()
+
+        async def close(self):
+            return None
+
+    async def fake_get_all_models(_request, user=None):
+        return {"data": []}
+
+    async def fake_headers_and_cookies(*args, **kwargs):
+        return {}, {}
+
+    base_model_info = SimpleNamespace(
+        base_model_id=None,
+        params=SimpleNamespace(model_dump=lambda: {"max_tokens": 128000}),
+        user_id="admin",
+        access_control=None,
+    )
+    custom_model_info = SimpleNamespace(
+        base_model_id="base-model",
+        params=SimpleNamespace(
+            model_dump=lambda: {
+                "max_tokens": 1,
+                "reasoning_effort": "medium",
+                "verbosity": "low",
+                "summary": "auto",
+                "system": "你是一只蜜蜂",
+            }
+        ),
+        user_id="admin",
+        access_control=None,
+    )
+
+    def fake_get_model_by_id(model_id):
+        if model_id == "custom-model":
+            return custom_model_info
+        if model_id == "base-model":
+            return base_model_info
+        return None
+
+    monkeypatch.setattr(openai_router, "get_all_models", fake_get_all_models)
+    monkeypatch.setattr(openai_router, "get_headers_and_cookies", fake_headers_and_cookies)
+    monkeypatch.setattr(openai_router.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(openai_router.Models, "get_model_by_id", fake_get_model_by_id)
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                OPENAI_MODELS={"base-model": {"urlIdx": 0}},
+                config=SimpleNamespace(
+                    OPENAI_API_BASE_URLS=["https://api.openai.com/v1"],
+                    OPENAI_API_KEYS=["sk-test"],
+                    OPENAI_API_CONFIGS={"0": {"provider_type": "openai_responses"}},
+                ),
+            )
+        )
+    )
+
+    response = await openai_router.generate_responses(
+        request=request,
+        form_data={
+            "model": "custom-model",
+            "input": [{"role": "user", "content": "你是谁"}],
+            "stream": False,
+        },
+        user=_user(role="admin"),
+    )
+
+    assert response["id"] == "resp_system_defaults"
+    assert captured["payload"]["max_output_tokens"] == 1
+    assert captured["payload"]["reasoning"] == {"effort": "medium", "summary": "auto"}
+    assert captured["payload"]["text"] == {"verbosity": "low"}
+    assert captured["payload"]["input"][0]["role"] == "system"
+    assert captured["payload"]["input"][0]["content"] == "你是一只蜜蜂"
+
+
+@pytest.mark.asyncio
 async def test_endpoint_kind_fields_are_not_forwarded_upstream(monkeypatch):
     captured = {}
 

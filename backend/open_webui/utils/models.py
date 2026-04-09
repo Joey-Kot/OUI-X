@@ -126,6 +126,9 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
             # Custom model based on a base model
             owned_by = "openai"
             connection_type = None
+            provider_type = "openai"
+            openai_payload = None
+            url_idx = None
 
             pipe = None
 
@@ -139,6 +142,13 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
                         pipe = m["pipe"]
 
                     connection_type = m.get("connection_type", None)
+                    provider_type = (
+                        m.get("provider_type")
+                        or m.get("info", {}).get("provider_type")
+                        or "openai"
+                    )
+                    openai_payload = m.get("openai")
+                    url_idx = m.get("urlIdx")
                     break
 
             model = {
@@ -148,8 +158,11 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
                 "created": custom_model.created_at,
                 "owned_by": owned_by,
                 "connection_type": connection_type,
+                "provider_type": provider_type,
                 "preset": True,
                 **({"pipe": pipe} if pipe is not None else {}),
+                **({"openai": openai_payload} if openai_payload is not None else {}),
+                **({"urlIdx": url_idx} if url_idx is not None else {}),
             }
 
             info = custom_model.model_dump()
@@ -157,6 +170,7 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
                 # Remove params to avoid exposing sensitive info
                 del info["params"]
 
+            info["provider_type"] = provider_type
             model["info"] = info
 
             action_ids = []

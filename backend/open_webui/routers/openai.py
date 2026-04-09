@@ -38,9 +38,12 @@ from open_webui.constants import ERROR_MESSAGES
 
 from open_webui.utils.payload import (
     apply_model_params_as_defaults_openai,
+    merge_model_params_with_base,
 )
 from open_webui.utils.completion_adapter import (
     apply_prompt_cache_policy,
+    chat_messages_to_responses_input,
+    responses_input_to_chat_messages,
     resolve_prompt_cache_key_for_completion_request as adapter_resolve_prompt_cache_key,
 )
 from open_webui.utils.misc import (
@@ -930,6 +933,12 @@ async def _generate_completion_with_endpoint(
     payload.pop("endpointKind", None)
 
     payload = _normalize_payload_known_params_for_endpoint(payload, endpoint)
+    if (
+        endpoint == "responses"
+        and "messages" not in payload
+        and isinstance(payload.get("input"), list)
+    ):
+        payload["messages"] = responses_input_to_chat_messages(payload.get("input", []))
 
     model_id = form_data.get("model")
     model_info = Models.get_model_by_id(model_id)
@@ -945,7 +954,11 @@ async def _generate_completion_with_endpoint(
             payload["model"] = base_model_id
             model_id = base_model_id
 
-        params = model_info.params.model_dump()
+        params = merge_model_params_with_base(
+            model_info=model_info,
+            get_model_by_id=Models.get_model_by_id,
+        )
+
         if params:
             payload = apply_model_params_as_defaults_openai(
                 params, payload, metadata, user
@@ -1010,6 +1023,11 @@ async def _generate_completion_with_endpoint(
 
     provider_type = get_provider_type(api_config)
     _validate_provider_for_endpoint(provider_type, endpoint, payload.get("model", ""))
+
+    if endpoint == "responses":
+        if isinstance(payload.get("messages"), list):
+            payload["input"] = chat_messages_to_responses_input(payload.get("messages", []))
+            payload.pop("messages", None)
 
     if endpoint == "responses" and "input" not in payload:
         raise HTTPException(
