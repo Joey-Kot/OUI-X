@@ -23,7 +23,11 @@
 	import { getSessionUser } from '$lib/apis/auths';
 
 	import { uploadFile } from '$lib/apis/files';
-	import { WEBUI_API_BASE_URL } from '$lib/constants';
+	import {
+		WEBUI_API_BASE_URL,
+		PASTED_TEXT_CHARACTER_LIMIT,
+		normalizePastedTextCharacterLimit
+	} from '$lib/constants';
 
 	import { getSuggestionRenderer } from '../common/RichTextInput/suggestions';
 	import CommandSuggestionList from '../chat/MessageInput/CommandSuggestionList.svelte';
@@ -42,6 +46,12 @@
 
 	export let placeholder = $i18n.t('Type here...');
 	export let chatInputElement;
+
+	let largeTextCharacterLimit = PASTED_TEXT_CHARACTER_LIMIT;
+
+	$: largeTextCharacterLimit = normalizePastedTextCharacterLimit(
+		$settings?.largeTextAsFileCharacterLimit
+	);
 
 	export let id = null;
 	export let channel = null;
@@ -834,6 +844,7 @@
 													navigator.msMaxTouchPoints > 0
 												)}
 											largeTextAsFile={$settings?.largeTextAsFile ?? false}
+											{largeTextCharacterLimit}
 											floatingMenuPlacement={'top-start'}
 											{suggestions}
 											onChange={(e) => {
