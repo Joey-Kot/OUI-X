@@ -1,12 +1,13 @@
 <script lang="ts">
 	import dayjs from 'dayjs';
 	import { toast } from 'svelte-sonner';
-	import { tick, getContext, onMount } from 'svelte';
+	import { tick, getContext, onDestroy, onMount } from 'svelte';
 
-	import { models, settings } from '$lib/stores';
+	import { config, models, settings, temporaryChatEnabled } from '$lib/stores';
 	import { user as _user } from '$lib/stores';
 	import { copyToClipboard as _copyToClipboard, formatDate } from '$lib/utils';
-	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
+	import { processChatInputFiles } from '$lib/utils/chat-file-upload';
+	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 	import Name from './Name.svelte';
 	import ProfileImage from './ProfileImage.svelte';
@@ -26,6 +27,7 @@
 	export let chatId;
 	export let history;
 	export let messageId;
+	export let selectedModels = [];
 
 	export let siblings;
 
@@ -49,12 +51,24 @@
 	let editedContent = '';
 	let editedFiles = [];
 
+	let messageEditContainerElement: HTMLDivElement;
 	let messageEditTextAreaElement: HTMLTextAreaElement;
 
 	let message = history.messages[messageId];
 	$: if (history.messages) {
 		message = history.messages[messageId];
 	}
+
+	const isImageFile = (file) => file?.type === 'image' || (file?.content_type ?? '').startsWith('image/');
+
+	const getFileUrl = (file) => {
+		const url = file?.url ?? '';
+		if (url.startsWith('data') || url.startsWith('http')) {
+			return url;
+		}
+
+		return `${WEBUI_API_BASE_URL}/files/${url}${isImageFile(file) || file?.content_type ? '/content' : ''}`;
+	};
 
 	const copyToClipboard = async (text) => {
 		const res = await _copyToClipboard(text);
@@ -66,7 +80,7 @@
 	const editMessageHandler = async () => {
 		edit = true;
 		editedContent = message?.content ?? '';
-		editedFiles = message.files;
+		editedFiles = [...(message.files ?? [])];
 
 		await tick();
 
@@ -81,6 +95,11 @@
 	const editMessageConfirmHandler = async (submit = true) => {
 		if (!editedContent && (editedFiles ?? []).length === 0) {
 			toast.error($i18n.t('Please enter a message or attach a file.'));
+			return;
+		}
+
+		if ((editedFiles ?? []).some((file) => file?.status === 'uploading')) {
+			toast.error($i18n.t(`Oops! There are files still uploading. Please wait for the upload to complete.`));
 			return;
 		}
 
@@ -101,8 +120,130 @@
 		deleteMessage(message.id);
 	};
 
+	const getFilesFromDataTransfer = (dataTransfer) => {
+		const files: File[] = [];
+
+		if (dataTransfer?.items) {
+			for (const item of Array.from(dataTransfer.items)) {
+				if (item.kind === 'file' || item.type !== 'text/plain') {
+					const file = item.getAsFile?.();
+					if (file) {
+						files.push(file);
+					}
+				}
+			}
+		}
+
+		if (files.length === 0 && dataTransfer?.files) {
+			files.push(...Array.from(dataTransfer.files));
+		}
+
+		return files;
+	};
+
+	const stopAttachmentEvent = (e) => {
+		e.preventDefault();
+		e.stopPropagation();
+		e.stopImmediatePropagation?.();
+	};
+
+	const isEventTargetInEditContainer = (e) => {
+		const target = e.target;
+		return target instanceof Node && messageEditContainerElement?.contains(target);
+	};
+
+	const shouldHandleEditPasteEvent = (e) => {
+		if (!edit) {
+			return false;
+		}
+
+		return isEventTargetInEditContainer(e) || document.activeElement === messageEditTextAreaElement;
+	};
+
+	const shouldHandleEditDropEvent = (e) => {
+		if (!edit) {
+			return false;
+		}
+
+		return isEventTargetInEditContainer(e);
+	};
+
+	const uploadEditedFiles = async (inputFiles: File[]) => {
+		await processChatInputFiles({
+			files: editedFiles ?? [],
+			setFiles: (nextFiles) => {
+				editedFiles = nextFiles;
+			},
+			inputFiles,
+			selectedModels,
+			models: $models,
+			config: $config,
+			settings: $settings,
+			user: $_user,
+			temporaryChatEnabled: $temporaryChatEnabled,
+			i18n: $i18n
+		});
+	};
+
+	const handleEditPaste = async (e: ClipboardEvent) => {
+		const clipboardData = e.clipboardData || (window as any).clipboardData;
+		const pastedFiles = getFilesFromDataTransfer(clipboardData);
+
+		if (pastedFiles.length > 0) {
+			stopAttachmentEvent(e);
+			await uploadEditedFiles(pastedFiles);
+		}
+	};
+
+	const handleEditDragOver = (e: DragEvent) => {
+		if (e.dataTransfer?.types?.includes('Files')) {
+			e.preventDefault();
+			e.stopPropagation();
+			e.dataTransfer.dropEffect = 'copy';
+		}
+	};
+
+	const handleEditDrop = async (e: DragEvent) => {
+		const droppedFiles = getFilesFromDataTransfer(e.dataTransfer);
+
+		if (droppedFiles.length > 0) {
+			stopAttachmentEvent(e);
+			await uploadEditedFiles(droppedFiles);
+		}
+	};
+
+	const handleDocumentEditPaste = (e: ClipboardEvent) => {
+		if (shouldHandleEditPasteEvent(e)) {
+			handleEditPaste(e);
+		}
+	};
+
+	const handleDocumentEditDragOver = (e: DragEvent) => {
+		if (shouldHandleEditDropEvent(e)) {
+			handleEditDragOver(e);
+		}
+	};
+
+	const handleDocumentEditDrop = (e: DragEvent) => {
+		if (shouldHandleEditDropEvent(e)) {
+			handleEditDrop(e);
+		}
+	};
+
 	onMount(() => {
-		// console.log('UserMessage mounted');
+		document.addEventListener('paste', handleDocumentEditPaste, true);
+		document.addEventListener('dragover', handleDocumentEditDragOver, true);
+		document.addEventListener('drop', handleDocumentEditDrop, true);
+	});
+
+	onDestroy(() => {
+		if (typeof document === 'undefined') {
+			return;
+		}
+
+		document.removeEventListener('paste', handleDocumentEditPaste, true);
+		document.removeEventListener('dragover', handleDocumentEditDragOver, true);
+		document.removeEventListener('drop', handleDocumentEditDrop, true);
 	});
 </script>
 
@@ -183,161 +324,163 @@
 			</div>
 		{/if}
 
-		<div class="chat-{message.role} w-full min-w-full markdown-prose">
-			{#if edit !== true}
-				{#if message.files}
-					<div
-						class="mb-1 w-full flex flex-col justify-end overflow-x-auto gap-1 flex-wrap"
-						dir={$settings?.chatDirection ?? 'auto'}
-					>
-						{#each message.files as file}
-							{@const fileUrl =
-								file.url.startsWith('data') || file.url.startsWith('http')
-									? file.url
-									: `${WEBUI_API_BASE_URL}/files/${file.url}${file?.content_type ? '/content' : ''}`}
-							<div class={($settings?.chatBubble ?? true) ? 'self-end' : ''}>
-								{#if file.type === 'image' || (file?.content_type ?? '').startsWith('image/')}
-									<Image src={fileUrl} imageClassName=" max-h-96 rounded-lg" />
-								{:else}
-									<FileItem
-										item={file}
-										url={file.url}
-										name={file.name}
-										type={file.type}
-										size={file?.size}
-										small={true}
-									/>
-								{/if}
-							</div>
-						{/each}
-					</div>
-				{/if}
-			{/if}
-
-			{#if edit === true}
-				<div class=" w-full bg-gray-50 dark:bg-gray-800 rounded-3xl px-5 py-3 mb-2">
-					{#if (editedFiles ?? []).length > 0}
-						<div class="flex items-center flex-wrap gap-2 -mx-2 mb-1">
-							{#each editedFiles as file, fileIdx}
-								{#if file.type === 'image'}
-									<div class=" relative group">
-										<div class="relative flex items-center">
-											<Image
-												src={file.url}
-												alt="input"
-												imageClassName=" size-14 rounded-xl object-cover"
+				<div class="chat-{message.role} w-full min-w-full markdown-prose">
+					{#if edit !== true}
+						{#if message.files}
+							<div
+								class="mb-1 w-full flex flex-col justify-end overflow-x-auto gap-1 flex-wrap"
+								dir={$settings?.chatDirection ?? 'auto'}
+							>
+								{#each message.files as file}
+									{@const fileUrl = getFileUrl(file)}
+									<div class={($settings?.chatBubble ?? true) ? 'self-end' : ''}>
+										{#if isImageFile(file)}
+											<Image src={fileUrl} imageClassName=" max-h-96 rounded-lg" />
+										{:else}
+											<FileItem
+												item={file}
+												url={file.url}
+												name={file.name}
+												type={file.type}
+												size={file?.size}
+												small={true}
 											/>
-										</div>
-										<div class=" absolute -top-1 -right-1">
-											<button
-												class=" bg-white text-black border border-white rounded-full {($settings?.highContrastMode ??
-												false)
-													? ''
-													: 'group-hover:visible invisible transition'}"
-												type="button"
-												on:click={() => {
-													editedFiles.splice(fileIdx, 1);
-
-													editedFiles = editedFiles;
-												}}
-											>
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													viewBox="0 0 20 20"
-													fill="currentColor"
-													class="size-4"
-												>
-													<path
-														d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
-													/>
-												</svg>
-											</button>
-										</div>
+										{/if}
 									</div>
-								{:else}
-									<FileItem
-										item={file}
-										name={file.name}
-										type={file.type}
-										size={file?.size}
-										loading={file.status === 'uploading'}
-										dismissible={true}
-										edit={true}
-										on:dismiss={async () => {
-											editedFiles.splice(fileIdx, 1);
-
-											editedFiles = editedFiles;
-										}}
-										on:click={() => {
-											console.log(file);
-										}}
-									/>
-								{/if}
-							{/each}
-						</div>
+								{/each}
+							</div>
+						{/if}
 					{/if}
 
-					<div class="max-h-96 overflow-auto">
-						<textarea
-							id="message-edit-{message.id}"
-							bind:this={messageEditTextAreaElement}
-							class=" bg-transparent outline-hidden w-full resize-none"
-							bind:value={editedContent}
-							on:input={(e) => {
-								e.target.style.height = '';
-								e.target.style.height = `${e.target.scrollHeight}px`;
-							}}
-							on:keydown={(e) => {
-								if (e.key === 'Escape') {
-									document.getElementById('close-edit-message-button')?.click();
-								}
-
-								const isCmdOrCtrlPressed = e.metaKey || e.ctrlKey;
-								const isEnterPressed = e.key === 'Enter';
-
-								if (isCmdOrCtrlPressed && isEnterPressed) {
-									document.getElementById('confirm-edit-message-button')?.click();
-								}
-							}}
-						/>
-					</div>
-
-					<div class=" mt-2 mb-1 flex justify-between text-sm font-medium">
-						<div>
-							<button
-								id="save-edit-message-button"
-								class="px-3.5 py-1.5 bg-gray-50 hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-100 dark:border-gray-700 text-gray-700 dark:text-gray-200 transition rounded-3xl"
-								on:click={() => {
-									editMessageConfirmHandler(false);
-								}}
+					{#if edit === true}
+							<div
+								bind:this={messageEditContainerElement}
+								class=" w-full bg-gray-50 dark:bg-gray-800 rounded-3xl px-5 py-3 mb-2"
+								on:paste|capture={handleEditPaste}
+								on:dragover|capture={handleEditDragOver}
+								on:drop|capture={handleEditDrop}
 							>
-								{$i18n.t('Save')}
-							</button>
+							{#if (editedFiles ?? []).length > 0}
+								<div class="flex items-center flex-wrap gap-2 -mx-2 mb-1">
+									{#each editedFiles as file, fileIdx}
+										{@const fileUrl = getFileUrl(file)}
+										{#if isImageFile(file)}
+											<div class=" relative group">
+												<div class="relative flex items-center">
+													<Image
+														src={fileUrl}
+														alt="input"
+														imageClassName=" size-14 rounded-xl object-cover"
+													/>
+												</div>
+												<div class=" absolute -top-1 -right-1">
+													<button
+														class=" bg-white text-black border border-white rounded-full {($settings?.highContrastMode ??
+														false)
+															? ''
+															: 'group-hover:visible invisible transition'}"
+														type="button"
+														on:click={() => {
+															editedFiles.splice(fileIdx, 1);
+															editedFiles = editedFiles;
+														}}
+													>
+														<svg
+															xmlns="http://www.w3.org/2000/svg"
+															viewBox="0 0 20 20"
+															fill="currentColor"
+															class="size-4"
+														>
+															<path
+																d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
+															/>
+														</svg>
+													</button>
+												</div>
+											</div>
+										{:else}
+											<FileItem
+												item={file}
+												name={file.name}
+												type={file.type}
+												size={file?.size}
+												loading={file.status === 'uploading'}
+												dismissible={true}
+												edit={true}
+												on:dismiss={async () => {
+													editedFiles.splice(fileIdx, 1);
+													editedFiles = editedFiles;
+												}}
+												on:click={() => {
+													console.log(file);
+												}}
+											/>
+										{/if}
+									{/each}
+								</div>
+							{/if}
+
+							<div class="max-h-96 overflow-auto">
+								<textarea
+									id="message-edit-{message.id}"
+									bind:this={messageEditTextAreaElement}
+									class=" bg-transparent outline-hidden w-full resize-none"
+									bind:value={editedContent}
+									on:input={(e) => {
+										e.target.style.height = '';
+										e.target.style.height = `${e.target.scrollHeight}px`;
+									}}
+									on:keydown={(e) => {
+										if (e.key === 'Escape') {
+											document.getElementById('close-edit-message-button')?.click();
+										}
+
+										const isCmdOrCtrlPressed = e.metaKey || e.ctrlKey;
+										const isEnterPressed = e.key === 'Enter';
+
+										if (isCmdOrCtrlPressed && isEnterPressed) {
+											document.getElementById('confirm-edit-message-button')?.click();
+										}
+									}}
+									/>
+							</div>
+
+							<div class=" mt-2 mb-1 flex justify-between text-sm font-medium">
+								<div>
+									<button
+										id="save-edit-message-button"
+										class="px-3.5 py-1.5 bg-gray-50 hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-100 dark:border-gray-700 text-gray-700 dark:text-gray-200 transition rounded-3xl"
+										on:click={() => {
+											editMessageConfirmHandler(false);
+										}}
+									>
+										{$i18n.t('Save')}
+									</button>
+								</div>
+
+								<div class="flex space-x-1.5">
+									<button
+										id="close-edit-message-button"
+										class="px-3.5 py-1.5 bg-white dark:bg-gray-900 hover:bg-gray-100 text-gray-800 dark:text-gray-100 transition rounded-3xl"
+										on:click={() => {
+											cancelEditMessage();
+										}}
+									>
+										{$i18n.t('Cancel')}
+									</button>
+
+									<button
+										id="confirm-edit-message-button"
+										class="px-3.5 py-1.5 bg-gray-900 dark:bg-white hover:bg-gray-850 text-gray-100 dark:text-gray-800 transition rounded-3xl"
+										on:click={() => {
+											editMessageConfirmHandler();
+										}}
+									>
+										{$i18n.t('Send')}
+									</button>
+								</div>
+							</div>
 						</div>
-
-						<div class="flex space-x-1.5">
-							<button
-								id="close-edit-message-button"
-								class="px-3.5 py-1.5 bg-white dark:bg-gray-900 hover:bg-gray-100 text-gray-800 dark:text-gray-100 transition rounded-3xl"
-								on:click={() => {
-									cancelEditMessage();
-								}}
-							>
-								{$i18n.t('Cancel')}
-							</button>
-
-							<button
-								id="confirm-edit-message-button"
-								class="px-3.5 py-1.5 bg-gray-900 dark:bg-white hover:bg-gray-850 text-gray-100 dark:text-gray-800 transition rounded-3xl"
-								on:click={() => {
-									editMessageConfirmHandler();
-								}}
-							>
-								{$i18n.t('Send')}
-							</button>
-						</div>
-					</div>
-				</div>
 			{:else if message.content !== ''}
 				<div class="w-full">
 					<div class="flex {($settings?.chatBubble ?? true) ? 'justify-end pb-1' : 'w-full'}">

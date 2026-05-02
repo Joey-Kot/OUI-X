@@ -159,14 +159,16 @@ def _replace_file_with_transcoded_variant(
     transcoded_path: str,
     transcoded_size: int,
     transcode_result: dict,
+    storage_filename: Optional[str] = None,
 ):
     base_name = Path(original_name).stem or original_name
     final_name = f"{base_name}.webp"
+    storage_filename = storage_filename or Path(transcoded_path).name
 
     with open(transcoded_path, "rb") as transcoded_file:
         _, stored_path = Storage.upload_file(
             transcoded_file,
-            Path(transcoded_path).name,
+            storage_filename,
             {"OpenWebUI-File-Id": file_item.id},
         )
 
@@ -188,7 +190,8 @@ def _replace_file_with_transcoded_variant(
     )
     if updated_file is None:
         raise ImageTranscodeError("Failed to update transcoded file metadata.")
-    Storage.delete_file(original_path)
+    if stored_path != original_path:
+        Storage.delete_file(original_path)
     if stored_path != transcoded_path and Path(transcoded_path).is_file():
         Path(transcoded_path).unlink()
     return updated_file
@@ -219,16 +222,19 @@ def transcode_uploaded_image(
     output_dir = Path(local_input_path).parent
     output_filename = f"{Path(local_input_path).stem}.webp"
     output_path = output_dir / output_filename
+    transcode_output_path = output_path
+    if output_path.resolve() == Path(local_input_path).resolve():
+        transcode_output_path = output_dir / f".{output_path.stem}.{uuid.uuid4().hex}.webp"
 
     with semaphore:
         last_error = None
         for attempt in range(3):
-            if output_path.exists():
-                output_path.unlink()
+            if transcode_output_path.exists():
+                transcode_output_path.unlink()
             try:
                 transcode_result = transcode_image_to_webp(
                     input_path=local_input_path,
-                    output_path=str(output_path),
+                    output_path=str(transcode_output_path),
                     max_width=compression_settings["width"],
                     max_height=compression_settings["height"],
                     quality=compression_settings["quality"],
@@ -237,9 +243,10 @@ def transcode_uploaded_image(
                     file_item=file_item,
                     original_name=file_item.filename,
                     original_path=original_path,
-                    transcoded_path=str(output_path),
-                    transcoded_size=output_path.stat().st_size,
+                    transcoded_path=str(transcode_output_path),
+                    transcoded_size=transcode_output_path.stat().st_size,
                     transcode_result=transcode_result,
+                    storage_filename=output_path.name,
                 )
                 Files.update_file_data_by_id(updated_file.id, {"status": "completed", "error": None})
                 return updated_file

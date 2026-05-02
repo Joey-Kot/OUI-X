@@ -3,7 +3,6 @@
 	import { toast } from 'svelte-sonner';
 
 	import { marked } from 'marked';
-	import { v4 as uuidv4 } from 'uuid';
 	import dayjs from '$lib/dayjs';
 	import duration from 'dayjs/plugin/duration';
 	import relativeTime from 'dayjs/plugin/relativeTime';
@@ -34,10 +33,7 @@
 	} from '$lib/stores';
 
 	import {
-		convertHeicToJpeg,
-		getImageCompressionMetadata,
 		createMessagesList,
-		extractContentFromFile,
 		extractCurlyBraceWords,
 		extractInputVariables,
 		getAge,
@@ -48,7 +44,7 @@
 		getUserTimezone,
 		getWeekday
 	} from '$lib/utils';
-	import { uploadFile } from '$lib/apis/files';
+	import { processChatInputFiles } from '$lib/utils/chat-file-upload';
 	import { generateAutoCompletion } from '$lib/apis';
 	import { deleteFileById } from '$lib/apis/files';
 	import { getSessionUser } from '$lib/apis/auths';
@@ -694,196 +690,27 @@
 		}
 	};
 
-	const uploadFileHandler = async (file, process = true, itemData = {}) => {
-		if ($_user?.role !== 'admin' && !($_user?.permissions?.chat?.file_upload ?? true)) {
-			toast.error($i18n.t('You do not have permission to upload files.'));
-			return null;
-		}
-
-		if (fileUploadCapableModels.length !== selectedModels.length) {
-			toast.error($i18n.t('Model(s) do not support file upload'));
-			return null;
-		}
-
-		const tempItemId = uuidv4();
-		const fileItem = {
-			type: 'file',
-			file: '',
-			id: null,
-			url: '',
-			name: file.name,
-			collection_name: '',
-			status: 'uploading',
-			size: file.size,
-			error: '',
-			itemId: tempItemId,
-			...itemData
-		};
-
-		if (fileItem.size == 0) {
-			toast.error($i18n.t('You cannot upload an empty file.'));
-			return null;
-		}
-
-		files = [...files, fileItem];
-
-		if (!$temporaryChatEnabled) {
-			try {
-				let metadata = null;
-				if (
-					(file.type.startsWith("audio/") || file.type.startsWith("video/")) &&
-					$settings?.audio?.stt?.language
-				) {
-					metadata = {
-						language: $settings?.audio?.stt?.language
-					};
-				}
-
-				if (file.type.startsWith('image/')) {
-					metadata = {
-						...(metadata ?? {}),
-						...(getImageCompressionMetadata($settings) ?? {})
-					};
-				}
-
-				const conversationEmbeddingEnabled =
-					($settings?.conversationFileUploadEmbedding === true) ||
-					($config?.file?.conversation_file_upload_embedding ?? false);
-				metadata = {
-					...(metadata ?? {}),
-					conversation_ingest_mode: conversationEmbeddingEnabled
-						? "standard"
-						: "direct_context"
-				};
-
-				const uploadedFile = await uploadFile(localStorage.token, file, metadata, process);
-
-				if (uploadedFile) {
-					console.log('File upload completed:', {
-						id: uploadedFile.id,
-						name: fileItem.name,
-						collection: uploadedFile?.meta?.collection_name
-					});
-
-					if (uploadedFile.error) {
-						console.warn('File upload warning:', uploadedFile.error);
-						toast.warning(uploadedFile.error);
-					}
-
-					fileItem.status = 'uploaded';
-					fileItem.file = uploadedFile;
-					fileItem.id = uploadedFile.id;
-					fileItem.collection_name =
-						uploadedFile?.meta?.collection_name || uploadedFile?.collection_name;
-					fileItem.active_collection_name = uploadedFile?.meta?.active_collection_name;
-					fileItem.conversation_upload_knowledge_id =
-						uploadedFile?.meta?.conversation_upload_knowledge_id;
-					fileItem.content_type = uploadedFile.meta?.content_type || uploadedFile.content_type;
-					fileItem.url = `${uploadedFile.id}`;
-
-					files = files;
-				} else {
-					files = files.filter((item) => item?.itemId !== tempItemId);
-				}
-			} catch (e) {
-				toast.error(`${e}`);
-				files = files.filter((item) => item?.itemId !== tempItemId);
-			}
-		} else {
-			// If temporary chat is enabled, we just add the file to the list without uploading it.
-
-			const content = await extractContentFromFile(file).catch((error) => {
-				toast.error(
-					$i18n.t('Failed to extract content from the file: {{error}}', { error: error })
-				);
-				return null;
-			});
-
-			if (content === null) {
-				toast.error($i18n.t('Failed to extract content from the file.'));
-				files = files.filter((item) => item?.itemId !== tempItemId);
-				return null;
-			} else {
-				console.log('Extracted content from file:', {
-					name: file.name,
-					size: file.size,
-					content: content
-				});
-
-				fileItem.status = 'uploaded';
-				fileItem.type = 'text';
-				fileItem.content = content;
-				fileItem.id = uuidv4(); // Temporary ID for the file
-
-				files = files;
-			}
-		}
+	const inputFilesHandler = async (inputFiles, process = true, itemData = {}) => {
+		await processChatInputFiles({
+			files,
+			setFiles: (nextFiles) => {
+				files = nextFiles;
+			},
+			inputFiles,
+			selectedModels: selectedModelIds,
+			models: $models,
+			config: $config,
+			settings: $settings,
+			user: $_user,
+			temporaryChatEnabled: $temporaryChatEnabled,
+			i18n: $i18n,
+			process,
+			itemData
+		});
 	};
 
-	const inputFilesHandler = async (inputFiles) => {
-		console.log('Input files handler called with:', inputFiles);
-
-		if (
-			($config?.file?.max_count ?? null) !== null &&
-			files.length + inputFiles.length > $config?.file?.max_count
-		) {
-			toast.error(
-				$i18n.t(`You can only chat with a maximum of {{maxCount}} file(s) at a time.`, {
-					maxCount: $config?.file?.max_count
-				})
-			);
-			return;
-		}
-
-		inputFiles.forEach(async (file) => {
-			console.log('Processing file:', {
-				name: file.name,
-				type: file.type,
-				size: file.size,
-				extension: file.name.split('.').at(-1)
-			});
-
-			if (
-				($config?.file?.max_size ?? null) !== null &&
-				file.size > ($config?.file?.max_size ?? 0) * 1024 * 1024
-			) {
-				console.log('File exceeds max size limit:', {
-					fileSize: file.size,
-					maxSize: ($config?.file?.max_size ?? 0) * 1024 * 1024
-				});
-				toast.error(
-					$i18n.t(`File size should not exceed {{maxSize}} MB.`, {
-						maxSize: $config?.file?.max_size
-					})
-				);
-				return;
-			}
-
-			if (file['type'].startsWith('image/')) {
-				if (visionCapableModels.length === 0) {
-					toast.error($i18n.t('Selected model(s) do not support image inputs'));
-					return;
-				}
-
-				if ($temporaryChatEnabled) {
-					let reader = new FileReader();
-					reader.onload = async (event) => {
-						files = [
-							...files,
-							{
-								type: 'image',
-								url: event.target.result
-							}
-						];
-					};
-					reader.readAsDataURL(file['type'] === 'image/heic' ? await convertHeicToJpeg(file) : file);
-				} else {
-					uploadFileHandler(file, false);
-				}
-			} else {
-				uploadFileHandler(file);
-			}
-		});
+	const uploadFileHandler = async (file, process = true, itemData = {}) => {
+		await inputFilesHandler([file], process, itemData);
 	};
 
 	const createNote = async () => {
