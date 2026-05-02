@@ -140,7 +140,7 @@
 	import Mention from '@tiptap/extension-mention';
 	import FormattingButtons from './RichTextInput/FormattingButtons.svelte';
 
-	import { PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
+	import { PASTED_TEXT_CHARACTER_LIMIT, normalizePastedTextCharacterLimit } from '$lib/constants';
 	import { createLowlight } from 'lowlight';
 	import hljs from 'highlight.js';
 
@@ -257,6 +257,7 @@
 	export let messageInput = false;
 	export let shiftEnter = false;
 	export let largeTextAsFile = false;
+	export let largeTextCharacterLimit = PASTED_TEXT_CHARACTER_LIMIT;
 	export let insertPromptAsRichText = false;
 	export let floatingMenuPlacement = 'bottom-start';
 
@@ -274,6 +275,8 @@
 	const options = {
 		throwOnError: false
 	};
+
+	$: effectiveLargeTextCharacterLimit = normalizePastedTextCharacterLimit(largeTextCharacterLimit);
 
 	$: if (editor) {
 		editor.setOptions({
@@ -975,7 +978,7 @@
 						if (event.clipboardData) {
 							const plainText = event.clipboardData.getData('text/plain');
 							if (plainText) {
-								if (largeTextAsFile && plainText.length > PASTED_TEXT_CHARACTER_LIMIT) {
+								if (largeTextAsFile && plainText.length > effectiveLargeTextCharacterLimit) {
 									// Delegate handling of large text pastes to the parent component.
 									eventDispatch('paste', { event });
 									event.preventDefault();

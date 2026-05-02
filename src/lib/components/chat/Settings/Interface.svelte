@@ -6,6 +6,7 @@
 	import { updateUserInfo } from '$lib/apis/users';
 	import { getUserPosition, normalizeImageCompressionQuality } from '$lib/utils';
 	import { setTextScale } from '$lib/utils/text-scale';
+	import { PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
 
 	import Minus from '$lib/components/icons/Minus.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
@@ -54,6 +55,8 @@
 	let promptAutocomplete = false;
 
 	let largeTextAsFile = false;
+	let largeTextAsFileCharacterLimit: number | string = PASTED_TEXT_CHARACTER_LIMIT;
+	let lastValidLargeTextAsFileCharacterLimit = PASTED_TEXT_CHARACTER_LIMIT;
 	let conversationFileUploadEmbedding = false;
 
 	let insertSuggestionPrompt = false;
@@ -100,6 +103,45 @@
 	let showManageImageCompressionModal = false;
 
 	let textScale = null;
+
+	const LARGE_TEXT_CHARACTER_LIMIT_SLIDER_MIN = 100;
+	const LARGE_TEXT_CHARACTER_LIMIT_SLIDER_MAX = 999999;
+
+	const parseLargeTextAsFileCharacterLimit = (value: unknown) => {
+		const limit = Number(value);
+
+		if (!Number.isInteger(limit) || limit <= 0) {
+			return null;
+		}
+
+		return limit;
+	};
+
+	const clampLargeTextAsFileCharacterLimitSliderValue = (value: unknown) => {
+		const limit =
+			parseLargeTextAsFileCharacterLimit(value) ?? lastValidLargeTextAsFileCharacterLimit;
+
+		return Math.min(
+			LARGE_TEXT_CHARACTER_LIMIT_SLIDER_MAX,
+			Math.max(LARGE_TEXT_CHARACTER_LIMIT_SLIDER_MIN, limit)
+		);
+	};
+
+	$: largeTextAsFileCharacterLimitSliderValue = clampLargeTextAsFileCharacterLimitSliderValue(
+		largeTextAsFileCharacterLimit
+	);
+
+	const saveLargeTextAsFileCharacterLimit = (value: unknown) => {
+		const limit = parseLargeTextAsFileCharacterLimit(value);
+		if (limit === null) {
+			largeTextAsFileCharacterLimit = lastValidLargeTextAsFileCharacterLimit;
+			return;
+		}
+
+		largeTextAsFileCharacterLimit = limit;
+		lastValidLargeTextAsFileCharacterLimit = limit;
+		saveSettings({ largeTextAsFileCharacterLimit: limit });
+	};
 
 	const toggleLandingPageMode = async () => {
 		landingPageMode = landingPageMode === '' ? 'chat' : '';
@@ -257,6 +299,11 @@
 		regenerateMenu = $settings?.regenerateMenu ?? true;
 
 		largeTextAsFile = $settings?.largeTextAsFile ?? false;
+		const savedLargeTextAsFileCharacterLimit =
+			parseLargeTextAsFileCharacterLimit($settings?.largeTextAsFileCharacterLimit) ??
+			PASTED_TEXT_CHARACTER_LIMIT;
+		largeTextAsFileCharacterLimit = savedLargeTextAsFileCharacterLimit;
+		lastValidLargeTextAsFileCharacterLimit = savedLargeTextAsFileCharacterLimit;
 		conversationFileUploadEmbedding = $settings?.conversationFileUploadEmbedding ?? false;
 		copyFormatted = $settings?.copyFormatted ?? false;
 
@@ -1304,6 +1351,62 @@
 						/>
 					</div>
 				</div>
+
+				{#if largeTextAsFile}
+					<div class="px-1 pb-2">
+						<div
+							id="large-text-character-limit-label"
+							class="mb-1 text-xs text-gray-500 dark:text-gray-400"
+						>
+							{$i18n.t('Large Text Character Limit')}
+						</div>
+
+						<div class="flex items-center gap-2">
+							<div class="flex-1 flex items-center">
+								<input
+									id="large-text-character-limit-slider"
+									class="w-full"
+									type="range"
+									min={LARGE_TEXT_CHARACTER_LIMIT_SLIDER_MIN}
+									max={LARGE_TEXT_CHARACTER_LIMIT_SLIDER_MAX}
+									step="1"
+									value={largeTextAsFileCharacterLimitSliderValue}
+									on:input={(event) => {
+										largeTextAsFileCharacterLimit = Number(event.currentTarget.value);
+									}}
+									on:change={(event) => {
+										saveLargeTextAsFileCharacterLimit(event.currentTarget.value);
+									}}
+									aria-labelledby="large-text-character-limit-label"
+									aria-valuemin={LARGE_TEXT_CHARACTER_LIMIT_SLIDER_MIN}
+									aria-valuemax={LARGE_TEXT_CHARACTER_LIMIT_SLIDER_MAX}
+									aria-valuenow={largeTextAsFileCharacterLimitSliderValue}
+									aria-valuetext={`${largeTextAsFileCharacterLimit}`}
+								/>
+							</div>
+
+							<input
+								class="w-28 rounded-lg bg-gray-50 px-2 py-1 text-right text-xs outline-hidden dark:bg-gray-850"
+								type="number"
+								min="1"
+								step="1"
+								bind:value={largeTextAsFileCharacterLimit}
+								on:change={() => {
+									saveLargeTextAsFileCharacterLimit(largeTextAsFileCharacterLimit);
+								}}
+								on:blur={() => {
+									saveLargeTextAsFileCharacterLimit(largeTextAsFileCharacterLimit);
+								}}
+								on:keydown={(event) => {
+									if (event.key === 'Enter') {
+										event.currentTarget.blur();
+									}
+								}}
+								aria-labelledby="large-text-character-limit-label"
+							/>
+						</div>
+					</div>
+				{/if}
 			</div>
 
 			<div class=" my-2 text-sm font-medium">{$i18n.t('Artifacts')}</div>

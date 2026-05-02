@@ -50,7 +50,12 @@
 	import { getSessionUser } from '$lib/apis/auths';
 	import { getTools } from '$lib/apis/tools';
 
-	import { WEBUI_BASE_URL, WEBUI_API_BASE_URL, PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
+	import {
+		WEBUI_BASE_URL,
+		WEBUI_API_BASE_URL,
+		PASTED_TEXT_CHARACTER_LIMIT,
+		normalizePastedTextCharacterLimit
+	} from '$lib/constants';
 
 	import { createNoteHandler } from '../notes/utils';
 	import { getSuggestionRenderer } from '../common/RichTextInput/suggestions';
@@ -573,6 +578,11 @@
 
 	let dragged = false;
 	let shiftKey = false;
+	let largeTextCharacterLimit = PASTED_TEXT_CHARACTER_LIMIT;
+
+	$: largeTextCharacterLimit = normalizePastedTextCharacterLimit(
+		$settings?.largeTextAsFileCharacterLimit
+	);
 
 	let user = null;
 	export let placeholder = '';
@@ -1264,6 +1274,7 @@
 														)}
 													placeholder={placeholder ? placeholder : $i18n.t('Send a Message')}
 													largeTextAsFile={($settings?.largeTextAsFile ?? false) && !shiftKey}
+													{largeTextCharacterLimit}
 													autocomplete={$config?.features?.enable_autocomplete_generation &&
 														($settings?.promptAutocomplete ?? false)}
 													generateAutoCompletion={async (text) => {
@@ -1376,7 +1387,7 @@
 																	if (($settings?.largeTextAsFile ?? false) && !shiftKey) {
 																		const text = clipboardData.getData('text/plain');
 
-																		if (text.length > PASTED_TEXT_CHARACTER_LIMIT) {
+																		if (text.length > largeTextCharacterLimit) {
 																			e.preventDefault();
 																			const blob = new Blob([text], { type: 'text/plain' });
 																			const file = new File(

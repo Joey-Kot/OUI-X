@@ -93,7 +93,20 @@ export const SUPPORTED_FILE_EXTENSIONS = [
 	'msg'
 ];
 
-export const PASTED_TEXT_CHARACTER_LIMIT = 1000;
+export const PASTED_TEXT_CHARACTER_LIMIT = 3000;
+
+export const normalizePastedTextCharacterLimit = (
+	value: unknown,
+	fallback = PASTED_TEXT_CHARACTER_LIMIT
+) => {
+	const limit = Number(value);
+
+	if (!Number.isInteger(limit) || limit <= 0) {
+		return fallback;
+	}
+
+	return limit;
+};
 
 // Source: https://kit.svelte.dev/docs/modules#$env-static-public
 // This feature, akin to $env/static/private, exclusively incorporates environment variables
