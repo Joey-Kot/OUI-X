@@ -73,20 +73,21 @@
 	{#if message}
 		{#if message.role === 'user'}
 			<UserMessage
-				{user}
-				{chatId}
-				{history}
-				{messageId}
-				isFirstMessage={idx === 0}
-				siblings={siblingIds}
-				{gotoMessage}
-				{showPreviousMessage}
-				{showNextMessage}
-				{editMessage}
-				{deleteMessage}
-				{readOnly}
-				{editCodeBlock}
-				{topPadding}
+					{user}
+					{chatId}
+					{history}
+					{messageId}
+					isFirstMessage={idx === 0}
+					siblings={siblingIds}
+					{selectedModels}
+					{gotoMessage}
+					{showPreviousMessage}
+					{showNextMessage}
+					{editMessage}
+					{deleteMessage}
+					{readOnly}
+					{editCodeBlock}
+					{topPadding}
 			/>
 		{:else if isSingleModelResponseThread}
 			<ResponseMessage

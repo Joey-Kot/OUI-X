@@ -1331,17 +1331,55 @@ def _resolve_single_collection_rag_template(request: Request, files: list[dict])
     return effective_config["RAG_TEMPLATE"]
 
 
+def _format_direct_file_context(context_sources: list[dict]) -> str:
+    file_blocks = []
+
+    for source in context_sources:
+        if "document" not in source:
+            continue
+
+        documents = source.get("document") or []
+        metadatas = source.get("metadata") or []
+        source_info = source.get("source") or {}
+
+        for index, document_text in enumerate(documents):
+            if document_text is None:
+                continue
+
+            metadata = metadatas[index] if index < len(metadatas) else {}
+            metadata = metadata or {}
+            file_name = (
+                metadata.get("name")
+                or source_info.get("name")
+                or metadata.get("source")
+                or source_info.get("id")
+                or "uploaded file"
+            )
+            file_blocks.append(
+                '<uploaded_file name="'
+                + html.escape(str(file_name), quote=True)
+                + '">\n'
+                + str(document_text)
+                + "\n</uploaded_file>"
+            )
+
+    if not file_blocks:
+        return ""
+
+    return "Uploaded file contents:\n\n" + "\n\n".join(file_blocks)
+
+
 async def chat_completion_files_handler(
     request: Request, body: dict, extra_params: dict, user: UserModel
 ) -> tuple[dict, dict[str, list]]:
     __event_emitter__ = extra_params["__event_emitter__"]
     sources = []
+    context_sources = []
 
     if files := body.get("metadata", {}).get("files", None):
         # Check if all files are in full context mode
         all_full_context = all(item.get("context") == "full" for item in files)
 
-        file_sources = []
         remaining_files = list(files)
         if not request.app.state.config.CONVERSATION_FILE_UPLOAD_EMBEDDING:
             def _ingest_mode_from_item(item: dict, file_object) -> Optional[str]:
@@ -1399,7 +1437,7 @@ async def chat_completion_files_handler(
                     )
                     if content:
                         file_meta = file_object.meta or {}
-                        file_sources.append(
+                        context_sources.append(
                             {
                                 "source": item,
                                 "document": [content],
@@ -1419,11 +1457,10 @@ async def chat_completion_files_handler(
                     remaining_files.append(item)
 
             if not remaining_files:
-                sources = file_sources
                 sources_count = len(
                     {
                         ((m or {}).get("source") or (s.get("source") or {}).get("id") or "N/A")
-                        for s in sources
+                        for s in context_sources
                         for m in (s.get("metadata") or [])
                     }
                 )
@@ -1437,7 +1474,7 @@ async def chat_completion_files_handler(
                         },
                     }
                 )
-                return body, {"sources": sources}
+                return body, {"sources": sources, "context_sources": context_sources}
 
         files = remaining_files
         all_full_context = all(item.get("context") == "full" for item in files) if files else True
@@ -1523,11 +1560,8 @@ async def chat_completion_files_handler(
 
         log.debug(f"rag_contexts:sources: {sources}")
 
-        if file_sources:
-            sources = [*file_sources, *sources]
-
         unique_ids = set()
-        for source in sources or []:
+        for source in [*context_sources, *(sources or [])]:
             if not source or len(source.keys()) == 0:
                 continue
 
@@ -1556,7 +1590,7 @@ async def chat_completion_files_handler(
             }
         )
 
-    return body, {"sources": sources}
+    return body, {"sources": sources, "context_sources": context_sources}
 
 
 def apply_params_to_form_data(form_data, model):
@@ -1731,6 +1765,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     events = []
     sources = []
+    context_sources = []
 
     # Folder "Project" handling
     # Check if the request has chat_id and is inside of a folder
@@ -1990,6 +2025,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 request, form_data, extra_params, user
             )
             sources.extend(flags.get("sources", []))
+            context_sources.extend(flags.get("context_sources", []))
         except Exception as e:
             log.exception(e)
 
@@ -2042,6 +2078,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 form_data["messages"],
                 append=False,
             )
+
+    direct_context_string = _format_direct_file_context(context_sources)
+    if direct_context_string != "":
+        form_data["messages"] = add_or_update_user_message(
+            direct_context_string,
+            form_data["messages"],
+            append=False,
+        )
 
     # If there are citations, add them to the data_items
     sources = [
