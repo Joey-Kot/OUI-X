@@ -55,6 +55,12 @@
 	export let codeInterpreterEnabled = false;
 	export let webSearchEnabled = false;
 	export let disableRagEnabled = false;
+	export let contextTruncation = {
+		enabled: false,
+		cutoffMessageId: null,
+		updatedAt: null
+	};
+	export let onContextTruncationToggle: Function = () => {};
 
 	export let onUpload: Function = (e) => {};
 	export let onSelect = (e) => {};
@@ -213,6 +219,8 @@
 					bind:codeInterpreterEnabled
 					bind:webSearchEnabled
 					bind:disableRagEnabled
+					{contextTruncation}
+					{onContextTruncationToggle}
 					bind:params
 					bind:atSelectedModel
 					bind:showCommands

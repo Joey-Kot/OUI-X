@@ -15,6 +15,7 @@
 	import { toast } from 'svelte-sonner';
 	import { getChatList, updateChatById } from '$lib/apis/chats';
 	import { copyToClipboard, extractCurlyBraceWords } from '$lib/utils';
+	import { createDisabledContextTruncation } from '$lib/utils/context-truncation';
 
 	import Message from './Messages/Message.svelte';
 	import Spinner from '../common/Spinner.svelte';
@@ -47,6 +48,7 @@
 	export let showMessage: Function = () => {};
 	export let submitMessage: Function = () => {};
 	export let addMessages: Function = () => {};
+	export let contextTruncation = createDisabledContextTruncation();
 
 	export let readOnly = false;
 	export let editCodeBlock = true;
@@ -636,6 +638,11 @@
 			}, 100);
 		}
 	};
+
+	const shouldShowContextDividerAfter = (messageId: string, messageIdx: number) =>
+		contextTruncation?.enabled &&
+		contextTruncation?.cutoffMessageId === messageId &&
+		Boolean(messages[messageIdx + 1]);
 </script>
 
 <div class={className}>
@@ -685,6 +692,25 @@
 									{editCodeBlock}
 									{topPadding}
 								/>
+								{#if shouldShowContextDividerAfter(message.id, visibleStartIdx + virtualIdx)}
+									<div class="w-full py-2">
+										<div
+											class="flex items-center gap-3 text-xs text-gray-500/75 dark:text-gray-400/70"
+										>
+											<div
+												class="h-px flex-1 border-t border-dashed border-gray-300/60 dark:border-gray-600/50"
+											/>
+											<span
+												class="shrink-0 rounded-full bg-white/70 dark:bg-gray-900/70 px-2 py-0.5 backdrop-blur-xs"
+											>
+												{$i18n.t('Context has been cleared')}
+											</span>
+											<div
+												class="h-px flex-1 border-t border-dashed border-gray-300/60 dark:border-gray-600/50"
+											/>
+										</div>
+									</div>
+								{/if}
 							</div>
 						{/each}
 

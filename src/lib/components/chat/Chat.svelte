@@ -55,6 +55,12 @@
 		getCodeBlockContents,
 		isYoutubeUrl
 	} from '$lib/utils';
+	import {
+		createDisabledContextTruncation,
+		normalizeContextTruncation,
+		trimMessagesAfterContextTruncation,
+		type ContextTruncationState
+	} from '$lib/utils/context-truncation';
 	import { buildMessageExportText } from '$lib/utils/message-export';
 	import { AudioQueue } from '$lib/utils/audio';
 
@@ -142,6 +148,7 @@
 	let webSearchEnabled = false;
 	let codeInterpreterEnabled = false;
 	let disableRagEnabled = false;
+	let contextTruncation: ContextTruncationState = createDisabledContextTruncation();
 
 	let showCommands = false;
 
@@ -251,6 +258,7 @@
 		webSearchEnabled = false;
 		imageGenerationEnabled = false;
 		disableRagEnabled = false;
+		contextTruncation = createDisabledContextTruncation();
 
 		const storageChatInput = sessionStorage.getItem(
 			`chat-input${chatIdProp ? `-${chatIdProp}` : ''}`
@@ -1459,6 +1467,7 @@
 					(chatContent?.history ?? undefined) !== undefined
 						? chatContent.history
 						: convertMessagesToHistory(chatContent.messages);
+				contextTruncation = normalizeContextTruncation(chatContent?.contextTruncation, history);
 
 				chatTitle.set(chatContent.title);
 
@@ -1532,10 +1541,18 @@
 
 		scrollToBottomFrameId = window.requestAnimationFrame(flushScrollToBottom);
 	};
+
+	const getContextAwareMessages = (messages = []) =>
+		trimMessagesAfterContextTruncation(messages, contextTruncation);
+
+	const getPersistableContextTruncation = () =>
+		normalizeContextTruncation(contextTruncation, history);
+
 	const chatCompletedHandler = async (_chatId, modelId, responseMessageId, messages) => {
+		const requestMessages = getContextAwareMessages(messages);
 		const res = await chatCompleted(localStorage.token, {
 			model: modelId,
-			messages: messages.map((m) => ({
+			messages: requestMessages.map((m) => ({
 				id: m.id,
 				role: m.role,
 				content: m.content,
@@ -1581,7 +1598,8 @@
 					messages: messages,
 					history: history,
 					params: params,
-					files: chatFiles
+					files: chatFiles,
+					contextTruncation: getPersistableContextTruncation()
 				});
 
 				currentChatPage.set(1);
@@ -1594,10 +1612,11 @@
 
 	const chatActionHandler = async (_chatId, actionId, modelId, responseMessageId, event = null) => {
 		const messages = createMessagesList(history, responseMessageId);
+		const requestMessages = getContextAwareMessages(messages);
 
 		const res = await chatAction(localStorage.token, actionId, {
 			model: modelId,
-			messages: messages.map((m) => ({
+			messages: requestMessages.map((m) => ({
 				id: m.id,
 				role: m.role,
 				content: m.content,
@@ -1636,7 +1655,8 @@
 					messages: messages,
 					history: history,
 					params: params,
-					files: chatFiles
+					files: chatFiles,
+					contextTruncation: getPersistableContextTruncation()
 				});
 
 				currentChatPage.set(1);
@@ -2251,24 +2271,34 @@
 	const sendMessageSocket = async (model, _messages, _history, responseMessageId, _chatId) => {
 		const responseMessage = _history.messages[responseMessageId];
 		const userMessage = _history.messages[responseMessage.parentId];
+		const requestSourceMessages = getContextAwareMessages(_messages);
 
 		const chatMessageFiles = _messages
 			.filter((message) => message.files)
 			.flatMap((message) => message.files);
 
-		// Filter chatFiles to only include files that are in the chatMessageFiles
+		// Keep full branch file history intact even when request context is truncated.
 		chatFiles = chatFiles.filter((item) => {
 			const fileExists = chatMessageFiles.some((messageFile) => messageFile.id === item.id);
 			return fileExists;
 		});
 
+		const requestChatMessageFiles = requestSourceMessages
+			.filter((message) => message.files)
+			.flatMap((message) => message.files);
+		const requestChatFileIds = new Set(requestChatMessageFiles.map((file) => file.id));
+		const requestChatFiles = chatFiles.filter((item) => requestChatFileIds.has(item.id));
+		const requestMessageIds = new Set(requestSourceMessages.map((message) => message.id));
+
 		let files = dedupeAndMergeFilesByIdentity([
-			...JSON.parse(JSON.stringify(chatFiles)),
-			...(userMessage?.files ?? []).filter(
-				(item) =>
-					['doc', 'text', 'note', 'chat', 'collection'].includes(item.type) ||
-					(item.type === 'file' && !(item?.content_type ?? '').startsWith('image/'))
-			)
+			...JSON.parse(JSON.stringify(requestChatFiles)),
+			...(requestMessageIds.has(userMessage?.id)
+				? (userMessage?.files ?? []).filter(
+						(item) =>
+							['doc', 'text', 'note', 'chat', 'collection'].includes(item.type) ||
+							(item.type === 'file' && !(item?.content_type ?? '').startsWith('image/'))
+					)
+				: [])
 		]);
 
 		scrollToBottom();
@@ -2295,21 +2325,24 @@
 			model?.info?.params?.stream_response ??
 			true;
 
-		let messages = [
+		const systemMessage =
 			params?.system || $settings.system
 				? {
 						role: 'system',
 						content: `${params?.system ?? $settings?.system ?? ''}`
 					}
-				: undefined,
-			..._messages.map((message) => ({
-				...message,
-				content: processDetails(message.content)
-			}))
-		].filter((message) => message);
+				: undefined;
 
-		messages = messages
-			.map((message, idx, arr) => {
+		const buildPayloadMessages = (sourceMessages = []) =>
+			[
+				systemMessage,
+				...sourceMessages.map((message) => ({
+					...message,
+					content: processDetails(message.content)
+				}))
+			]
+				.filter((message) => message)
+				.map((message, idx, arr) => {
 				const imageFiles = (message?.files ?? []).filter(
 					(file) => file.type === 'image' || (file?.content_type ?? '').startsWith('image/')
 				);
@@ -2337,6 +2370,9 @@
 				};
 			})
 			.filter((message) => message?.role === 'user' || message?.content?.trim());
+
+		const completeMessagesForBackgroundTasks = buildPayloadMessages(_messages);
+		let messages = buildPayloadMessages(requestSourceMessages);
 
 		const toolIds = [...selectedToolIds];
 
@@ -2367,13 +2403,13 @@
 			chat_id: $chatId,
 			id: responseMessageId,
 			parent_id: userMessage?.id ?? null,
-			parent_message: userMessage,
+			parent_message: requestMessageIds.has(userMessage?.id) ? userMessage : undefined,
 			background_tasks: {
 				...(!$temporaryChatEnabled &&
-				(messages.length == 1 ||
-					(messages.length == 2 &&
-						messages.at(0)?.role === 'system' &&
-						messages.at(1)?.role === 'user')) &&
+				(completeMessagesForBackgroundTasks.length == 1 ||
+					(completeMessagesForBackgroundTasks.length == 2 &&
+						completeMessagesForBackgroundTasks.at(0)?.role === 'system' &&
+						completeMessagesForBackgroundTasks.at(1)?.role === 'user')) &&
 				(selectedModels[0] === model.id || atSelectedModel !== undefined)
 					? {
 							title_generation: $settings?.title?.auto ?? true,
@@ -2669,6 +2705,7 @@
 					params: params,
 					history: history,
 					messages: createMessagesList(history, history.currentId),
+					contextTruncation: getPersistableContextTruncation(),
 					tags: [],
 					timestamp: Date.now()
 				},
@@ -2703,13 +2740,51 @@
 					history: history,
 					messages: createMessagesList(history, history.currentId),
 					params: params,
-					files: chatFiles
+					files: chatFiles,
+					contextTruncation: getPersistableContextTruncation()
 				});
 				currentChatPage.set(1);
 				await chats.set(await getChatList(localStorage.token, $currentChatPage));
 			}
 		}
 	};
+
+	let missingContextTruncationSaveKey = '';
+	const toggleContextTruncation = async () => {
+		if (contextTruncation.enabled) {
+			contextTruncation = createDisabledContextTruncation();
+		} else if (history?.currentId) {
+			contextTruncation = normalizeContextTruncation(
+				{
+					enabled: true,
+					cutoffMessageId: history.currentId,
+					updatedAt: Date.now()
+				},
+				history
+			);
+		} else {
+			return;
+		}
+
+		if (!$temporaryChatEnabled && $chatId) {
+			await saveChatHandler($chatId, history);
+		}
+	};
+
+	$: if (
+		contextTruncation.enabled &&
+		contextTruncation.cutoffMessageId &&
+		history?.messages &&
+		!history.messages[contextTruncation.cutoffMessageId]
+	) {
+		const saveKey = `${$chatId}:${contextTruncation.cutoffMessageId}`;
+		contextTruncation = createDisabledContextTruncation();
+
+		if (!$temporaryChatEnabled && $chatId && missingContextTruncationSaveKey !== saveKey) {
+			missingContextTruncationSaveKey = saveKey;
+			void saveChatHandler($chatId, history);
+		}
+	}
 
 	const MAX_DRAFT_LENGTH = 5000;
 	let saveDraftTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -2846,6 +2921,7 @@
 								system: $settings.system ?? undefined,
 								params: params,
 								history: history,
+								contextTruncation: getPersistableContextTruncation(),
 								timestamp: Date.now()
 							}
 						}}
@@ -2874,6 +2950,7 @@
 										models: selectedModels,
 										history: history,
 										messages: messages,
+										contextTruncation: getPersistableContextTruncation(),
 										timestamp: Date.now()
 									},
 									null
@@ -2925,6 +3002,7 @@
 										{mergeResponses}
 										{chatActionHandler}
 										{addMessages}
+										{contextTruncation}
 										topPadding={true}
 										bottomPadding={files.length > 0}
 										{onSelect}
@@ -2947,6 +3025,8 @@
 									bind:codeInterpreterEnabled
 									bind:webSearchEnabled
 									bind:disableRagEnabled
+									{contextTruncation}
+									onContextTruncationToggle={toggleContextTruncation}
 									bind:params
 									bind:atSelectedModel
 									bind:showCommands
@@ -2990,6 +3070,8 @@
 									bind:codeInterpreterEnabled
 									bind:webSearchEnabled
 									bind:disableRagEnabled
+									{contextTruncation}
+									onContextTruncationToggle={toggleContextTruncation}
 									bind:params
 									bind:atSelectedModel
 									bind:showCommands

@@ -372,7 +372,19 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * 拖动时显示当前档位提示，非拖动状态不显示提示；支持点击外部关闭与键盘操作（Enter/Space/Arrow）
 * 滑块视觉采用“节点 + 已通过区段连线”样式
 
-### 8) Chat 背景与代码块视觉增强
+### 8) 新增对话框上下文截断（Clear Context）
+
+在对话框新增 **Clear Context** 按钮，用于在不删除历史记录的前提下截断后续请求上下文：
+
+* 点击后记录当前可见分支的最新消息为截断点，按钮进入高亮/带边框状态
+* 后续向模型或远端 API 请求时，不再拼接截断点及其之前的对话历史
+* 对话历史本身不会被清除，UI 展示、会话保存、导出仍保留完整记录
+* 再次点击会取消截断，后续请求恢复完整上下文
+* 截断点状态和位置随非临时会话持久化保存；临时会话仅保留当前内存状态
+* 截断点与之后的新消息之间会显示浅色半透明虚线，并提示 `Context has been cleared`
+* 截断仅作用于包含该截断点的当前可见分支；切换到不包含截断点的分支时不裁剪上下文
+
+### 9) Chat 背景与代码块视觉增强
 
 围绕聊天界面的背景可控性与代码块细节样式，新增以下能力：
 
@@ -388,9 +400,9 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * CodeBlock 样式微调：
   * 对内层代码块容器圆角进行微调，外层容器保持不变
 
-### 9) 重构文件/图片上传、转码与压缩链路
+### 10) 重构文件/图片上传、转码与压缩链路
 
-#### 9.1 图片压缩迁移到后端统一转码
+#### 10.1 图片压缩迁移到后端统一转码
 
 原前端 canvas 方案低效缓慢且收益低，围绕聊天 / 频道 / 笔记中的图片上传链路，图片压缩从前端 canvas 缩放改为后端统一处理。
 默认配置 0.75 质量及 2048px*2048px 上限下，测试图片可以稳定压缩缩放至100kb左右（5~20MB -> 100KB），多图上传在任意设备环境下按图片总大小可以控制在秒级到分钟级。
@@ -410,13 +422,13 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * 新增按用户维度的 ffmpeg 并发限制，避免单个用户批量上传抢占全部转码资源
 * 后端新增 HEIC / HEIF 解码支持，用于兼容苹果设备原图上传
 
-#### 9.2 图片 base64 Data URL MIME
+#### 10.2 图片 base64 Data URL MIME
 
 * 生成图片 Data URL 时，优先使用文件记录中的 `meta.content_type`
 * 若 `meta.content_type` 缺失，再回退到基于文件名的 MIME 推断
 * 若仍无法推断，则对图片回退到安全默认值 `image/webp`
 
-#### 9.3 聊天附件上传增强
+#### 10.3 聊天附件上传增强
 
 * 抽出聊天附件上传共享逻辑，主输入框与历史用户消息编辑态复用同一套处理流程
 * 新增历史用户消息编辑态粘贴图片、粘贴文件、拖拽图片、拖拽文件支持
@@ -427,7 +439,7 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
   * 编辑态在附件仍处于上传中时阻止保存或重新发送，避免提交半完成状态
 * 历史消息中的已上传图片预览统一通过 `content_type` 识别，并使用 `/files/{id}/content` 读取内容
 
-#### 9.4 新增长文本粘贴自动转文件阈值配置
+#### 10.4 新增长文本粘贴自动转文件阈值配置
 
 * `Settings -> Interface -> Paste Large Text as File` 开启后，会显示 `Large Text Character Limit`
 * 默认阈值从 `1000` 调整为 `3000` 字符
@@ -438,9 +450,9 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * 粘贴纯文本长度严格大于阈值时才会转为 `.txt` 文件；等于阈值时仍保留为普通粘贴文本
 * 聊天输入框内按住 `Shift` 粘贴时，仍会临时绕过“粘贴大文本为文件”逻辑
 
-### 10) 前端性能整体优化改进
+### 11) 前端性能整体优化改进
 
-#### 10.1 新增消息列表虚拟化
+#### 11.1 新增消息列表虚拟化
 
 * 重构 `Messages.svelte` 列表渲染，引入可见窗口计算、动态高度测量、占位区间渲染
 * 新增虚拟窗口纯函数模块 `virtualization.ts`：可见范围索引计算、scrollTop 归一化、spacer 高度推导、边界不变量约束
@@ -449,55 +461,55 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * 顶部加载更多从可见触发改为滚动阈值触发，减少虚拟化下误触发与抖动
 * 空窗口兜底逻辑：边界场景至少渲染一条消息，避免整屏空白
 
-#### 10.2 Markdown 渲染链路优化
+#### 11.2 Markdown 渲染链路优化
 
 * 新增聊天 Markdown 单例解析器 `lexChatMarkdown()`，`Marked` 实例集中注册扩展，避免每组件实例重复 `marked.use(...)` 初始化开销
 * 流式解析节流（`STREAM_PARSE_THROTTLE_MS = 100`）：`done === false` 时按节流调度，减少 token 高频到达时的全量 lexer 次数；`done === true` 时立即完整解析
 * 消除 `details` 分支模板期二次 lexer：`detailsTokenizer` 直接生成并挂载 `token.tokens`，删除 `marked.lexer(decode(token.text))` 路径
 * `AlertRenderer` 引入 `WeakMap<Token, AlertData>` 缓存，同一 token 重渲染时避免重复 lexer
 
-#### 10.3 流式渲染与更新调度优化
+#### 11.3 流式渲染与更新调度优化
 
 * Chat 流式链路改为批量刷新：新增流式消息更新队列与定时批量 flush（约 33ms），避免每个 chunk 直接写 `history` 触发渲染
 * `chatEventHandler` 热路径移除不必要的 `tick`，状态/增量/引用等事件统一走调度更新
 * `mergeResponses` 流式拼接路径改为批量更新，减少 token 级 UI 写入频率
 * `scrollToBottom` 改为帧级合并调度：`requestAnimationFrame` 合并滚动写入，同一帧多次调用只执行一次；支持 smooth 行为优先级聚合
 
-#### 10.4 TTS 与震动优化
+#### 11.4 TTS 与震动优化
 
 * TTS 分句从"全量重算"改为"增量缓冲 + 节流"：每条消息新增 `deltaBuffer/sentenceCarry` 流状态，每次 chunk 仅追加增量，按节流窗口（约 180ms）做分句 flush
 * 震动反馈增加节流（约 80ms），避免 chunk 级连续振动造成额外开销
 
-#### 10.5 监听器与事件处理优化
+#### 11.5 监听器与事件处理优化
 
 * ContentRenderer 全局监听器按需注册：document 级 `mouseup/keydown` 从"组件挂载即注册"改为"浮动按钮显示时注册、关闭时解绑"
 * `floatingButtons` 开关变化时同步绑定/解绑，避免多实例长期挂载全局处理函数
 
-#### 10.6 缓存与短路优化
+#### 11.6 缓存与短路优化
 
 * `tool_calls` 解析增加快速短路：不含 `<details>` 或不含 `type="tool_calls"` 时直接返回
 * 新增"上次内容 → 上次解析结果"缓存，内容不变时复用，避免重复正则扫描
 * `update*` 系列函数增加快速短路，减少无意义 `replace`
 * ResponseMessage 在切换注入状态时复用已计算的 `toolCallDetails`
 
-#### 10.7 深比较热点替换优化
+#### 11.7 深比较热点替换优化
 
 * `ResponseMessage`/`UserMessage`/`MultiResponseMessages` 移除高频 `JSON.stringify/parse` 深比较与深拷贝，改为直接引用 `history.messages[messageId]`
 * `CodeBlock` 去掉 token 的 `JSON.stringify` 深比较，改为关键字段轻量比较
 * `StatusHistory` 去掉 `JSON.stringify(statusHistory)` 比较，改为引用级更新策略
 
-#### 10.8 模板计算响应式预计算优化
+#### 11.8 模板计算响应式预计算优化
 
 * `sourceIds/sourceLabels` 从模板 `reduce` 迁移到 `buildSourceMetadata` + 响应式变量
 * `FloatingButtons` 的 `createMessagesList(history, messageId)` 改为响应式预计算 `floatingButtonMessages`
 * `Message` 模板内重复 `history` 遍历与 `parent/siblings` 计算迁移到响应式预计算
 
-#### 10.9 Collapsible 渲染期优化
+#### 11.9 Collapsible 渲染期优化
 
 * 移除组件实例内 `dayjs.extend` 和逐次 `locale` 加载逻辑，插件初始化上移至共享模块
 * 工具调用数据的 `decode/parse/format` 从模板常量改为脚本缓存，仅在 `attributes` 实际变化时重算
 
-#### 10.10 停止/取消/销毁阶段清理优化
+#### 11.10 停止/取消/销毁阶段清理优化
 
 * `stopResponse`、`chat:tasks:cancel` 与组件 `onDestroy` 时，清理 pending stream 队列与 TTS 定时器状态，避免遗留异步回调继续写入 UI
 
