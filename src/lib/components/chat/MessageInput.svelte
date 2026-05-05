@@ -49,6 +49,10 @@
 	import { deleteFileById } from '$lib/apis/files';
 	import { getSessionUser } from '$lib/apis/auths';
 	import { getTools } from '$lib/apis/tools';
+	import {
+		createDisabledContextTruncation,
+		trimMessagesAfterContextTruncation
+	} from '$lib/utils/context-truncation';
 
 	import {
 		WEBUI_BASE_URL,
@@ -87,6 +91,7 @@
 	import Knobs from '../icons/Knobs.svelte';
 	import BookOpen from '../icons/BookOpen.svelte';
 	import LightBulb from '../icons/LightBulb.svelte';
+	import ScissorsDashed from '../icons/ScissorsDashed.svelte';
 	import ValvesModal from '../workspace/common/ValvesModal.svelte';
 	import PageEdit from '../icons/PageEdit.svelte';
 	import { goto } from '$app/navigation';
@@ -123,6 +128,8 @@
 	export let webSearchEnabled = false;
 	export let codeInterpreterEnabled = false;
 	export let disableRagEnabled = false;
+	export let contextTruncation = createDisabledContextTruncation();
+	export let onContextTruncationToggle: Function = () => {};
 	export let params = {};
 
 	const REASONING_EFFORT_LEVELS = [
@@ -1287,7 +1294,10 @@
 															selectedModelIds.at(0),
 															text,
 															history?.currentId
-																? createMessagesList(history, history.currentId)
+																? trimMessagesAfterContextTruncation(
+																		createMessagesList(history, history.currentId),
+																		contextTruncation
+																	)
 																: null
 														).catch((error) => {
 															console.log(error);
@@ -1670,6 +1680,30 @@
 															: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 border-transparent'}"
 													>
 														<BookOpen className="size-4.5" strokeWidth="1.75" />
+													</button>
+												</Tooltip>
+
+												<Tooltip
+													content={contextTruncation?.enabled
+														? $i18n.t('Restore Context')
+														: $i18n.t('Clear Context')}
+													placement="top"
+												>
+													<button
+														type="button"
+														aria-label={contextTruncation?.enabled
+															? $i18n.t('Restore Context')
+															: $i18n.t('Clear Context')}
+														aria-pressed={contextTruncation?.enabled}
+														disabled={!contextTruncation?.enabled && !history?.currentId}
+														on:click={() => {
+															onContextTruncationToggle();
+														}}
+														class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden border transition-colors disabled:opacity-50 disabled:cursor-not-allowed {contextTruncation?.enabled
+															? 'text-amber-600 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 border-amber-200 dark:border-amber-800'
+															: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 border-transparent'}"
+													>
+														<ScissorsDashed className="size-4.5" strokeWidth="1.75" />
 													</button>
 												</Tooltip>
 											</div>
