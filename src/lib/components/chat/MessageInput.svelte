@@ -1,6 +1,7 @@
 <script lang="ts">
 	import DOMPurify from 'dompurify';
 	import { toast } from 'svelte-sonner';
+	import { DropdownMenu } from 'bits-ui';
 
 	import { marked } from 'marked';
 	import dayjs from '$lib/dayjs';
@@ -70,6 +71,7 @@
 
 	import RichTextInput from '../common/RichTextInput.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
+	import Dropdown from '../common/Dropdown.svelte';
 	import FileItem from '../common/FileItem.svelte';
 	import Image from '../common/Image.svelte';
 
@@ -97,6 +99,7 @@
 	import { goto } from '$app/navigation';
 	import InputModal from '../common/InputModal.svelte';
 	import Expand from '../icons/Expand.svelte';
+	import EllipsisHorizontal from '../icons/EllipsisHorizontal.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -143,6 +146,10 @@
 	] as const;
 	const MODEL_REASONING_EFFORT_LEVELS = REASONING_EFFORT_LEVELS.slice(1) as readonly string[];
 	type ReasoningEffortLevel = (typeof REASONING_EFFORT_LEVELS)[number];
+	type AdaptiveActionId = 'integrations' | 'tools' | 'reasoning' | 'rag' | 'context';
+
+	const ADAPTIVE_ACTION_WIDTH = 32;
+	const ADAPTIVE_ACTION_GAP = 4;
 
 	let inputContent = null;
 
@@ -151,6 +158,8 @@
 	let reasoningEffortHoverIndex: number | null = null;
 	let reasoningEffortButtonElement: HTMLButtonElement | null = null;
 	let reasoningEffortPopoverElement: HTMLDivElement | null = null;
+	let adaptiveActionsWidth = 0;
+	let showAdaptiveActionsMore = false;
 
 	let showInputVariablesModal = false;
 	let inputVariablesModalCallback = (variableValues) => {};
@@ -188,7 +197,9 @@
 		}
 	});
 
-	const normalizeReasoningEffort = (value: unknown): Exclude<ReasoningEffortLevel, 'default'> | null => {
+	const normalizeReasoningEffort = (
+		value: unknown
+	): Exclude<ReasoningEffortLevel, 'default'> | null => {
 		if (typeof value !== 'string') {
 			return null;
 		}
@@ -214,7 +225,10 @@
 	};
 
 	const setReasoningEffortByIndex = (index: number) => {
-		const boundedIndex = Math.max(0, Math.min(REASONING_EFFORT_LEVELS.length - 1, Math.round(index)));
+		const boundedIndex = Math.max(
+			0,
+			Math.min(REASONING_EFFORT_LEVELS.length - 1, Math.round(index))
+		);
 		const nextLevel = REASONING_EFFORT_LEVELS[boundedIndex];
 
 		if (nextLevel === 'default') {
@@ -317,6 +331,34 @@
 		}
 
 		return `left: ${leftPercent}%; transform: translateX(-50%);`;
+	};
+
+	const getAdaptiveActionGroupWidth = (count: number) => {
+		if (count <= 0) {
+			return 0;
+		}
+
+		return count * ADAPTIVE_ACTION_WIDTH + (count - 1) * ADAPTIVE_ACTION_GAP;
+	};
+
+	const getVisibleAdaptiveActionCount = (availableWidth: number, actionCount: number) => {
+		if (actionCount <= 0) {
+			return 0;
+		}
+
+		if (!availableWidth || getAdaptiveActionGroupWidth(actionCount) <= availableWidth) {
+			return actionCount;
+		}
+
+		for (let visibleCount = actionCount - 1; visibleCount >= 0; visibleCount -= 1) {
+			const widthWithMore = getAdaptiveActionGroupWidth(visibleCount + 1);
+
+			if (widthWithMore <= availableWidth) {
+				return visibleCount;
+			}
+		}
+
+		return 0;
 	};
 
 	const inputVariableHandler = async (text: string): Promise<string> => {
@@ -543,7 +585,6 @@
 	$: showCommands = ['/', '#', '@'].includes(command?.charAt(0)) || '\\#' === command?.slice(0, 2);
 	let suggestions = null;
 
-
 	let loaded = false;
 	let recording = false;
 
@@ -639,6 +680,30 @@
 		showImageGenerationButton ||
 		showCodeInterpreterButton ||
 		(toggleFilters && toggleFilters.length > 0);
+
+	let adaptiveActionIds: AdaptiveActionId[] = [];
+	$: adaptiveActionIds =
+		showIntegrationsButton || showToolsButton
+			? [
+					...(showIntegrationsButton ? (['integrations'] as AdaptiveActionId[]) : []),
+					...(showToolsButton ? (['tools'] as AdaptiveActionId[]) : []),
+					'reasoning',
+					'rag',
+					'context'
+				]
+			: [];
+
+	let visibleAdaptiveActionCount = 0;
+	$: visibleAdaptiveActionCount = getVisibleAdaptiveActionCount(
+		adaptiveActionsWidth,
+		adaptiveActionIds.length
+	);
+
+	let visibleAdaptiveActionIds: AdaptiveActionId[] = [];
+	$: visibleAdaptiveActionIds = adaptiveActionIds.slice(0, visibleAdaptiveActionCount);
+
+	let overflowAdaptiveActionIds: AdaptiveActionId[] = [];
+	$: overflowAdaptiveActionIds = adaptiveActionIds.slice(visibleAdaptiveActionCount);
 
 	let showWebSearchButton = false;
 	$: showWebSearchButton =
@@ -787,6 +852,7 @@
 		if (e.key === 'Escape') {
 			console.log('Escape');
 			dragged = false;
+			showAdaptiveActionsMore = false;
 			closeReasoningEffortPopover(true);
 		}
 	};
@@ -1429,7 +1495,7 @@
 							</div>
 
 							<div class=" flex justify-between mt-0.5 mb-2.5 mx-0.5 max-w-full" dir="ltr">
-								<div class="ml-1 self-end flex items-center flex-1 max-w-[80%]">
+								<div class="ml-1 self-end flex items-center flex-1 min-w-0 max-w-[80%]">
 									<InputMenu
 										bind:files
 										selectedModels={atSelectedModel ? [atSelectedModel.id] : selectedModels}
@@ -1490,13 +1556,14 @@
 										</div>
 									</InputMenu>
 
-									{#if showIntegrationsButton || showToolsButton}
-											<div
-												class="flex self-center w-[1px] h-4 mx-1 bg-gray-200/50 dark:bg-gray-800/50"
-											/>
+									{#if adaptiveActionIds.length > 0}
+										<div
+											class="flex self-center w-[1px] h-4 mx-1 bg-gray-200/50 dark:bg-gray-800/50"
+										/>
 
-											<div class="ml-0.5 flex items-center gap-1">
-												{#if showIntegrationsButton}
+										<div class="ml-0.5 flex-1 min-w-0" bind:clientWidth={adaptiveActionsWidth}>
+											<div class="flex items-center gap-1">
+												{#if visibleAdaptiveActionIds.includes('integrations')}
 													<IntegrationsMenu
 														{toggleFilters}
 														{showWebSearchButton}
@@ -1530,7 +1597,7 @@
 													</IntegrationsMenu>
 												{/if}
 
-												{#if showToolsButton}
+												{#if visibleAdaptiveActionIds.includes('tools')}
 													<ToolsMenu
 														bind:selectedToolIds
 														closeOnOutsideClick={integrationsMenuCloseOnOutsideClick}
@@ -1556,7 +1623,9 @@
 																<Cog6 className="size-4.5" strokeWidth="1.5" />
 															</div>
 															{#if (selectedToolIds ?? []).length > 0}
-																<span class="absolute -right-1 -top-1 min-w-4 h-4 px-1 rounded-full bg-sky-500 text-white text-[10px] leading-4 text-center">
+																<span
+																	class="absolute -right-1 -top-1 min-w-4 h-4 px-1 rounded-full bg-sky-500 text-white text-[10px] leading-4 text-center"
+																>
 																	{selectedToolIds.length}
 																</span>
 															{/if}
@@ -1564,274 +1633,477 @@
 													</ToolsMenu>
 												{/if}
 
-												<div class="relative" bind:this={reasoningEffortPopoverElement}>
-													<Tooltip content={$i18n.t('Reasoning Effort')} placement="top">
+												{#if visibleAdaptiveActionIds.includes('reasoning')}
+													<div class="relative" bind:this={reasoningEffortPopoverElement}>
+														<Tooltip content={$i18n.t('Reasoning Effort')} placement="top">
+															<button
+																bind:this={reasoningEffortButtonElement}
+																type="button"
+																id="reasoning-effort-button"
+																aria-label={$i18n.t('Reasoning Effort')}
+																aria-expanded={showReasoningEffortPopover}
+																aria-controls="reasoning-effort-popover"
+																on:click={toggleReasoningEffortPopover}
+																on:keydown={handleReasoningEffortButtonKeydown}
+																class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden border transition-colors {showReasoningEffortPopover
+																	? 'text-sky-600 dark:text-sky-300 bg-sky-50 dark:bg-sky-900/20 border-sky-200 dark:border-sky-700'
+																	: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 border-transparent'}"
+															>
+																<LightBulb className="size-4.5" strokeWidth="1.75" />
+															</button>
+														</Tooltip>
+
+														{#if showReasoningEffortPopover}
+															<div
+																id="reasoning-effort-popover"
+																class="absolute bottom-11 -left-10 z-40 w-64 rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 dark:text-white shadow-lg px-3 py-2"
+															>
+																<div class="relative pt-1 pb-0.5">
+																	{#if isReasoningEffortSliding}
+																		{@const bubbleIndex =
+																			reasoningEffortHoverIndex ??
+																			getReasoningEffortIndex(params?.reasoning_effort)}
+																		<div
+																			class="absolute -top-1 px-2 py-0.5 rounded-md bg-gray-800 text-white dark:bg-gray-200 dark:text-gray-900 text-[10px] leading-4 pointer-events-none whitespace-nowrap"
+																			style={getReasoningEffortBubbleStyle(bubbleIndex)}
+																		>
+																			{REASONING_EFFORT_LEVELS[bubbleIndex]}
+																		</div>
+																	{/if}
+
+																	<div class="relative h-7 flex items-center">
+																		<div
+																			class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-4 pointer-events-none"
+																		>
+																			{#each REASONING_EFFORT_LEVELS as _, idx}
+																				{#if idx > 0 && idx <= getReasoningEffortIndex(params?.reasoning_effort)}
+																					<div
+																						class="absolute h-[2px] -translate-y-1/2"
+																						style="left: {((idx - 1) /
+																							(REASONING_EFFORT_LEVELS.length - 1)) *
+																							100}%; width: {(1 /
+																							(REASONING_EFFORT_LEVELS.length - 1)) *
+																							100}%; top: 50%; background-color: #d8f1ff;"
+																					/>
+																				{/if}
+																			{/each}
+																		</div>
+
+																		<input
+																			id="reasoning-effort-inline-range"
+																			type="range"
+																			min="0"
+																			max={REASONING_EFFORT_LEVELS.length - 1}
+																			step="1"
+																			value={getReasoningEffortIndex(params?.reasoning_effort)}
+																			on:pointerdown={() => {
+																				isReasoningEffortSliding = true;
+																				reasoningEffortHoverIndex = getReasoningEffortIndex(
+																					params?.reasoning_effort
+																				);
+																			}}
+																			on:input={(event) => {
+																				const index = Number(
+																					(event.currentTarget as HTMLInputElement).value
+																				);
+																				setReasoningEffortByIndex(index);
+																				if (isReasoningEffortSliding) {
+																					reasoningEffortHoverIndex = index;
+																				}
+																			}}
+																			class="relative z-20 w-full h-4 bg-transparent cursor-pointer opacity-0"
+																		/>
+
+																		<div
+																			class="absolute inset-x-0 flex justify-between pointer-events-none"
+																		>
+																			{#each REASONING_EFFORT_LEVELS as level, idx}
+																				<button
+																					type="button"
+																					class="size-3 rounded-full border transition-colors pointer-events-auto"
+																					style={idx <=
+																					getReasoningEffortIndex(params?.reasoning_effort)
+																						? 'background-color: #d8f1ff; border-color: #d8f1ff;'
+																						: 'background-color: transparent; border-color: #a1a1a173;'}
+																					aria-label={`Set reasoning effort to ${level}`}
+																					on:click={() => {
+																						setReasoningEffortByIndex(idx);
+																						reasoningEffortHoverIndex = idx;
+																					}}
+																					on:mouseenter={() => {
+																						if (isReasoningEffortSliding) {
+																							reasoningEffortHoverIndex = idx;
+																						}
+																					}}
+																				/>
+																			{/each}
+																		</div>
+																	</div>
+																</div>
+															</div>
+														{/if}
+													</div>
+												{/if}
+
+												{#if visibleAdaptiveActionIds.includes('rag')}
+													<Tooltip content={$i18n.t('Disable RAG')} placement="top">
 														<button
-															bind:this={reasoningEffortButtonElement}
 															type="button"
-															id="reasoning-effort-button"
-															aria-label={$i18n.t('Reasoning Effort')}
-															aria-expanded={showReasoningEffortPopover}
-															aria-controls="reasoning-effort-popover"
-															on:click={toggleReasoningEffortPopover}
-															on:keydown={handleReasoningEffortButtonKeydown}
-															class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden border transition-colors {showReasoningEffortPopover
-																? 'text-sky-600 dark:text-sky-300 bg-sky-50 dark:bg-sky-900/20 border-sky-200 dark:border-sky-700'
+															aria-label={disableRagEnabled
+																? $i18n.t('Enable RAG')
+																: $i18n.t('Disable RAG')}
+															aria-pressed={disableRagEnabled}
+															on:click={() => {
+																disableRagEnabled = !disableRagEnabled;
+															}}
+															class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden border transition-colors {disableRagEnabled
+																? 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30 border-red-200 dark:border-red-800'
 																: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 border-transparent'}"
 														>
-															<LightBulb className="size-4.5" strokeWidth="1.75" />
-														</button>
-													</Tooltip>
-
-													{#if showReasoningEffortPopover}
-														<div
-															id="reasoning-effort-popover"
-															class="absolute bottom-11 -left-10 z-40 w-64 rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 dark:text-white shadow-lg px-3 py-2"
-														>
-															<div class="relative pt-1 pb-0.5">
-																{#if isReasoningEffortSliding}
-																	{@const bubbleIndex =
-																		reasoningEffortHoverIndex ??
-																		getReasoningEffortIndex(params?.reasoning_effort)}
-																	<div
-																		class="absolute -top-1 px-2 py-0.5 rounded-md bg-gray-800 text-white dark:bg-gray-200 dark:text-gray-900 text-[10px] leading-4 pointer-events-none whitespace-nowrap"
-																		style={getReasoningEffortBubbleStyle(bubbleIndex)}
-																	>
-																		{REASONING_EFFORT_LEVELS[bubbleIndex]}
-																	</div>
-																{/if}
-
-																<div class="relative h-7 flex items-center">
-																	<div class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-4 pointer-events-none">
-																		{#each REASONING_EFFORT_LEVELS as _, idx}
-																			{#if idx > 0 && idx <= getReasoningEffortIndex(params?.reasoning_effort)}
-																				<div
-																					class="absolute h-[2px] -translate-y-1/2"
-																					style="left: {((idx - 1) / (REASONING_EFFORT_LEVELS.length - 1)) * 100}%; width: {(
-																						1 / (REASONING_EFFORT_LEVELS.length - 1)
-																					) * 100}%; top: 50%; background-color: #d8f1ff;"
-																				/>
-																			{/if}
-																		{/each}
-																	</div>
-
-																	<input
-																		id="reasoning-effort-inline-range"
-																		type="range"
-																		min="0"
-																		max={REASONING_EFFORT_LEVELS.length - 1}
-																		step="1"
-																		value={getReasoningEffortIndex(params?.reasoning_effort)}
-																		on:pointerdown={() => {
-																			isReasoningEffortSliding = true;
-																			reasoningEffortHoverIndex = getReasoningEffortIndex(
-																				params?.reasoning_effort
-																			);
-																		}}
-																		on:input={(event) => {
-																			const index = Number(
-																				(event.currentTarget as HTMLInputElement).value
-																			);
-																			setReasoningEffortByIndex(index);
-																			if (isReasoningEffortSliding) {
-																				reasoningEffortHoverIndex = index;
-																			}
-																		}}
-																		class="relative z-20 w-full h-4 bg-transparent cursor-pointer opacity-0"
-																	/>
-
-																	<div class="absolute inset-x-0 flex justify-between pointer-events-none">
-																		{#each REASONING_EFFORT_LEVELS as level, idx}
-																			<button
-																				type="button"
-																				class="size-3 rounded-full border transition-colors pointer-events-auto"
-																				style={idx <= getReasoningEffortIndex(params?.reasoning_effort)
-																					? 'background-color: #d8f1ff; border-color: #d8f1ff;'
-																					: 'background-color: transparent; border-color: #a1a1a173;'}
-																				aria-label={`Set reasoning effort to ${level}`}
-																				on:click={() => {
-																					setReasoningEffortByIndex(idx);
-																					reasoningEffortHoverIndex = idx;
-																				}}
-																				on:mouseenter={() => {
-																					if (isReasoningEffortSliding) {
-																						reasoningEffortHoverIndex = idx;
-																					}
-																				}}
-																			/>
-																		{/each}
-																	</div>
-																</div>
-															</div>
-														</div>
-													{/if}
-												</div>
-
-												<Tooltip content={$i18n.t('Disable RAG')} placement="top">
-													<button
-														type="button"
-														aria-label={disableRagEnabled ? $i18n.t('Enable RAG') : $i18n.t('Disable RAG')}
-														aria-pressed={disableRagEnabled}
-														on:click={() => {
-															disableRagEnabled = !disableRagEnabled;
-														}}
-														class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden border transition-colors {disableRagEnabled
-															? 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30 border-red-200 dark:border-red-800'
-															: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 border-transparent'}"
-													>
-														<BookOpen className="size-4.5" strokeWidth="1.75" />
-													</button>
-												</Tooltip>
-
-												<Tooltip
-													content={contextTruncation?.enabled
-														? $i18n.t('Restore Context')
-														: $i18n.t('Clear Context')}
-													placement="top"
-												>
-													<button
-														type="button"
-														aria-label={contextTruncation?.enabled
-															? $i18n.t('Restore Context')
-															: $i18n.t('Clear Context')}
-														aria-pressed={contextTruncation?.enabled}
-														disabled={!contextTruncation?.enabled && !history?.currentId}
-														on:click={() => {
-															onContextTruncationToggle();
-														}}
-														class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden border transition-colors disabled:opacity-50 disabled:cursor-not-allowed {contextTruncation?.enabled
-															? 'text-amber-600 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 border-amber-200 dark:border-amber-800'
-															: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 border-transparent'}"
-													>
-														<ScissorsDashed className="size-4.5" strokeWidth="1.75" />
-													</button>
-												</Tooltip>
-											</div>
-										{/if}
-
-										{#if selectedModelIds.length === 1 && $models.find((m) => m.id === selectedModelIds[0])?.has_user_valves}
-											<div class="ml-1 flex gap-1.5">
-												<Tooltip content={$i18n.t('Valves')} placement="top">
-													<button
-														type="button"
-														id="model-valves-button"
-														class="bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden"
-														on:click={() => {
-															selectedValvesType = 'function';
-															selectedValvesItemId = selectedModelIds[0]?.split('.')[0];
-															showValvesModal = true;
-														}}
-													>
-														<Knobs className="size-4" strokeWidth="1.5" />
-													</button>
-												</Tooltip>
-											</div>
-										{/if}
-
-										<div class="ml-1 flex gap-1.5">
-											{#each selectedFilterIds as filterId}
-												{@const filter = toggleFilters.find((f) => f.id === filterId)}
-												{#if filter}
-													<Tooltip content={filter?.name} placement="top">
-														<button
-															on:click|preventDefault={() => {
-																selectedFilterIds = selectedFilterIds.filter((id) => id !== filterId);
-															}}
-															type="button"
-															class="group p-[7px] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {selectedFilterIds.includes(
-																filterId
-															)
-																? 'text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-600/10 border border-sky-200/40 dark:border-sky-500/20'
-																: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '} capitalize"
-														>
-															{#if filter?.icon}
-																<div class="size-4 items-center flex justify-center">
-																	<img
-																		src={filter.icon}
-																		class="size-3.5 {filter.icon.includes('svg')
-																			? 'dark:invert-[80%]'
-																			: ''}"
-																		style="fill: currentColor;"
-																		alt={filter.name}
-																	/>
-																</div>
-															{:else}
-																<Sparkles className="size-4" strokeWidth="1.75" />
-															{/if}
-															<div class="hidden group-hover:block">
-																<XMark className="size-4" strokeWidth="1.75" />
-															</div>
+															<BookOpen className="size-4.5" strokeWidth="1.75" />
 														</button>
 													</Tooltip>
 												{/if}
-											{/each}
 
-											{#if webSearchEnabled}
-												<Tooltip content={$i18n.t('Web Search')} placement="top">
-													<button
-														on:click|preventDefault={() => (webSearchEnabled = !webSearchEnabled)}
-														type="button"
-														class="group p-[7px] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {webSearchEnabled ||
-														($settings?.webSearch ?? false) === 'always'
-															? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-600/10 border border-sky-200/40 dark:border-sky-500/20'
-															: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '}"
+												{#if visibleAdaptiveActionIds.includes('context')}
+													<Tooltip
+														content={contextTruncation?.enabled
+															? $i18n.t('Restore Context')
+															: $i18n.t('Clear Context')}
+														placement="top"
 													>
-														<GlobeAlt className="size-4" strokeWidth="1.75" />
+														<button
+															type="button"
+															aria-label={contextTruncation?.enabled
+																? $i18n.t('Restore Context')
+																: $i18n.t('Clear Context')}
+															aria-pressed={contextTruncation?.enabled}
+															disabled={!contextTruncation?.enabled && !history?.currentId}
+															on:click={() => {
+																onContextTruncationToggle();
+															}}
+															class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden border transition-colors disabled:opacity-50 disabled:cursor-not-allowed {contextTruncation?.enabled
+																? 'text-amber-600 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 border-amber-200 dark:border-amber-800'
+																: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 border-transparent'}"
+														>
+															<ScissorsDashed className="size-4.5" strokeWidth="1.75" />
+														</button>
+													</Tooltip>
+												{/if}
+
+												{#if overflowAdaptiveActionIds.length > 0}
+													<Dropdown
+														bind:show={showAdaptiveActionsMore}
+														on:change={(e) => {
+															if (e.detail === false) {
+																document.getElementById('chat-input')?.focus();
+															}
+														}}
+													>
+														<Tooltip content={$i18n.t('More')} placement="top">
+															<div
+																id="adaptive-actions-more-button"
+																class="bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden"
+															>
+																<EllipsisHorizontal className="size-5" strokeWidth="1.75" />
+																<span class="sr-only">{$i18n.t('More')}</span>
+															</div>
+														</Tooltip>
+
+														<div slot="content">
+															<DropdownMenu.Content
+																class="w-64 rounded-2xl px-1 py-1 border border-gray-100 dark:border-gray-800 z-50 bg-white dark:bg-gray-850 dark:text-white shadow-lg max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin"
+																sideOffset={4}
+																alignOffset={-6}
+																side="bottom"
+																align="end"
+															>
+																{#if overflowAdaptiveActionIds.includes('integrations')}
+																	<IntegrationsMenu
+																		{toggleFilters}
+																		{showWebSearchButton}
+																		{showImageGenerationButton}
+																		{showCodeInterpreterButton}
+																		bind:selectedFilterIds
+																		bind:webSearchEnabled
+																		bind:imageGenerationEnabled
+																		bind:codeInterpreterEnabled
+																		closeOnOutsideClick={integrationsMenuCloseOnOutsideClick}
+																		onShowValves={(e) => {
+																			const { type, id } = e;
+																			selectedValvesType = type;
+																			selectedValvesItemId = id;
+																			showValvesModal = true;
+																			integrationsMenuCloseOnOutsideClick = false;
+																		}}
+																		onClose={async () => {
+																			showAdaptiveActionsMore = false;
+																			await tick();
+
+																			const chatInput = document.getElementById('chat-input');
+																			chatInput?.focus();
+																		}}
+																	>
+																		<div
+																			class="flex w-full gap-2 items-center px-3 py-1.5 text-sm cursor-pointer rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800/50"
+																		>
+																			<Component className="size-4.5" strokeWidth="1.5" />
+																			<span class="truncate">{$i18n.t('Integrations')}</span>
+																		</div>
+																	</IntegrationsMenu>
+																{/if}
+
+																{#if overflowAdaptiveActionIds.includes('tools')}
+																	<ToolsMenu
+																		bind:selectedToolIds
+																		closeOnOutsideClick={integrationsMenuCloseOnOutsideClick}
+																		onShowValves={(e) => {
+																			const { type, id } = e;
+																			selectedValvesType = type;
+																			selectedValvesItemId = id;
+																			showValvesModal = true;
+																			integrationsMenuCloseOnOutsideClick = false;
+																		}}
+																		onClose={async () => {
+																			showAdaptiveActionsMore = false;
+																			await tick();
+
+																			const chatInput = document.getElementById('chat-input');
+																			chatInput?.focus();
+																		}}
+																	>
+																		<div
+																			class="flex w-full justify-between gap-2 items-center px-3 py-1.5 text-sm cursor-pointer rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800/50"
+																		>
+																			<span class="flex min-w-0 gap-2 items-center">
+																				<Cog6 className="size-4.5 shrink-0" strokeWidth="1.5" />
+																				<span class="truncate">{$i18n.t('Tools')}</span>
+																			</span>
+																			{#if (selectedToolIds ?? []).length > 0}
+																				<span
+																					class="min-w-4 h-4 px-1 rounded-full bg-sky-500 text-white text-[10px] leading-4 text-center"
+																				>
+																					{selectedToolIds.length}
+																				</span>
+																			{/if}
+																		</div>
+																	</ToolsMenu>
+																{/if}
+
+																{#if overflowAdaptiveActionIds.includes('reasoning')}
+																	<div class="px-3 py-2 text-sm">
+																		<div class="mb-2 flex items-center justify-between gap-2">
+																			<div class="flex min-w-0 items-center gap-2">
+																				<LightBulb
+																					className="size-4.5 shrink-0"
+																					strokeWidth="1.75"
+																				/>
+																				<span class="truncate">{$i18n.t('Reasoning Effort')}</span>
+																			</div>
+																			<span
+																				class="shrink-0 text-xs text-gray-500 dark:text-gray-400"
+																			>
+																				{REASONING_EFFORT_LEVELS[
+																					getReasoningEffortIndex(params?.reasoning_effort)
+																				]}
+																			</span>
+																		</div>
+
+																		<input
+																			type="range"
+																			min="0"
+																			max={REASONING_EFFORT_LEVELS.length - 1}
+																			step="1"
+																			value={getReasoningEffortIndex(params?.reasoning_effort)}
+																			on:input={(event) => {
+																				const index = Number(
+																					(event.currentTarget as HTMLInputElement).value
+																				);
+																				setReasoningEffortByIndex(index);
+																			}}
+																			class="w-full accent-sky-500"
+																		/>
+																	</div>
+																{/if}
+
+																{#if overflowAdaptiveActionIds.includes('rag')}
+																	<button
+																		type="button"
+																		aria-label={disableRagEnabled
+																			? $i18n.t('Enable RAG')
+																			: $i18n.t('Disable RAG')}
+																		aria-pressed={disableRagEnabled}
+																		on:click={() => {
+																			disableRagEnabled = !disableRagEnabled;
+																			showAdaptiveActionsMore = false;
+																		}}
+																		class="flex w-full gap-2 items-center px-3 py-1.5 text-sm cursor-pointer rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800/50 {disableRagEnabled
+																			? 'text-red-600 dark:text-red-400'
+																			: ''}"
+																	>
+																		<BookOpen className="size-4.5" strokeWidth="1.75" />
+																		<span class="truncate">
+																			{disableRagEnabled
+																				? $i18n.t('Enable RAG')
+																				: $i18n.t('Disable RAG')}
+																		</span>
+																	</button>
+																{/if}
+
+																{#if overflowAdaptiveActionIds.includes('context')}
+																	<button
+																		type="button"
+																		aria-label={contextTruncation?.enabled
+																			? $i18n.t('Restore Context')
+																			: $i18n.t('Clear Context')}
+																		aria-pressed={contextTruncation?.enabled}
+																		disabled={!contextTruncation?.enabled && !history?.currentId}
+																		on:click={() => {
+																			onContextTruncationToggle();
+																			showAdaptiveActionsMore = false;
+																		}}
+																		class="flex w-full gap-2 items-center px-3 py-1.5 text-sm cursor-pointer rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800/50 disabled:opacity-50 disabled:cursor-not-allowed {contextTruncation?.enabled
+																			? 'text-amber-600 dark:text-amber-300'
+																			: ''}"
+																	>
+																		<ScissorsDashed className="size-4.5" strokeWidth="1.75" />
+																		<span class="truncate">
+																			{contextTruncation?.enabled
+																				? $i18n.t('Restore Context')
+																				: $i18n.t('Clear Context')}
+																		</span>
+																	</button>
+																{/if}
+															</DropdownMenu.Content>
+														</div>
+													</Dropdown>
+												{/if}
+											</div>
+										</div>
+									{/if}
+
+									{#if selectedModelIds.length === 1 && $models.find((m) => m.id === selectedModelIds[0])?.has_user_valves}
+										<div class="ml-1 flex gap-1.5">
+											<Tooltip content={$i18n.t('Valves')} placement="top">
+												<button
+													type="button"
+													id="model-valves-button"
+													class="bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden"
+													on:click={() => {
+														selectedValvesType = 'function';
+														selectedValvesItemId = selectedModelIds[0]?.split('.')[0];
+														showValvesModal = true;
+													}}
+												>
+													<Knobs className="size-4" strokeWidth="1.5" />
+												</button>
+											</Tooltip>
+										</div>
+									{/if}
+
+									<div class="ml-1 flex gap-1.5">
+										{#each selectedFilterIds as filterId}
+											{@const filter = toggleFilters.find((f) => f.id === filterId)}
+											{#if filter}
+												<Tooltip content={filter?.name} placement="top">
+													<button
+														on:click|preventDefault={() => {
+															selectedFilterIds = selectedFilterIds.filter((id) => id !== filterId);
+														}}
+														type="button"
+														class="group p-[7px] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {selectedFilterIds.includes(
+															filterId
+														)
+															? 'text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-600/10 border border-sky-200/40 dark:border-sky-500/20'
+															: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '} capitalize"
+													>
+														{#if filter?.icon}
+															<div class="size-4 items-center flex justify-center">
+																<img
+																	src={filter.icon}
+																	class="size-3.5 {filter.icon.includes('svg')
+																		? 'dark:invert-[80%]'
+																		: ''}"
+																	style="fill: currentColor;"
+																	alt={filter.name}
+																/>
+															</div>
+														{:else}
+															<Sparkles className="size-4" strokeWidth="1.75" />
+														{/if}
 														<div class="hidden group-hover:block">
 															<XMark className="size-4" strokeWidth="1.75" />
 														</div>
 													</button>
 												</Tooltip>
 											{/if}
+										{/each}
 
-											{#if imageGenerationEnabled}
-												<Tooltip content={$i18n.t('Image')} placement="top">
-													<button
-														on:click|preventDefault={() =>
+										{#if webSearchEnabled}
+											<Tooltip content={$i18n.t('Web Search')} placement="top">
+												<button
+													on:click|preventDefault={() => (webSearchEnabled = !webSearchEnabled)}
+													type="button"
+													class="group p-[7px] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {webSearchEnabled ||
+													($settings?.webSearch ?? false) === 'always'
+														? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-600/10 border border-sky-200/40 dark:border-sky-500/20'
+														: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '}"
+												>
+													<GlobeAlt className="size-4" strokeWidth="1.75" />
+													<div class="hidden group-hover:block">
+														<XMark className="size-4" strokeWidth="1.75" />
+													</div>
+												</button>
+											</Tooltip>
+										{/if}
+
+										{#if imageGenerationEnabled}
+											<Tooltip content={$i18n.t('Image')} placement="top">
+												<button
+													on:click|preventDefault={() =>
 														(imageGenerationEnabled = !imageGenerationEnabled)}
-														type="button"
-														class="group p-[7px] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {imageGenerationEnabled
-															? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-700/10 border border-sky-200/40 dark:border-sky-500/20'
-															: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '}"
-													>
-														<Photo className="size-4" strokeWidth="1.75" />
-														<div class="hidden group-hover:block">
-															<XMark className="size-4" strokeWidth="1.75" />
-														</div>
-													</button>
-												</Tooltip>
-											{/if}
+													type="button"
+													class="group p-[7px] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {imageGenerationEnabled
+														? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-700/10 border border-sky-200/40 dark:border-sky-500/20'
+														: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '}"
+												>
+													<Photo className="size-4" strokeWidth="1.75" />
+													<div class="hidden group-hover:block">
+														<XMark className="size-4" strokeWidth="1.75" />
+													</div>
+												</button>
+											</Tooltip>
+										{/if}
 
-											{#if codeInterpreterEnabled}
-												<Tooltip content={$i18n.t('Code Interpreter')} placement="top">
-													<button
-														aria-label={codeInterpreterEnabled
-															? $i18n.t('Disable Code Interpreter')
-															: $i18n.t('Enable Code Interpreter')}
-														aria-pressed={codeInterpreterEnabled}
-														on:click|preventDefault={() =>
+										{#if codeInterpreterEnabled}
+											<Tooltip content={$i18n.t('Code Interpreter')} placement="top">
+												<button
+													aria-label={codeInterpreterEnabled
+														? $i18n.t('Disable Code Interpreter')
+														: $i18n.t('Enable Code Interpreter')}
+													aria-pressed={codeInterpreterEnabled}
+													on:click|preventDefault={() =>
 														(codeInterpreterEnabled = !codeInterpreterEnabled)}
-														type="button"
-														class="group p-[7px] flex gap-1.5 items-center text-sm transition-colors duration-300 max-w-full overflow-hidden {codeInterpreterEnabled
-															? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-700/10 border border-sky-200/40 dark:border-sky-500/20'
-															: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '} {($settings?.highContrastMode ??
+													type="button"
+													class="group p-[7px] flex gap-1.5 items-center text-sm transition-colors duration-300 max-w-full overflow-hidden {codeInterpreterEnabled
+														? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-700/10 border border-sky-200/40 dark:border-sky-500/20'
+														: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '} {($settings?.highContrastMode ??
 													false)
 														? 'm-1'
 														: 'focus:outline-hidden rounded-full'}"
-													>
-														<Terminal className="size-3.5" strokeWidth="2" />
+												>
+													<Terminal className="size-3.5" strokeWidth="2" />
 
-														<div class="hidden group-hover:block">
-															<XMark className="size-4" strokeWidth="1.75" />
-														</div>
-													</button>
-												</Tooltip>
-											{/if}
-										</div>
+													<div class="hidden group-hover:block">
+														<XMark className="size-4" strokeWidth="1.75" />
+													</div>
+												</button>
+											</Tooltip>
+										{/if}
+									</div>
+								</div>
 
-						</div>
-
-						<div class="self-end flex space-x-1 mr-1 shrink-0 gap-[0.5px]">
+								<div class="self-end flex space-x-1 mr-1 shrink-0 gap-[0.5px]">
 									{#if (taskIds && taskIds.length > 0) || (history.currentId && history.messages[history.currentId]?.done != true) || generating}
 										<div class=" flex items-center">
 											<Tooltip content={$i18n.t('Stop')}>
