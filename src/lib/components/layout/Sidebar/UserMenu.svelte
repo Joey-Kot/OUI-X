@@ -16,7 +16,6 @@
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import ArchiveBox from '$lib/components/icons/ArchiveBox.svelte';
 	import QuestionMarkCircle from '$lib/components/icons/QuestionMarkCircle.svelte';
-	import Map from '$lib/components/icons/Map.svelte';
 	import Keyboard from '$lib/components/icons/Keyboard.svelte';
 	import ShortcutsModal from '$lib/components/chat/ShortcutsModal.svelte';
 	import Settings from '$lib/components/icons/Settings.svelte';
@@ -299,20 +298,6 @@
 						<div class="flex items-center">{$i18n.t('Documentation')}</div>
 					</DropdownMenu.Item>
 
-					<!-- Releases -->
-					<DropdownMenu.Item
-						as="a"
-						target="_blank"
-						class="flex gap-3 items-center py-1.5 px-3 text-sm select-none w-full cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl transition"
-						id="chat-share-button"
-						on:click={() => {
-							show = false;
-						}}
-						href="https://github.com/open-webui/open-webui/releases"
-					>
-						<Map className="size-5" />
-						<div class="flex items-center">{$i18n.t('Releases')}</div>
-					</DropdownMenu.Item>
 				{/if}
 
 				<DropdownMenu.Item

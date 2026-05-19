@@ -2766,7 +2766,33 @@
 			return;
 		}
 
+		await tick();
+		if (contextTruncation.enabled && autoScroll) {
+			scrollToBottom();
+		}
+
 		if (!$temporaryChatEnabled && $chatId) {
+			await saveChatHandler($chatId, history);
+		}
+	};
+
+	const updateContextTruncation = async (
+		nextContextTruncation: ContextTruncationState,
+		options: { persist?: boolean; scroll?: boolean } = {}
+	) => {
+		const nextState = normalizeContextTruncation(nextContextTruncation, history);
+		if (!nextState.enabled) {
+			return;
+		}
+
+		contextTruncation = nextState;
+
+		await tick();
+		if ((options.scroll ?? false) && autoScroll) {
+			scrollToBottom();
+		}
+
+		if ((options.persist ?? true) && !$temporaryChatEnabled && $chatId) {
 			await saveChatHandler($chatId, history);
 		}
 	};
@@ -3003,6 +3029,7 @@
 										{chatActionHandler}
 										{addMessages}
 										{contextTruncation}
+										onContextTruncationChange={updateContextTruncation}
 										topPadding={true}
 										bottomPadding={files.length > 0}
 										{onSelect}

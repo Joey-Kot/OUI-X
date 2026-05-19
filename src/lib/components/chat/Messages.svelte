@@ -15,7 +15,10 @@
 	import { toast } from 'svelte-sonner';
 	import { getChatList, updateChatById } from '$lib/apis/chats';
 	import { copyToClipboard, extractCurlyBraceWords } from '$lib/utils';
-	import { createDisabledContextTruncation } from '$lib/utils/context-truncation';
+	import {
+		createDisabledContextTruncation,
+		shouldShowContextTruncationDividerAfter
+	} from '$lib/utils/context-truncation';
 
 	import Message from './Messages/Message.svelte';
 	import Spinner from '../common/Spinner.svelte';
@@ -49,6 +52,7 @@
 	export let submitMessage: Function = () => {};
 	export let addMessages: Function = () => {};
 	export let contextTruncation = createDisabledContextTruncation();
+	export let onContextTruncationChange: Function = () => {};
 
 	export let readOnly = false;
 	export let editCodeBlock = true;
@@ -77,6 +81,9 @@
 	let topSpacerHeight = 0;
 	let bottomSpacerHeight = 0;
 	let isAdjustingScrollTop = false;
+	let contextDividerDragging = false;
+	let contextDividerDragPointerId: number | null = null;
+	let contextDividerDragAbortController: AbortController | null = null;
 
 	const updateViewportMetrics = () => {
 		const element = containerElement ?? document.getElementById('messages-container');
@@ -230,6 +237,7 @@
 			if (animationFrameId) {
 				window.cancelAnimationFrame(animationFrameId);
 			}
+			contextDividerDragAbortController?.abort();
 			containerElement?.removeEventListener('scroll', handleScroll);
 			window.removeEventListener('resize', handleResize);
 		};
@@ -639,10 +647,135 @@
 		}
 	};
 
-	const shouldShowContextDividerAfter = (messageId: string, messageIdx: number) =>
-		contextTruncation?.enabled &&
-		contextTruncation?.cutoffMessageId === messageId &&
-		Boolean(messages[messageIdx + 1]);
+	const getContextDividerTargetMessageId = (clientY: number) => {
+		const element = containerElement ?? document.getElementById('messages-container');
+		if (!element) {
+			return null;
+		}
+
+		const messageElements = Array.from(
+			element.querySelectorAll<HTMLElement>('[data-message-id]')
+		).filter((node) => node.dataset.messageId);
+
+		if (messageElements.length === 0) {
+			return null;
+		}
+
+		let previousMessageId: string | null = null;
+		for (const messageElement of messageElements) {
+			const messageId = messageElement.dataset.messageId ?? null;
+			const rect = messageElement.getBoundingClientRect();
+
+			if (clientY < rect.top) {
+				return previousMessageId ?? messageId;
+			}
+
+			if (clientY <= rect.bottom) {
+				return messageId;
+			}
+
+			previousMessageId = messageId;
+		}
+
+		return previousMessageId;
+	};
+
+	const scrollContextDividerDragIntoView = (clientY: number) => {
+		const element = containerElement ?? document.getElementById('messages-container');
+		if (!element) {
+			return;
+		}
+
+		const rect = element.getBoundingClientRect();
+		const edgeSize = Math.min(96, rect.height / 4);
+		let delta = 0;
+
+		if (clientY < rect.top + edgeSize) {
+			delta = -Math.round(((rect.top + edgeSize - clientY) / edgeSize) * 24);
+		} else if (clientY > rect.bottom - edgeSize) {
+			delta = Math.round(((clientY - (rect.bottom - edgeSize)) / edgeSize) * 24);
+		}
+
+		if (delta !== 0) {
+			element.scrollTop += delta;
+			updateViewportMetrics();
+		}
+	};
+
+	const moveContextDividerToPointer = (clientY: number, persist = false) => {
+		scrollContextDividerDragIntoView(clientY);
+
+		const cutoffMessageId = getContextDividerTargetMessageId(clientY);
+		if (!cutoffMessageId || (!persist && cutoffMessageId === contextTruncation?.cutoffMessageId)) {
+			return;
+		}
+
+		onContextTruncationChange(
+			{
+				enabled: true,
+				cutoffMessageId,
+				updatedAt: Date.now()
+			},
+			{ persist }
+		);
+	};
+
+	const endContextDividerDrag = (event: PointerEvent) => {
+		if (!contextDividerDragging) {
+			return;
+		}
+
+		moveContextDividerToPointer(event.clientY, true);
+		contextDividerDragging = false;
+		contextDividerDragPointerId = null;
+		contextDividerDragAbortController?.abort();
+		contextDividerDragAbortController = null;
+	};
+
+	const startContextDividerDrag = (event: PointerEvent) => {
+		if (!contextTruncation?.enabled || !contextTruncation.cutoffMessageId) {
+			return;
+		}
+
+		event.preventDefault();
+		contextDividerDragging = true;
+		contextDividerDragPointerId = event.pointerId;
+		contextDividerDragAbortController?.abort();
+		contextDividerDragAbortController = new AbortController();
+
+		const signal = contextDividerDragAbortController.signal;
+		window.addEventListener(
+			'pointermove',
+			(pointerEvent) => {
+				if (contextDividerDragPointerId !== pointerEvent.pointerId) {
+					return;
+				}
+				moveContextDividerToPointer(pointerEvent.clientY);
+			},
+			{ signal }
+		);
+		window.addEventListener(
+			'pointerup',
+			(pointerEvent) => {
+				if (contextDividerDragPointerId !== pointerEvent.pointerId) {
+					return;
+				}
+				endContextDividerDrag(pointerEvent);
+			},
+			{ signal }
+		);
+		window.addEventListener(
+			'pointercancel',
+			(pointerEvent) => {
+				if (contextDividerDragPointerId !== pointerEvent.pointerId) {
+					return;
+				}
+				endContextDividerDrag(pointerEvent);
+			},
+			{ signal }
+		);
+	};
+
 </script>
 
 <div class={className}>
@@ -665,7 +798,11 @@
 						{/if}
 
 						{#each renderedMessages as message, virtualIdx (message.id)}
-							<div use:observeMessageHeight={message.id}>
+							<div
+								use:observeMessageHeight={message.id}
+								data-message-id={message.id}
+								data-message-idx={visibleStartIdx + virtualIdx}
+							>
 								<Message
 									{chatId}
 									bind:history
@@ -692,24 +829,39 @@
 									{editCodeBlock}
 									{topPadding}
 								/>
-								{#if shouldShowContextDividerAfter(message.id, visibleStartIdx + virtualIdx)}
-									<div class="w-full py-2">
+								{#if shouldShowContextTruncationDividerAfter(message, contextTruncation)}
+									<button
+										type="button"
+										class="w-full appearance-none border-0 bg-transparent px-0 py-2 select-none {contextDividerDragging
+											? 'cursor-grabbing'
+											: 'cursor-grab'}"
+										aria-label={$i18n.t('Context has been cleared')}
+										on:pointerdown={startContextDividerDrag}
+									>
 										<div
-											class="flex items-center gap-3 text-xs text-gray-500/75 dark:text-gray-400/70"
+											class="flex items-center gap-3 text-xs transition-colors {contextDividerDragging
+												? 'text-amber-600 dark:text-amber-300'
+												: 'text-gray-500/75 dark:text-gray-400/70'}"
 										>
 											<div
-												class="h-px flex-1 border-t border-dashed border-gray-300/60 dark:border-gray-600/50"
+												class="h-px flex-1 border-t border-dashed transition-colors {contextDividerDragging
+													? 'border-amber-300 dark:border-amber-600'
+													: 'border-gray-300/60 dark:border-gray-600/50'}"
 											/>
 											<span
-												class="shrink-0 rounded-full bg-white/70 dark:bg-gray-900/70 px-2 py-0.5 backdrop-blur-xs"
+												class="shrink-0 rounded-full px-2 py-0.5 backdrop-blur-xs transition-colors {contextDividerDragging
+													? 'bg-amber-50 dark:bg-amber-900/30'
+													: 'bg-white/70 dark:bg-gray-900/70'}"
 											>
 												{$i18n.t('Context has been cleared')}
 											</span>
 											<div
-												class="h-px flex-1 border-t border-dashed border-gray-300/60 dark:border-gray-600/50"
+												class="h-px flex-1 border-t border-dashed transition-colors {contextDividerDragging
+													? 'border-amber-300 dark:border-amber-600'
+													: 'border-gray-300/60 dark:border-gray-600/50'}"
 											/>
 										</div>
-									</div>
+									</button>
 								{/if}
 							</div>
 						{/each}

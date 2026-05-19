@@ -63,6 +63,16 @@ export const isContextTruncationInMessages = <T extends MessageLike>(
 	contextTruncation: ContextTruncationState | null | undefined
 ) => getContextTruncationIndex(messages, contextTruncation) !== -1;
 
+export const shouldShowContextTruncationDividerAfter = <T extends MessageLike>(
+	message: T | null | undefined,
+	contextTruncation: ContextTruncationState | null | undefined
+) =>
+	Boolean(
+		contextTruncation?.enabled &&
+			contextTruncation.cutoffMessageId &&
+			message?.id === contextTruncation.cutoffMessageId
+	);
+
 export const trimMessagesAfterContextTruncation = <T extends MessageLike>(
 	messages: T[] = [],
 	contextTruncation: ContextTruncationState | null | undefined
