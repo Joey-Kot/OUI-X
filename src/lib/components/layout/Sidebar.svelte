@@ -19,6 +19,7 @@
 		scrollPaginationEnabled,
 		currentChatPage,
 		temporaryChatEnabled,
+		chatTitle,
 		channels,
 		socket,
 		config,
@@ -37,6 +38,7 @@
 		getAllTags,
 		getPinnedChatList,
 		toggleChatPinnedStatusById,
+		deleteChatById,
 		getChatById,
 		updateChatFolderIdById,
 		importChats
@@ -49,6 +51,7 @@
 	import ChatItem from './Sidebar/ChatItem.svelte';
 	import Spinner from '../common/Spinner.svelte';
 	import Loader from '../common/Loader.svelte';
+	import DeleteConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import Folder from '../common/Folder.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Folders from './Sidebar/Folders.svelte';
@@ -81,6 +84,7 @@
 	let allChatsLoaded = false;
 
 	let showCreateFolderModal = false;
+	let showDeleteChatConfirm = false;
 
 	let pinnedModels = [];
 
@@ -92,6 +96,10 @@
 	let folderRegistry = {};
 
 	let newFolderId = null;
+	$: currentChatTitle =
+		$chatTitle ||
+		[...($chats ?? []), ...($pinnedChats ?? [])].find((chat) => chat?.id === $chatId)?.title ||
+		'Chat';
 
 	$: if ($selectedFolder) {
 		initFolders();
@@ -549,6 +557,31 @@
 		await tick();
 	};
 
+	const deleteCurrentChatHandler = async () => {
+		if (!$chatId) {
+			return;
+		}
+
+		const deletingChatId = $chatId;
+		const res = await deleteChatById(localStorage.token, deletingChatId).catch((error) => {
+			toast.error(`${error}`);
+			return null;
+		});
+
+		if (res) {
+			tags.set(await getAllTags(localStorage.token));
+
+			if ($chatId === deletingChatId) {
+				await goto('/');
+				await chatId.set('');
+				await chatTitle.set('');
+				await tick();
+			}
+
+			await initChatList();
+		}
+	};
+
 	const isWindows = /Windows/i.test(navigator.userAgent);
 </script>
 
@@ -628,14 +661,38 @@
 	}}
 />
 
+<DeleteConfirmDialog
+	bind:show={showDeleteChatConfirm}
+	title={$i18n.t('Delete chat?')}
+	on:confirm={deleteCurrentChatHandler}
+>
+	<div class=" text-sm text-gray-500 flex-1 line-clamp-3">
+		{$i18n.t('This will delete')} <span class="  font-semibold">{currentChatTitle}</span>.
+	</div>
+</DeleteConfirmDialog>
+
 <button
+	type="button"
 	id="sidebar-new-chat-button"
 	class="hidden"
+	aria-label="New Chat"
 	on:click={() => {
 		goto('/');
 		newChatHandler();
 	}}
-/>
+></button>
+
+<button
+	type="button"
+	id="delete-chat-button"
+	class="hidden"
+	aria-label="Delete Chat"
+	on:click={() => {
+		if ($chatId) {
+			showDeleteChatConfirm = true;
+		}
+	}}
+></button>
 
 <svelte:window
 	on:mousemove={(e) => {
