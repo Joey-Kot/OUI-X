@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
 	normalizeContextTruncation,
+	shouldShowContextTruncationDividerAfter,
 	trimMessagesAfterContextTruncation
 } from '../context-truncation';
 
@@ -44,6 +45,38 @@ describe('trimMessagesAfterContextTruncation', () => {
 				updatedAt: 1
 			})
 		).toBe(messages);
+	});
+});
+
+describe('shouldShowContextTruncationDividerAfter', () => {
+	it('shows the divider directly after the cutoff message, including the current last message', () => {
+		expect(
+			shouldShowContextTruncationDividerAfter(messages.at(-1), {
+				enabled: true,
+				cutoffMessageId: 'assistant-2',
+				updatedAt: 1
+			})
+		).toBe(true);
+	});
+
+	it('does not show the divider after other messages', () => {
+		expect(
+			shouldShowContextTruncationDividerAfter(messages[0], {
+				enabled: true,
+				cutoffMessageId: 'assistant-2',
+				updatedAt: 1
+			})
+		).toBe(false);
+	});
+
+	it('does not show the divider when truncation is disabled', () => {
+		expect(
+			shouldShowContextTruncationDividerAfter(messages.at(-1), {
+				enabled: false,
+				cutoffMessageId: null,
+				updatedAt: null
+			})
+		).toBe(false);
 	});
 });
 

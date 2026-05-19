@@ -2766,6 +2766,11 @@
 			return;
 		}
 
+		await tick();
+		if (contextTruncation.enabled && autoScroll) {
+			scrollToBottom();
+		}
+
 		if (!$temporaryChatEnabled && $chatId) {
 			await saveChatHandler($chatId, history);
 		}

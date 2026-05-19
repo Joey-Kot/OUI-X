@@ -15,7 +15,10 @@
 	import { toast } from 'svelte-sonner';
 	import { getChatList, updateChatById } from '$lib/apis/chats';
 	import { copyToClipboard, extractCurlyBraceWords } from '$lib/utils';
-	import { createDisabledContextTruncation } from '$lib/utils/context-truncation';
+	import {
+		createDisabledContextTruncation,
+		shouldShowContextTruncationDividerAfter
+	} from '$lib/utils/context-truncation';
 
 	import Message from './Messages/Message.svelte';
 	import Spinner from '../common/Spinner.svelte';
@@ -639,10 +642,12 @@
 		}
 	};
 
-	const shouldShowContextDividerAfter = (messageId: string, messageIdx: number) =>
-		contextTruncation?.enabled &&
-		contextTruncation?.cutoffMessageId === messageId &&
-		Boolean(messages[messageIdx + 1]);
+	$: if (autoScroll && contextTruncation?.updatedAt) {
+		(async () => {
+			await tick();
+			scrollToBottom();
+		})();
+	}
 </script>
 
 <div class={className}>
@@ -692,7 +697,7 @@
 									{editCodeBlock}
 									{topPadding}
 								/>
-								{#if shouldShowContextDividerAfter(message.id, visibleStartIdx + virtualIdx)}
+								{#if shouldShowContextTruncationDividerAfter(message, contextTruncation)}
 									<div class="w-full py-2">
 										<div
 											class="flex items-center gap-3 text-xs text-gray-500/75 dark:text-gray-400/70"
