@@ -201,6 +201,13 @@ OPENAI_TTS_RESPONSE_FORMATS = {
     "pcm": ("pcm", "audio/pcm"),
 }
 
+TTS_OUTPUT_FORMATS = {
+    "webm": ("webm", "audio/webm", "webm", "libopus"),
+    "mp3": ("mp3", "audio/mpeg", "mp3", None),
+    "flac": ("flac", "audio/flac", "flac", None),
+    "wav": ("wav", "audio/wav", "wav", None),
+}
+
 SPEECH_CACHE_DIR = CACHE_DIR / "audio" / "speech"
 SPEECH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -368,6 +375,69 @@ def get_openai_tts_response_format(params: Optional[dict]) -> tuple[str, str]:
     )
 
 
+def normalize_tts_output_format(output_format: Optional[str]) -> str:
+    output_format = (output_format or "default").strip().lower()
+    if output_format == "default" or output_format in TTS_OUTPUT_FORMATS:
+        return output_format
+    return "default"
+
+
+def get_tts_output_format_media_type(output_format: Optional[str]) -> Optional[str]:
+    output_format = normalize_tts_output_format(output_format)
+    if output_format == "default":
+        return None
+    return TTS_OUTPUT_FORMATS[output_format][1]
+
+
+def get_tts_output_file_extension(
+    source_extension: str, output_format: Optional[str]
+) -> str:
+    output_format = normalize_tts_output_format(output_format)
+    if output_format == "default":
+        return source_extension.lstrip(".") or "mp3"
+    return TTS_OUTPUT_FORMATS[output_format][0]
+
+
+async def save_tts_audio_file(
+    audio_data: bytes,
+    name: str,
+    source_extension: str,
+    source_media_type: Optional[str],
+    output_format: Optional[str],
+    cache_extension: Optional[str] = None,
+) -> tuple[str, Optional[str]]:
+    output_format = normalize_tts_output_format(output_format)
+    source_extension = (source_extension or "mp3").lstrip(".")
+
+    if output_format == "default":
+        file_extension = (cache_extension or source_extension).lstrip(".")
+        file_path = SPEECH_CACHE_DIR.joinpath(f"{name}.{file_extension}")
+        async with aiofiles.open(file_path, "wb") as f:
+            await f.write(audio_data)
+        return str(file_path), source_media_type
+
+    target_extension, target_media_type, export_format, codec = TTS_OUTPUT_FORMATS[
+        output_format
+    ]
+    source_path = SPEECH_CACHE_DIR.joinpath(f"{name}.source.{source_extension}")
+    target_path = SPEECH_CACHE_DIR.joinpath(f"{name}.{target_extension}")
+
+    async with aiofiles.open(source_path, "wb") as f:
+        await f.write(audio_data)
+
+    audio = AudioSegment.from_file(source_path)
+    export_kwargs = {}
+    if codec:
+        export_kwargs["codec"] = codec
+    audio.export(target_path, format=export_format, **export_kwargs)
+    try:
+        source_path.unlink(missing_ok=True)
+    except OSError:
+        log.debug("Failed to remove temporary TTS source file: %s", source_path)
+
+    return str(target_path), target_media_type
+
+
 def build_qwen_tts_url(api_base_url: str) -> str:
     base_url = (api_base_url or "https://dashscope.aliyuncs.com/api/v1").rstrip("/")
     generation_path = "/services/aigc/multimodal-generation/generation"
@@ -467,6 +537,7 @@ class TTSConfigForm(BaseModel):
     MODEL: str
     VOICE: str
     SPLIT_ON: str
+    OUTPUT_FORMAT: str = "default"
     AZURE_SPEECH_REGION: str
     AZURE_SPEECH_BASE_URL: str
     AZURE_SPEECH_OUTPUT_FORMAT: str
@@ -514,6 +585,7 @@ async def get_audio_config(request: Request, user=Depends(get_admin_user)):
             "MODEL": request.app.state.config.TTS_MODEL,
             "VOICE": request.app.state.config.TTS_VOICE,
             "SPLIT_ON": request.app.state.config.TTS_SPLIT_ON,
+            "OUTPUT_FORMAT": request.app.state.config.TTS_OUTPUT_FORMAT,
             "AZURE_SPEECH_REGION": request.app.state.config.TTS_AZURE_SPEECH_REGION,
             "AZURE_SPEECH_BASE_URL": request.app.state.config.TTS_AZURE_SPEECH_BASE_URL,
             "AZURE_SPEECH_OUTPUT_FORMAT": request.app.state.config.TTS_AZURE_SPEECH_OUTPUT_FORMAT,
@@ -557,6 +629,9 @@ async def update_audio_config(
     request.app.state.config.TTS_MODEL = form_data.tts.MODEL
     request.app.state.config.TTS_VOICE = form_data.tts.VOICE
     request.app.state.config.TTS_SPLIT_ON = form_data.tts.SPLIT_ON
+    request.app.state.config.TTS_OUTPUT_FORMAT = normalize_tts_output_format(
+        form_data.tts.OUTPUT_FORMAT
+    )
     request.app.state.config.TTS_AZURE_SPEECH_REGION = form_data.tts.AZURE_SPEECH_REGION
     request.app.state.config.TTS_AZURE_SPEECH_BASE_URL = (
         form_data.tts.AZURE_SPEECH_BASE_URL
@@ -603,6 +678,7 @@ async def update_audio_config(
             "QWEN_PARAMS": request.app.state.config.TTS_QWEN_PARAMS,
             "API_KEY": request.app.state.config.TTS_API_KEY,
             "SPLIT_ON": request.app.state.config.TTS_SPLIT_ON,
+            "OUTPUT_FORMAT": request.app.state.config.TTS_OUTPUT_FORMAT,
             "AZURE_SPEECH_REGION": request.app.state.config.TTS_AZURE_SPEECH_REGION,
             "AZURE_SPEECH_BASE_URL": request.app.state.config.TTS_AZURE_SPEECH_BASE_URL,
             "AZURE_SPEECH_OUTPUT_FORMAT": request.app.state.config.TTS_AZURE_SPEECH_OUTPUT_FORMAT,
@@ -625,9 +701,13 @@ async def update_audio_config(
 @router.post("/speech")
 async def speech(request: Request, user=Depends(get_verified_user)):
     body = await request.body()
+    tts_output_format = normalize_tts_output_format(
+        request.app.state.config.TTS_OUTPUT_FORMAT
+    )
     cache_config = {
         "engine": request.app.state.config.TTS_ENGINE,
         "model": request.app.state.config.TTS_MODEL,
+        "output_format": tts_output_format,
     }
 
     if request.app.state.config.TTS_ENGINE == "gemini":
@@ -672,12 +752,15 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         )
     elif request.app.state.config.TTS_ENGINE in {"gemini", "qwen"}:
         file_extension = "wav"
+    file_extension = get_tts_output_file_extension(file_extension, tts_output_format)
     file_path = SPEECH_CACHE_DIR.joinpath(f"{name}.{file_extension}")
     file_body_path = SPEECH_CACHE_DIR.joinpath(f"{name}.json")
 
     # Check if the file already exists in the cache
     if file_path.is_file():
-        return FileResponse(file_path)
+        return FileResponse(
+            file_path, media_type=get_tts_output_format_media_type(tts_output_format)
+        )
 
     payload = None
     try:
@@ -690,7 +773,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         model = request.app.state.config.TTS_MODEL or "gpt-4o-mini-tts"
         voice = payload.get("voice") or request.app.state.config.TTS_VOICE or "alloy"
         transcript = payload.get("input", "")
-        _, default_media_type = get_openai_tts_response_format(
+        source_extension, default_media_type = get_openai_tts_response_format(
             request.app.state.config.TTS_OPENAI_PARAMS
         )
         openai_payload = {
@@ -739,13 +822,19 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                         or default_media_type
                     )
 
-                    async with aiofiles.open(file_path, "wb") as f:
-                        await f.write(audio_data)
+                    final_path, final_media_type = await save_tts_audio_file(
+                        audio_data,
+                        name,
+                        source_extension,
+                        media_type,
+                        tts_output_format,
+                        file_extension,
+                    )
 
                     async with aiofiles.open(file_body_path, "w") as f:
                         await f.write(json.dumps(openai_payload))
 
-                    return FileResponse(file_path, media_type=media_type)
+                    return FileResponse(final_path, media_type=final_media_type)
 
         except HTTPException:
             raise
@@ -847,17 +936,23 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                     if not audio_data or not mime_type:
                         raise ValueError("No audio data returned from Gemini TTS")
 
-                    audio_data, _, media_type = prepare_gemini_audio_file(
+                    audio_data, source_extension, media_type = prepare_gemini_audio_file(
                         audio_data, mime_type
                     )
 
-                    async with aiofiles.open(file_path, "wb") as f:
-                        await f.write(audio_data)
+                    final_path, final_media_type = await save_tts_audio_file(
+                        audio_data,
+                        name,
+                        source_extension,
+                        media_type,
+                        tts_output_format,
+                        file_extension,
+                    )
 
                     async with aiofiles.open(file_body_path, "w") as f:
                         await f.write(json.dumps(gemini_payload))
 
-                    return FileResponse(file_path, media_type=media_type)
+                    return FileResponse(final_path, media_type=final_media_type)
 
         except HTTPException:
             raise
@@ -933,6 +1028,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
                     audio_data, audio_url = extract_qwen_audio(response_data)
                     media_type = "audio/wav"
+                    source_extension = "wav"
 
                     if audio_url:
                         async with session.get(
@@ -954,17 +1050,28 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                                     )[0]
                                     or media_type
                                 )
+                            source_extension = (
+                                mimetypes.guess_extension(media_type)
+                                or os.path.splitext(audio_url.split("?", 1)[0])[1]
+                                or ".wav"
+                            )
 
                     if not audio_data:
                         raise ValueError("No audio data returned from Qwen TTS")
 
-                    async with aiofiles.open(file_path, "wb") as f:
-                        await f.write(audio_data)
+                    final_path, final_media_type = await save_tts_audio_file(
+                        audio_data,
+                        name,
+                        source_extension,
+                        media_type,
+                        tts_output_format,
+                        file_extension,
+                    )
 
                     async with aiofiles.open(file_body_path, "w") as f:
                         await f.write(json.dumps(qwen_payload))
 
-                    return FileResponse(file_path, media_type=media_type)
+                    return FileResponse(final_path, media_type=final_media_type)
 
         except HTTPException:
             raise
@@ -1009,13 +1116,25 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                 ) as r:
                     r.raise_for_status()
 
-                    async with aiofiles.open(file_path, "wb") as f:
-                        await f.write(await r.read())
+                    audio_data = await r.read()
+                    media_type = r.headers.get("Content-Type", "").split(";", 1)[0]
+                    source_extension = mimetypes.guess_extension(media_type or "")
+                    if not source_extension:
+                        source_extension = "mp3" if "mp3" in output_format else "wav"
+
+                    final_path, final_media_type = await save_tts_audio_file(
+                        audio_data,
+                        name,
+                        source_extension,
+                        media_type or None,
+                        tts_output_format,
+                        file_extension,
+                    )
 
                     async with aiofiles.open(file_body_path, "w") as f:
                         await f.write(json.dumps(payload))
 
-                    return FileResponse(file_path)
+                    return FileResponse(final_path, media_type=final_media_type)
 
         except Exception as e:
             log.exception(e)

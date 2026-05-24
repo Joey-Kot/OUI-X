@@ -14,7 +14,7 @@
 
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
 
-	import { TTS_RESPONSE_SPLIT } from '$lib/types';
+	import { TTS_OUTPUT_FORMAT, TTS_RESPONSE_SPLIT } from '$lib/types';
 
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
@@ -47,6 +47,7 @@
 	let TTS_QWEN_API_KEY = '';
 	let TTS_QWEN_PARAMS = '';
 	let TTS_SPLIT_ON: TTS_RESPONSE_SPLIT = TTS_RESPONSE_SPLIT.PUNCTUATION;
+	let TTS_OUTPUT_FORMAT_VALUE: TTS_OUTPUT_FORMAT = TTS_OUTPUT_FORMAT.DEFAULT;
 	let TTS_AZURE_SPEECH_REGION = '';
 	let TTS_AZURE_SPEECH_BASE_URL = '';
 	let TTS_AZURE_SPEECH_OUTPUT_FORMAT = '';
@@ -145,7 +146,8 @@
 				AZURE_SPEECH_REGION: TTS_AZURE_SPEECH_REGION,
 				AZURE_SPEECH_BASE_URL: TTS_AZURE_SPEECH_BASE_URL,
 				AZURE_SPEECH_OUTPUT_FORMAT: TTS_AZURE_SPEECH_OUTPUT_FORMAT,
-				SPLIT_ON: TTS_SPLIT_ON
+				SPLIT_ON: TTS_SPLIT_ON,
+				OUTPUT_FORMAT: TTS_OUTPUT_FORMAT_VALUE
 			},
 			stt: {
 				OPENAI_API_BASE_URL: STT_OPENAI_API_BASE_URL,
@@ -196,6 +198,7 @@
 			TTS_VOICE = res.tts.VOICE;
 
 			TTS_SPLIT_ON = res.tts.SPLIT_ON || TTS_RESPONSE_SPLIT.PUNCTUATION;
+			TTS_OUTPUT_FORMAT_VALUE = res.tts.OUTPUT_FORMAT || TTS_OUTPUT_FORMAT.DEFAULT;
 
 			TTS_AZURE_SPEECH_REGION = res.tts.AZURE_SPEECH_REGION;
 			TTS_AZURE_SPEECH_BASE_URL = res.tts.AZURE_SPEECH_BASE_URL;
@@ -868,6 +871,27 @@
 					{$i18n.t(
 						"Control how message text is split for TTS requests. 'Punctuation' splits into sentences, 'paragraphs' splits into paragraphs, and 'none' keeps the message as a single string."
 					)}
+				</div>
+
+				<div class="pt-0.5 flex w-full justify-between">
+					<div class="self-center text-xs font-medium">{$i18n.t('Audio output format')}</div>
+					<div class="flex items-center relative">
+						<select
+							class="dark:bg-gray-900 w-fit pr-8 cursor-pointer rounded-sm px-2 p-1 text-xs bg-transparent outline-hidden text-right"
+							aria-label={$i18n.t('Select TTS audio output format')}
+							bind:value={TTS_OUTPUT_FORMAT_VALUE}
+						>
+							{#each Object.values(TTS_OUTPUT_FORMAT) as format}
+								<option value={format}>
+									{format === TTS_OUTPUT_FORMAT.DEFAULT
+										? $i18n.t('Default')
+										: format === TTS_OUTPUT_FORMAT.WEBM
+											? 'webm (opus)'
+											: format}
+								</option>
+							{/each}
+						</select>
+					</div>
 				</div>
 			</div>
 		</div>

@@ -13,3 +13,11 @@ export enum TTS_RESPONSE_SPLIT {
 	PARAGRAPHS = 'paragraphs',
 	NONE = 'none'
 }
+
+export enum TTS_OUTPUT_FORMAT {
+	DEFAULT = 'default',
+	WEBM = 'webm',
+	MP3 = 'mp3',
+	FLAC = 'flac',
+	WAV = 'wav'
+}
