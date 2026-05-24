@@ -3674,6 +3674,68 @@ AUDIO_TTS_OPENAI_PARAMS = PersistentConfig(
     audio_tts_openai_params,
 )
 
+audio_tts_gemini_params = os.getenv("AUDIO_TTS_GEMINI_PARAMS", "")
+try:
+    audio_tts_gemini_params = json.loads(audio_tts_gemini_params)
+except json.JSONDecodeError:
+    audio_tts_gemini_params = {}
+
+AUDIO_TTS_GEMINI_API_BASE_URL = PersistentConfig(
+    "AUDIO_TTS_GEMINI_API_BASE_URL",
+    "audio.tts.gemini.api_base_url",
+    os.getenv(
+        "AUDIO_TTS_GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com"
+    ),
+)
+
+AUDIO_TTS_GEMINI_API_KEY = PersistentConfig(
+    "AUDIO_TTS_GEMINI_API_KEY",
+    "audio.tts.gemini.api_key",
+    os.getenv("AUDIO_TTS_GEMINI_API_KEY", ""),
+)
+
+AUDIO_TTS_GEMINI_PARAMS = PersistentConfig(
+    "AUDIO_TTS_GEMINI_PARAMS",
+    "audio.tts.gemini.params",
+    audio_tts_gemini_params,
+)
+
+AUDIO_TTS_GEMINI_SCENE = PersistentConfig(
+    "AUDIO_TTS_GEMINI_SCENE",
+    "audio.tts.gemini.scene",
+    os.getenv("AUDIO_TTS_GEMINI_SCENE", ""),
+)
+
+AUDIO_TTS_GEMINI_SAMPLE_CONTEXT = PersistentConfig(
+    "AUDIO_TTS_GEMINI_SAMPLE_CONTEXT",
+    "audio.tts.gemini.sample_context",
+    os.getenv("AUDIO_TTS_GEMINI_SAMPLE_CONTEXT", ""),
+)
+
+AUDIO_TTS_GEMINI_STYLE = PersistentConfig(
+    "AUDIO_TTS_GEMINI_STYLE",
+    "audio.tts.gemini.style",
+    os.getenv("AUDIO_TTS_GEMINI_STYLE", ""),
+)
+
+AUDIO_TTS_GEMINI_PACE = PersistentConfig(
+    "AUDIO_TTS_GEMINI_PACE",
+    "audio.tts.gemini.pace",
+    os.getenv("AUDIO_TTS_GEMINI_PACE", ""),
+)
+
+AUDIO_TTS_GEMINI_ACCENT = PersistentConfig(
+    "AUDIO_TTS_GEMINI_ACCENT",
+    "audio.tts.gemini.accent",
+    os.getenv("AUDIO_TTS_GEMINI_ACCENT", ""),
+)
+
+AUDIO_TTS_GEMINI_TEMPERATURE = PersistentConfig(
+    "AUDIO_TTS_GEMINI_TEMPERATURE",
+    "audio.tts.gemini.temperature",
+    float(os.getenv("AUDIO_TTS_GEMINI_TEMPERATURE", "1")),
+)
+
 
 AUDIO_TTS_API_KEY = PersistentConfig(
     "AUDIO_TTS_API_KEY",

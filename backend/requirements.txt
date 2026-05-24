@@ -1,7 +1,7 @@
 fastapi==0.126.0
 uvicorn[standard]==0.37.0
 pydantic==2.12.5
-python-multipart==0.0.21
+python-multipart==0.0.26
 itsdangerous==2.2.0
 
 python-socketio==5.15.1
@@ -10,7 +10,7 @@ cryptography
 bcrypt==5.0.0
 argon2-cffi==25.1.0
 PyJWT[crypto]==2.10.1
-authlib==1.6.6
+authlib==1.6.11
 
 requests==2.32.5
 aiohttp==3.13.2
@@ -39,7 +39,7 @@ asgiref==3.11.0
 # AI libraries
 tiktoken
 mcp==1.25.0
-fastmcp>=3.0.0b2
+fastmcp>=3.3.1
 
 openai
 anthropic
@@ -59,7 +59,7 @@ opensearch-py==3.1.0
 transformers==4.57.3
 accelerate
 pyarrow==20.0.0 # fix: pin pyarrow version to 20 for rpi compatibility #15897
-einops==0.8.1 
+einops==0.8.1
 
 ftfy==6.3.1
 chardet==5.2.0

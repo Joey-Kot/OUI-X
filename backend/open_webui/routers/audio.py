@@ -4,6 +4,9 @@ import logging
 import os
 import uuid
 import html
+import base64
+import mimetypes
+import struct
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
 from concurrent.futures import ThreadPoolExecutor
@@ -56,6 +59,61 @@ log = logging.getLogger(__name__)
 
 VALID_STT_ENGINES = {"openai", "azure", "web"}
 
+GEMINI_TTS_MODELS = [
+    {"id": "gemini-3.1-flash-tts-preview"},
+    {"id": "gemini-2.5-flash-preview-tts"},
+    {"id": "gemini-2.5-pro-preview-tts"},
+]
+
+GEMINI_TTS_VOICES = {
+    "Zephyr": "Zephyr - Bright",
+    "Puck": "Puck - Upbeat",
+    "Charon": "Charon - Informative",
+    "Kore": "Kore - Firm",
+    "Fenrir": "Fenrir - Excitable",
+    "Leda": "Leda - Youthful",
+    "Orus": "Orus - Firm",
+    "Aoede": "Aoede - Breezy",
+    "Callirrhoe": "Callirrhoe - Easy-going",
+    "Autonoe": "Autonoe - Bright",
+    "Enceladus": "Enceladus - Breathy",
+    "Iapetus": "Iapetus - Clear",
+    "Umbriel": "Umbriel - Easy-going",
+    "Algieba": "Algieba - Smooth",
+    "Despina": "Despina - Smooth",
+    "Erinome": "Erinome - Clear",
+    "Algenib": "Algenib - Gravelly",
+    "Rasalgethi": "Rasalgethi - Informative",
+    "Laomedeia": "Laomedeia - Upbeat",
+    "Achernar": "Achernar - Soft",
+    "Alnilam": "Alnilam - Firm",
+    "Schedar": "Schedar - Even",
+    "Gacrux": "Gacrux - Mature",
+    "Pulcherrima": "Pulcherrima - Forward",
+    "Achird": "Achird - Friendly",
+    "Zubenelgenubi": "Zubenelgenubi - Casual",
+    "Vindemiatrix": "Vindemiatrix - Gentle",
+    "Sadachbia": "Sadachbia - Lively",
+    "Sadaltager": "Sadaltager - Knowledgeable",
+    "Sulafat": "Sulafat - Higher-pitched",
+}
+
+GEMINI_TTS_STYLE_PROMPTS = {
+    "Vocal Smile": 'The "Vocal Smile": The soft palate is raised to keep the tone bright, sunny, and explicitly inviting.',
+    "Newscaster": "Newscaster: Professional, authoritative, clear articulation with standard broadcast cadence.",
+    "Whisper": "Whisper: Intimate, breathy, close-to-mic proximity effect.",
+    "Empathetic": "Empathetic: Warm, understanding, soft tone with gentle inflections.",
+    "Promo/Hype": "Promo/Hype: High energy, punchy consonants, elongated vowels on excitement words.",
+    "Deadpan": "Deadpan: Flat affect, minimal pitch variation, dry delivery.",
+}
+
+GEMINI_TTS_PACE_PROMPTS = {
+    "Natural": "Natural conversational pace.",
+    "Rapid Fire": "Rapid Fire: Fast, energetic, no dead air. Sentences overlap slightly.",
+    "The Drift": "The Drift: Slow, liquid, zero urgency. Long pauses for breath.",
+    "Staccato": "Staccato: Short, clipped sentences with distinct pauses between words.",
+}
+
 SPEECH_CACHE_DIR = CACHE_DIR / "audio" / "speech"
 SPEECH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -68,6 +126,123 @@ SPEECH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 from pydub import AudioSegment
 from pydub.utils import mediainfo
+
+
+def parse_audio_mime_type(mime_type: str) -> dict[str, int]:
+    bits_per_sample = 16
+    rate = 24000
+
+    for param in mime_type.split(";"):
+        param = param.strip()
+        if param.lower().startswith("rate="):
+            try:
+                rate = int(param.split("=", 1)[1])
+            except (ValueError, IndexError):
+                pass
+        elif param.lower().startswith("audio/l"):
+            try:
+                bits_per_sample = int(param.lower().split("audio/l", 1)[1])
+            except (ValueError, IndexError):
+                pass
+
+    return {"bits_per_sample": bits_per_sample, "rate": rate}
+
+
+def convert_to_wav(audio_data: bytes, mime_type: str) -> bytes:
+    parameters = parse_audio_mime_type(mime_type)
+    bits_per_sample = parameters["bits_per_sample"]
+    sample_rate = parameters["rate"]
+    num_channels = 1
+    data_size = len(audio_data)
+    bytes_per_sample = bits_per_sample // 8
+    block_align = num_channels * bytes_per_sample
+    byte_rate = sample_rate * block_align
+    chunk_size = 36 + data_size
+
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        chunk_size,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        num_channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+        b"data",
+        data_size,
+    )
+    return header + audio_data
+
+
+def build_gemini_tts_prompt(
+    scene: str,
+    sample_context: str,
+    transcript: str,
+    style: str = "",
+    pace: str = "",
+    accent: str = "",
+) -> str:
+    prompt_parts = []
+    director_notes = []
+
+    if style.strip():
+        style_prompt = GEMINI_TTS_STYLE_PROMPTS.get(style.strip(), style.strip())
+        director_notes.append(f"Style: {style_prompt}")
+
+    if pace.strip():
+        pace_prompt = GEMINI_TTS_PACE_PROMPTS.get(pace.strip(), pace.strip())
+        director_notes.append(f"Pace: {pace_prompt}")
+
+    if accent.strip():
+        director_notes.append(f"Accent: {accent.strip()}.")
+
+    if director_notes:
+        prompt_parts.append(
+            "Read the following transcript based on the director's note.\n\n"
+            "# Director's note\n"
+            + " ".join(director_notes)
+        )
+
+    if scene.strip():
+        prompt_parts.append(f"## Scene:\n{scene.strip()}")
+
+    if sample_context.strip():
+        prompt_parts.append(f"## Sample Context:\n{sample_context.strip()}")
+
+    prompt_parts.append(f"## Transcript:\n{transcript}")
+
+    return "\n\n".join(prompt_parts)
+
+
+def extract_gemini_audio(response_data):
+    responses = response_data if isinstance(response_data, list) else [response_data]
+
+    for response in responses:
+        for candidate in response.get("candidates", []):
+            content = candidate.get("content", {})
+            for part in content.get("parts", []):
+                inline_data = part.get("inlineData") or part.get("inline_data")
+                if inline_data and inline_data.get("data"):
+                    audio_data = base64.b64decode(inline_data["data"])
+                    mime_type = inline_data.get("mimeType") or inline_data.get(
+                        "mime_type", "audio/L16;rate=24000"
+                    )
+                    return audio_data, mime_type
+
+    return None, None
+
+
+def prepare_gemini_audio_file(audio_data: bytes, mime_type: str) -> tuple[bytes, str, str]:
+    file_extension = mimetypes.guess_extension(mime_type.split(";", 1)[0])
+
+    if file_extension is None:
+        return convert_to_wav(audio_data, mime_type), ".wav", "audio/wav"
+
+    return audio_data, file_extension, mime_type
 
 
 def is_audio_conversion_required(file_path):
@@ -128,6 +303,15 @@ class TTSConfigForm(BaseModel):
     OPENAI_API_BASE_URL: str
     OPENAI_API_KEY: str
     OPENAI_PARAMS: Optional[dict] = None
+    GEMINI_API_BASE_URL: str = "https://generativelanguage.googleapis.com"
+    GEMINI_API_KEY: str = ""
+    GEMINI_PARAMS: Optional[dict] = None
+    GEMINI_SCENE: str = ""
+    GEMINI_SAMPLE_CONTEXT: str = ""
+    GEMINI_STYLE: str = ""
+    GEMINI_PACE: str = ""
+    GEMINI_ACCENT: str = ""
+    GEMINI_TEMPERATURE: float = 1
     API_KEY: str
     ENGINE: str
     MODEL: str
@@ -163,6 +347,15 @@ async def get_audio_config(request: Request, user=Depends(get_admin_user)):
             "OPENAI_API_BASE_URL": request.app.state.config.TTS_OPENAI_API_BASE_URL,
             "OPENAI_API_KEY": request.app.state.config.TTS_OPENAI_API_KEY,
             "OPENAI_PARAMS": request.app.state.config.TTS_OPENAI_PARAMS,
+            "GEMINI_API_BASE_URL": request.app.state.config.TTS_GEMINI_API_BASE_URL,
+            "GEMINI_API_KEY": request.app.state.config.TTS_GEMINI_API_KEY,
+            "GEMINI_PARAMS": request.app.state.config.TTS_GEMINI_PARAMS,
+            "GEMINI_SCENE": request.app.state.config.TTS_GEMINI_SCENE,
+            "GEMINI_SAMPLE_CONTEXT": request.app.state.config.TTS_GEMINI_SAMPLE_CONTEXT,
+            "GEMINI_STYLE": request.app.state.config.TTS_GEMINI_STYLE,
+            "GEMINI_PACE": request.app.state.config.TTS_GEMINI_PACE,
+            "GEMINI_ACCENT": request.app.state.config.TTS_GEMINI_ACCENT,
+            "GEMINI_TEMPERATURE": request.app.state.config.TTS_GEMINI_TEMPERATURE,
             "API_KEY": request.app.state.config.TTS_API_KEY,
             "ENGINE": request.app.state.config.TTS_ENGINE,
             "MODEL": request.app.state.config.TTS_MODEL,
@@ -194,6 +387,15 @@ async def update_audio_config(
     request.app.state.config.TTS_OPENAI_API_BASE_URL = form_data.tts.OPENAI_API_BASE_URL
     request.app.state.config.TTS_OPENAI_API_KEY = form_data.tts.OPENAI_API_KEY
     request.app.state.config.TTS_OPENAI_PARAMS = form_data.tts.OPENAI_PARAMS
+    request.app.state.config.TTS_GEMINI_API_BASE_URL = form_data.tts.GEMINI_API_BASE_URL
+    request.app.state.config.TTS_GEMINI_API_KEY = form_data.tts.GEMINI_API_KEY
+    request.app.state.config.TTS_GEMINI_PARAMS = form_data.tts.GEMINI_PARAMS
+    request.app.state.config.TTS_GEMINI_SCENE = form_data.tts.GEMINI_SCENE
+    request.app.state.config.TTS_GEMINI_SAMPLE_CONTEXT = form_data.tts.GEMINI_SAMPLE_CONTEXT
+    request.app.state.config.TTS_GEMINI_STYLE = form_data.tts.GEMINI_STYLE
+    request.app.state.config.TTS_GEMINI_PACE = form_data.tts.GEMINI_PACE
+    request.app.state.config.TTS_GEMINI_ACCENT = form_data.tts.GEMINI_ACCENT
+    request.app.state.config.TTS_GEMINI_TEMPERATURE = form_data.tts.GEMINI_TEMPERATURE
     request.app.state.config.TTS_API_KEY = form_data.tts.API_KEY
     request.app.state.config.TTS_ENGINE = form_data.tts.ENGINE
     request.app.state.config.TTS_MODEL = form_data.tts.MODEL
@@ -231,6 +433,15 @@ async def update_audio_config(
             "OPENAI_API_BASE_URL": request.app.state.config.TTS_OPENAI_API_BASE_URL,
             "OPENAI_API_KEY": request.app.state.config.TTS_OPENAI_API_KEY,
             "OPENAI_PARAMS": request.app.state.config.TTS_OPENAI_PARAMS,
+            "GEMINI_API_BASE_URL": request.app.state.config.TTS_GEMINI_API_BASE_URL,
+            "GEMINI_API_KEY": request.app.state.config.TTS_GEMINI_API_KEY,
+            "GEMINI_PARAMS": request.app.state.config.TTS_GEMINI_PARAMS,
+            "GEMINI_SCENE": request.app.state.config.TTS_GEMINI_SCENE,
+            "GEMINI_SAMPLE_CONTEXT": request.app.state.config.TTS_GEMINI_SAMPLE_CONTEXT,
+            "GEMINI_STYLE": request.app.state.config.TTS_GEMINI_STYLE,
+            "GEMINI_PACE": request.app.state.config.TTS_GEMINI_PACE,
+            "GEMINI_ACCENT": request.app.state.config.TTS_GEMINI_ACCENT,
+            "GEMINI_TEMPERATURE": request.app.state.config.TTS_GEMINI_TEMPERATURE,
             "API_KEY": request.app.state.config.TTS_API_KEY,
             "SPLIT_ON": request.app.state.config.TTS_SPLIT_ON,
             "AZURE_SPEECH_REGION": request.app.state.config.TTS_AZURE_SPEECH_REGION,
@@ -255,13 +466,34 @@ async def update_audio_config(
 @router.post("/speech")
 async def speech(request: Request, user=Depends(get_verified_user)):
     body = await request.body()
+    cache_config = {
+        "engine": request.app.state.config.TTS_ENGINE,
+        "model": request.app.state.config.TTS_MODEL,
+    }
+
+    if request.app.state.config.TTS_ENGINE == "gemini":
+        cache_config.update(
+            {
+                "voice": request.app.state.config.TTS_VOICE,
+                "api_base_url": request.app.state.config.TTS_GEMINI_API_BASE_URL,
+                "params": request.app.state.config.TTS_GEMINI_PARAMS,
+                "scene": request.app.state.config.TTS_GEMINI_SCENE,
+                "sample_context": request.app.state.config.TTS_GEMINI_SAMPLE_CONTEXT,
+                "style": request.app.state.config.TTS_GEMINI_STYLE,
+                "pace": request.app.state.config.TTS_GEMINI_PACE,
+                "accent": request.app.state.config.TTS_GEMINI_ACCENT,
+                "temperature": request.app.state.config.TTS_GEMINI_TEMPERATURE,
+            }
+        )
+
     name = hashlib.sha256(
-        body
-        + str(request.app.state.config.TTS_ENGINE).encode("utf-8")
-        + str(request.app.state.config.TTS_MODEL).encode("utf-8")
+        body + json.dumps(cache_config, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
 
-    file_path = SPEECH_CACHE_DIR.joinpath(f"{name}.mp3")
+    file_extension = (
+        "wav" if request.app.state.config.TTS_ENGINE == "gemini" else "mp3"
+    )
+    file_path = SPEECH_CACHE_DIR.joinpath(f"{name}.{file_extension}")
     file_body_path = SPEECH_CACHE_DIR.joinpath(f"{name}.json")
 
     # Check if the file already exists in the cache
@@ -333,6 +565,118 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             raise HTTPException(
                 status_code=status_code,
                 detail=detail,
+            )
+
+    elif request.app.state.config.TTS_ENGINE == "gemini":
+        api_key = request.app.state.config.TTS_GEMINI_API_KEY
+        if not api_key:
+            raise HTTPException(status_code=400, detail="Gemini API key is required")
+
+        model = request.app.state.config.TTS_MODEL or "gemini-3.1-flash-tts-preview"
+        voice_name = (
+            payload.get("voice") or request.app.state.config.TTS_VOICE or "Zephyr"
+        )
+        transcript = payload.get("input", "")
+
+        generation_config = {
+            **(request.app.state.config.TTS_GEMINI_PARAMS or {}),
+            "responseModalities": ["AUDIO"],
+            "temperature": request.app.state.config.TTS_GEMINI_TEMPERATURE,
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {
+                        "voiceName": voice_name,
+                    }
+                }
+            },
+        }
+
+        gemini_payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": build_gemini_tts_prompt(
+                                request.app.state.config.TTS_GEMINI_SCENE,
+                                request.app.state.config.TTS_GEMINI_SAMPLE_CONTEXT,
+                                transcript,
+                                request.app.state.config.TTS_GEMINI_STYLE,
+                                request.app.state.config.TTS_GEMINI_PACE,
+                                request.app.state.config.TTS_GEMINI_ACCENT,
+                            )
+                        }
+                    ],
+                }
+            ],
+            "generationConfig": generation_config,
+        }
+
+        base_url = (
+            request.app.state.config.TTS_GEMINI_API_BASE_URL
+            or "https://generativelanguage.googleapis.com"
+        ).rstrip("/")
+        if not base_url.endswith("/v1beta"):
+            base_url = f"{base_url}/v1beta"
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
+            async with aiohttp.ClientSession(
+                timeout=timeout, trust_env=True
+            ) as session:
+                headers = {"Content-Type": "application/json"}
+                if ENABLE_FORWARD_USER_INFO_HEADERS:
+                    headers = include_user_info_headers(headers, user)
+
+                async with session.post(
+                    url=f"{base_url}/models/{model}:generateContent",
+                    params={"key": api_key},
+                    json=gemini_payload,
+                    headers=headers,
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                ) as r:
+                    response_text = await r.text()
+
+                    try:
+                        response_data = json.loads(response_text)
+                    except json.JSONDecodeError:
+                        response_data = None
+
+                    if r.status >= 400:
+                        detail = response_text
+                        if isinstance(response_data, dict) and "error" in response_data:
+                            error = response_data["error"]
+                            detail = error.get("message", error)
+                        raise HTTPException(
+                            status_code=r.status, detail=f"External: {detail}"
+                        )
+
+                    if response_data is None:
+                        raise ValueError("Invalid JSON response from Gemini TTS")
+
+                    audio_data, mime_type = extract_gemini_audio(response_data)
+                    if not audio_data or not mime_type:
+                        raise ValueError("No audio data returned from Gemini TTS")
+
+                    audio_data, _, media_type = prepare_gemini_audio_file(
+                        audio_data, mime_type
+                    )
+
+                    async with aiofiles.open(file_path, "wb") as f:
+                        await f.write(audio_data)
+
+                    async with aiofiles.open(file_body_path, "w") as f:
+                        await f.write(json.dumps(gemini_payload))
+
+                    return FileResponse(file_path, media_type=media_type)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            log.exception(e)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Open WebUI: Server Connection Error",
             )
 
     elif request.app.state.config.TTS_ENGINE == "azure":
@@ -780,6 +1124,8 @@ def get_available_models(request: Request) -> list[dict]:
                 available_models = [{"id": "tts-1"}, {"id": "tts-1-hd"}]
         else:
             available_models = [{"id": "tts-1"}, {"id": "tts-1-hd"}]
+    elif request.app.state.config.TTS_ENGINE == "gemini":
+        available_models = GEMINI_TTS_MODELS
     return available_models
 
 
@@ -823,6 +1169,8 @@ def get_available_voices(request) -> dict:
                 "nova": "nova",
                 "shimmer": "shimmer",
             }
+    elif request.app.state.config.TTS_ENGINE == "gemini":
+        available_voices = GEMINI_TTS_VOICES
     elif request.app.state.config.TTS_ENGINE == "azure":
         try:
             region = request.app.state.config.TTS_AZURE_SPEECH_REGION
