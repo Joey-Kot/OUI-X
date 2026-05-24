@@ -515,6 +515,79 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 
 * `stopResponse`、`chat:tasks:cancel` 与组件 `onDestroy` 时，清理 pending stream 队列与 TTS 定时器状态，避免遗留异步回调继续写入 UI
 
+### 12) TTS 引擎与音频输出增强
+
+补充了多种云端 TTS 引擎，并将服务商参数与后端调用方式统一为 REST 形态。
+
+#### 12.1 OpenAI TTS 引擎
+
+* OpenAI TTS 改为直接调用 `/v1/audio/speech` REST 接口
+* 默认模型更新为 `gpt-4o-mini-tts`
+* 支持官方模型列表：
+  * `gpt-4o-mini-tts`
+  * `tts-1`
+  * `tts-1-hd`
+* 支持官方内置音色：
+  * `alloy` / `ash` / `ballad` / `coral` / `echo` / `fable` / `onyx`
+  * `nova` / `sage` / `shimmer` / `verse` / `marin` / `cedar`
+* 支持自定义 `Base URL`：
+  * 可填写 OpenAI 官方 `https://api.openai.com/v1`
+  * 也可填写兼容 OpenAI TTS 协议的自定义地址
+  * 兼容直接填写完整 `/audio/speech` endpoint
+* `Additional Parameters` 会合并到 OpenAI TTS 请求体根节点，可用于透传 `instructions`、`response_format`、`speed` 等参数
+* `TTS Voice` 支持普通字符串音色，也支持填写 JSON voice object，例如 `{"id":"voice_1234"}`
+
+#### 12.2 Gemini TTS 引擎
+
+* 新增 Gemini TTS 引擎
+* 采用 Google Generative Language REST API 调用，避免 SDK 端点自定义限制
+* 支持自定义 `Base URL` 与 Gemini API Key
+* 支持模型：
+  * `gemini-3.1-flash-tts-preview`
+  * `gemini-2.5-flash-preview-tts`
+  * `gemini-2.5-pro-preview-tts`
+  * `Custom`
+* 支持 Gemini 官方 30 种 `voice_name` 音色，并允许手填自定义音色
+* 增加 Gemini 专属风格控制：
+  * `Scene`：拼接为 `## Scene:`，用于设定说话场景
+  * `Sample Context`：拼接为 `## Sample Context:`，用于提供上下文起点
+  * `Style` / `Pace` / `Accent`：拼接到 director's note 中，可使用官方枚举或手填自定义内容
+  * `Temperature`
+* `Additional Parameters` 会合并到 Gemini `generationConfig` 中，便于透传服务商扩展参数
+
+#### 12.3 Qwen TTS 引擎
+
+* 新增 Qwen TTS 引擎
+* 通过 DashScope 百炼 REST API 调用 `/services/aigc/multimodal-generation/generation`
+* 支持自定义 `Base URL`：
+  * 默认 `https://dashscope.aliyuncs.com/api/v1`
+  * 可替换为新加坡地域或其他兼容代理地址
+  * 兼容直接填写完整 generation endpoint
+* 支持模型：
+  * `qwen3-tts-flash`
+  * `qwen3-tts-instruct-flash`
+  * `Custom`
+* 内置 Qwen-TTS 官方系统音色列表，覆盖普通话、多语种与多种中文方言音色
+* 请求体按百炼格式构造：
+  * `model` 对应 TTS Model
+  * `input.text` 对应待合成文本
+  * `input.voice` 对应 TTS Voice
+* `Additional Parameters` 会合并到百炼 API 的 `input` 对象，可用于透传 `language_type`、`instructions`、`optimize_instructions` 等参数
+* 支持处理 Qwen 返回的 Base64 音频数据，也支持下载返回的临时音频 URL 并写入本地缓存
+
+#### 12.4 通用 TTS 音频输出格式转换
+
+* 新增 `Audio output format` 通用选项
+* 默认值为 `Default`，表示保留服务商返回的原始音频格式
+* 支持统一转换为：
+  * `webm`（Opus 编码封装）
+  * `mp3`
+  * `flac`
+  * `wav`
+* 输出格式转换作为服务商无关的后处理步骤，适用于 OpenAI、Gemini、Qwen 等服务端 TTS 引擎
+* 后端基于现有 `pydub` / ffmpeg 音频处理链路完成转码
+* 输出格式会纳入 TTS 缓存 key，避免不同格式复用同一份缓存音频
+
 ## 移除了什么？
 
 ### 1) 移除 Ollama 相关组件与“内置绑定”
@@ -539,6 +612,7 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 
 * TTS：移除 ElevenLabs 与部分本地 transformers TTS 分支
 * STT：移除部分 provider/config（例如 Whisper/Deepgram/Mistral STT 等相关配置与依赖链）
+* 云端 TTS 能力转向 OpenAI / Gemini / Qwen / Azure 等更明确的 REST 配置与后端调用链路
 
 ### 5) 移除 Local Connection Type
 
