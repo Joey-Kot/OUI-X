@@ -191,8 +191,21 @@ from open_webui.config import (
     AUDIO_TTS_OPENAI_API_BASE_URL,
     AUDIO_TTS_OPENAI_API_KEY,
     AUDIO_TTS_OPENAI_PARAMS,
+    AUDIO_TTS_GEMINI_API_BASE_URL,
+    AUDIO_TTS_GEMINI_API_KEY,
+    AUDIO_TTS_GEMINI_PARAMS,
+    AUDIO_TTS_GEMINI_SCENE,
+    AUDIO_TTS_GEMINI_SAMPLE_CONTEXT,
+    AUDIO_TTS_GEMINI_STYLE,
+    AUDIO_TTS_GEMINI_PACE,
+    AUDIO_TTS_GEMINI_ACCENT,
+    AUDIO_TTS_GEMINI_TEMPERATURE,
+    AUDIO_TTS_QWEN_API_BASE_URL,
+    AUDIO_TTS_QWEN_API_KEY,
+    AUDIO_TTS_QWEN_PARAMS,
     AUDIO_TTS_API_KEY,
     AUDIO_TTS_SPLIT_ON,
+    AUDIO_TTS_OUTPUT_FORMAT,
     AUDIO_TTS_AZURE_SPEECH_REGION,
     AUDIO_TTS_AZURE_SPEECH_BASE_URL,
     AUDIO_TTS_AZURE_SPEECH_OUTPUT_FORMAT,
@@ -1178,8 +1191,23 @@ app.state.config.TTS_OPENAI_API_BASE_URL = AUDIO_TTS_OPENAI_API_BASE_URL
 app.state.config.TTS_OPENAI_API_KEY = AUDIO_TTS_OPENAI_API_KEY
 app.state.config.TTS_OPENAI_PARAMS = AUDIO_TTS_OPENAI_PARAMS
 
+app.state.config.TTS_GEMINI_API_BASE_URL = AUDIO_TTS_GEMINI_API_BASE_URL
+app.state.config.TTS_GEMINI_API_KEY = AUDIO_TTS_GEMINI_API_KEY
+app.state.config.TTS_GEMINI_PARAMS = AUDIO_TTS_GEMINI_PARAMS
+app.state.config.TTS_GEMINI_SCENE = AUDIO_TTS_GEMINI_SCENE
+app.state.config.TTS_GEMINI_SAMPLE_CONTEXT = AUDIO_TTS_GEMINI_SAMPLE_CONTEXT
+app.state.config.TTS_GEMINI_STYLE = AUDIO_TTS_GEMINI_STYLE
+app.state.config.TTS_GEMINI_PACE = AUDIO_TTS_GEMINI_PACE
+app.state.config.TTS_GEMINI_ACCENT = AUDIO_TTS_GEMINI_ACCENT
+app.state.config.TTS_GEMINI_TEMPERATURE = AUDIO_TTS_GEMINI_TEMPERATURE
+
+app.state.config.TTS_QWEN_API_BASE_URL = AUDIO_TTS_QWEN_API_BASE_URL
+app.state.config.TTS_QWEN_API_KEY = AUDIO_TTS_QWEN_API_KEY
+app.state.config.TTS_QWEN_PARAMS = AUDIO_TTS_QWEN_PARAMS
+
 app.state.config.TTS_API_KEY = AUDIO_TTS_API_KEY
 app.state.config.TTS_SPLIT_ON = AUDIO_TTS_SPLIT_ON
+app.state.config.TTS_OUTPUT_FORMAT = AUDIO_TTS_OUTPUT_FORMAT
 
 
 app.state.config.TTS_AZURE_SPEECH_REGION = AUDIO_TTS_AZURE_SPEECH_REGION
@@ -2170,6 +2198,7 @@ async def get_app_config(request: Request):
                         "engine": app.state.config.TTS_ENGINE,
                         "voice": app.state.config.TTS_VOICE,
                         "split_on": app.state.config.TTS_SPLIT_ON,
+                        "output_format": app.state.config.TTS_OUTPUT_FORMAT,
                     },
                     "stt": {
                         "engine": app.state.config.STT_ENGINE,
