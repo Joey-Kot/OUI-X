@@ -382,7 +382,7 @@
 
 								if (selectedEngine === 'openai') {
 									TTS_VOICE = 'alloy';
-									TTS_MODEL = 'tts-1';
+									TTS_MODEL = 'gpt-4o-mini-tts';
 								} else if (selectedEngine === 'gemini') {
 									TTS_VOICE = 'Zephyr';
 									TTS_MODEL = 'gemini-3.1-flash-tts-preview';

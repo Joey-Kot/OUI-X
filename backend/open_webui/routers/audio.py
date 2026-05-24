@@ -59,6 +59,12 @@ log = logging.getLogger(__name__)
 
 VALID_STT_ENGINES = {"openai", "azure", "web"}
 
+OPENAI_TTS_MODELS = [
+    {"id": "gpt-4o-mini-tts"},
+    {"id": "tts-1"},
+    {"id": "tts-1-hd"},
+]
+
 GEMINI_TTS_MODELS = [
     {"id": "gemini-3.1-flash-tts-preview"},
     {"id": "gemini-2.5-flash-preview-tts"},
@@ -69,6 +75,22 @@ QWEN_TTS_MODELS = [
     {"id": "qwen3-tts-flash"},
     {"id": "qwen3-tts-instruct-flash"},
 ]
+
+OPENAI_TTS_VOICES = {
+    "alloy": "alloy",
+    "ash": "ash",
+    "ballad": "ballad",
+    "coral": "coral",
+    "echo": "echo",
+    "fable": "fable",
+    "onyx": "onyx",
+    "nova": "nova",
+    "sage": "sage",
+    "shimmer": "shimmer",
+    "verse": "verse",
+    "marin": "marin",
+    "cedar": "cedar",
+}
 
 GEMINI_TTS_VOICES = {
     "Zephyr": "Zephyr - Bright",
@@ -168,6 +190,15 @@ GEMINI_TTS_PACE_PROMPTS = {
     "Rapid Fire": "Rapid Fire: Fast, energetic, no dead air. Sentences overlap slightly.",
     "The Drift": "The Drift: Slow, liquid, zero urgency. Long pauses for breath.",
     "Staccato": "Staccato: Short, clipped sentences with distinct pauses between words.",
+}
+
+OPENAI_TTS_RESPONSE_FORMATS = {
+    "mp3": ("mp3", "audio/mpeg"),
+    "opus": ("opus", "audio/opus"),
+    "aac": ("aac", "audio/aac"),
+    "flac": ("flac", "audio/flac"),
+    "wav": ("wav", "audio/wav"),
+    "pcm": ("pcm", "audio/pcm"),
 }
 
 SPEECH_CACHE_DIR = CACHE_DIR / "audio" / "speech"
@@ -299,6 +330,42 @@ def prepare_gemini_audio_file(audio_data: bytes, mime_type: str) -> tuple[bytes,
         return convert_to_wav(audio_data, mime_type), ".wav", "audio/wav"
 
     return audio_data, file_extension, mime_type
+
+
+def build_openai_tts_url(api_base_url: str) -> str:
+    base_url = (api_base_url or "https://api.openai.com/v1").rstrip("/")
+    speech_path = "/audio/speech"
+
+    if base_url.endswith(speech_path):
+        return base_url
+
+    if base_url == "https://api.openai.com":
+        base_url = f"{base_url}/v1"
+
+    return f"{base_url}{speech_path}"
+
+
+def parse_openai_tts_voice(voice):
+    if not isinstance(voice, str):
+        return voice
+
+    voice = voice.strip()
+    if voice.startswith("{"):
+        try:
+            voice_data = json.loads(voice)
+            if isinstance(voice_data, dict):
+                return voice_data
+        except json.JSONDecodeError:
+            pass
+
+    return voice
+
+
+def get_openai_tts_response_format(params: Optional[dict]) -> tuple[str, str]:
+    response_format = str((params or {}).get("response_format") or "mp3").lower()
+    return OPENAI_TTS_RESPONSE_FORMATS.get(
+        response_format, OPENAI_TTS_RESPONSE_FORMATS["mp3"]
+    )
 
 
 def build_qwen_tts_url(api_base_url: str) -> str:
@@ -577,6 +644,14 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                 "temperature": request.app.state.config.TTS_GEMINI_TEMPERATURE,
             }
         )
+    elif request.app.state.config.TTS_ENGINE == "openai":
+        cache_config.update(
+            {
+                "voice": request.app.state.config.TTS_VOICE,
+                "api_base_url": request.app.state.config.TTS_OPENAI_API_BASE_URL,
+                "params": request.app.state.config.TTS_OPENAI_PARAMS,
+            }
+        )
     elif request.app.state.config.TTS_ENGINE == "qwen":
         cache_config.update(
             {
@@ -590,9 +665,13 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         body + json.dumps(cache_config, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
 
-    file_extension = (
-        "wav" if request.app.state.config.TTS_ENGINE in {"gemini", "qwen"} else "mp3"
-    )
+    file_extension = "mp3"
+    if request.app.state.config.TTS_ENGINE == "openai":
+        file_extension, _ = get_openai_tts_response_format(
+            request.app.state.config.TTS_OPENAI_PARAMS
+        )
+    elif request.app.state.config.TTS_ENGINE in {"gemini", "qwen"}:
+        file_extension = "wav"
     file_path = SPEECH_CACHE_DIR.joinpath(f"{name}.{file_extension}")
     file_body_path = SPEECH_CACHE_DIR.joinpath(f"{name}.json")
 
@@ -607,20 +686,25 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         log.exception(e)
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    r = None
     if request.app.state.config.TTS_ENGINE == "openai":
-        payload["model"] = request.app.state.config.TTS_MODEL
+        model = request.app.state.config.TTS_MODEL or "gpt-4o-mini-tts"
+        voice = payload.get("voice") or request.app.state.config.TTS_VOICE or "alloy"
+        transcript = payload.get("input", "")
+        _, default_media_type = get_openai_tts_response_format(
+            request.app.state.config.TTS_OPENAI_PARAMS
+        )
+        openai_payload = {
+            **(request.app.state.config.TTS_OPENAI_PARAMS or {}),
+            "model": model,
+            "input": transcript,
+            "voice": parse_openai_tts_voice(voice),
+        }
 
         try:
             timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
             async with aiohttp.ClientSession(
                 timeout=timeout, trust_env=True
             ) as session:
-                payload = {
-                    **payload,
-                    **(request.app.state.config.TTS_OPENAI_PARAMS or {}),
-                }
-
                 headers = {
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {request.app.state.config.TTS_OPENAI_API_KEY}",
@@ -628,43 +712,48 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                 if ENABLE_FORWARD_USER_INFO_HEADERS:
                     headers = include_user_info_headers(headers, user)
 
-                r = await session.post(
-                    url=f"{request.app.state.config.TTS_OPENAI_API_BASE_URL}/audio/speech",
-                    json=payload,
+                async with session.post(
+                    url=build_openai_tts_url(
+                        request.app.state.config.TTS_OPENAI_API_BASE_URL
+                    ),
+                    json=openai_payload,
                     headers=headers,
                     ssl=AIOHTTP_CLIENT_SESSION_SSL,
-                )
+                ) as r:
+                    if r.status >= 400:
+                        response_text = await r.text()
+                        detail = response_text
+                        try:
+                            res = json.loads(response_text)
+                            if "error" in res:
+                                detail = res["error"]
+                        except json.JSONDecodeError:
+                            pass
+                        raise HTTPException(
+                            status_code=r.status, detail=f"External: {detail}"
+                        )
 
-                r.raise_for_status()
+                    audio_data = await r.read()
+                    media_type = (
+                        r.headers.get("Content-Type", "").split(";", 1)[0]
+                        or default_media_type
+                    )
 
-                async with aiofiles.open(file_path, "wb") as f:
-                    await f.write(await r.read())
+                    async with aiofiles.open(file_path, "wb") as f:
+                        await f.write(audio_data)
 
-                async with aiofiles.open(file_body_path, "w") as f:
-                    await f.write(json.dumps(payload))
+                    async with aiofiles.open(file_body_path, "w") as f:
+                        await f.write(json.dumps(openai_payload))
 
-            return FileResponse(file_path)
+                    return FileResponse(file_path, media_type=media_type)
 
+        except HTTPException:
+            raise
         except Exception as e:
             log.exception(e)
-            detail = None
-
-            status_code = 500
-            detail = f"Open WebUI: Server Connection Error"
-
-            if r is not None:
-                status_code = r.status
-
-                try:
-                    res = await r.json()
-                    if "error" in res:
-                        detail = f"External: {res['error']}"
-                except Exception:
-                    detail = f"External: {e}"
-
             raise HTTPException(
-                status_code=status_code,
-                detail=detail,
+                status_code=500,
+                detail=f"Open WebUI: Server Connection Error",
             )
 
     elif request.app.state.config.TTS_ENGINE == "gemini":
@@ -1320,17 +1409,23 @@ def get_available_models(request: Request) -> list[dict]:
             "https://api.openai.com"
         ):
             try:
+                headers = {}
+                if request.app.state.config.TTS_OPENAI_API_KEY:
+                    headers["Authorization"] = (
+                        f"Bearer {request.app.state.config.TTS_OPENAI_API_KEY}"
+                    )
                 response = requests.get(
-                    f"{request.app.state.config.TTS_OPENAI_API_BASE_URL}/audio/models"
+                    f"{request.app.state.config.TTS_OPENAI_API_BASE_URL}/audio/models",
+                    headers=headers,
                 )
                 response.raise_for_status()
                 data = response.json()
                 available_models = data.get("models", [])
             except Exception as e:
                 log.error(f"Error fetching models from custom endpoint: {str(e)}")
-                available_models = [{"id": "tts-1"}, {"id": "tts-1-hd"}]
+                available_models = OPENAI_TTS_MODELS
         else:
-            available_models = [{"id": "tts-1"}, {"id": "tts-1-hd"}]
+            available_models = OPENAI_TTS_MODELS
     elif request.app.state.config.TTS_ENGINE == "gemini":
         available_models = GEMINI_TTS_MODELS
     elif request.app.state.config.TTS_ENGINE == "qwen":
@@ -1352,8 +1447,14 @@ def get_available_voices(request) -> dict:
             "https://api.openai.com"
         ):
             try:
+                headers = {}
+                if request.app.state.config.TTS_OPENAI_API_KEY:
+                    headers["Authorization"] = (
+                        f"Bearer {request.app.state.config.TTS_OPENAI_API_KEY}"
+                    )
                 response = requests.get(
-                    f"{request.app.state.config.TTS_OPENAI_API_BASE_URL}/audio/voices"
+                    f"{request.app.state.config.TTS_OPENAI_API_BASE_URL}/audio/voices",
+                    headers=headers,
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -1361,23 +1462,9 @@ def get_available_voices(request) -> dict:
                 available_voices = {voice["id"]: voice["name"] for voice in voices_list}
             except Exception as e:
                 log.error(f"Error fetching voices from custom endpoint: {str(e)}")
-                available_voices = {
-                    "alloy": "alloy",
-                    "echo": "echo",
-                    "fable": "fable",
-                    "onyx": "onyx",
-                    "nova": "nova",
-                    "shimmer": "shimmer",
-                }
+                available_voices = OPENAI_TTS_VOICES
         else:
-            available_voices = {
-                "alloy": "alloy",
-                "echo": "echo",
-                "fable": "fable",
-                "onyx": "onyx",
-                "nova": "nova",
-                "shimmer": "shimmer",
-            }
+            available_voices = OPENAI_TTS_VOICES
     elif request.app.state.config.TTS_ENGINE == "gemini":
         available_voices = GEMINI_TTS_VOICES
     elif request.app.state.config.TTS_ENGINE == "qwen":
