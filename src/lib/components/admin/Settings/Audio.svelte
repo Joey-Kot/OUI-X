@@ -43,6 +43,9 @@
 	let TTS_GEMINI_PACE = '';
 	let TTS_GEMINI_ACCENT = '';
 	let TTS_GEMINI_TEMPERATURE = 1;
+	let TTS_QWEN_API_BASE_URL = '';
+	let TTS_QWEN_API_KEY = '';
+	let TTS_QWEN_PARAMS = '';
 	let TTS_SPLIT_ON: TTS_RESPONSE_SPLIT = TTS_RESPONSE_SPLIT.PUNCTUATION;
 	let TTS_AZURE_SPEECH_REGION = '';
 	let TTS_AZURE_SPEECH_BASE_URL = '';
@@ -105,11 +108,14 @@
 	const updateConfigHandler = async () => {
 		let openaiParams = {};
 		let geminiParams = {};
+		let qwenParams = {};
 		try {
 			openaiParams = TTS_OPENAI_PARAMS ? JSON.parse(TTS_OPENAI_PARAMS) : {};
 			TTS_OPENAI_PARAMS = JSON.stringify(openaiParams, null, 2);
 			geminiParams = TTS_GEMINI_PARAMS ? JSON.parse(TTS_GEMINI_PARAMS) : {};
 			TTS_GEMINI_PARAMS = JSON.stringify(geminiParams, null, 2);
+			qwenParams = TTS_QWEN_PARAMS ? JSON.parse(TTS_QWEN_PARAMS) : {};
+			TTS_QWEN_PARAMS = JSON.stringify(qwenParams, null, 2);
 		} catch (e) {
 			toast.error($i18n.t('Invalid JSON format for Parameters'));
 			return;
@@ -129,6 +135,9 @@
 				GEMINI_PACE: TTS_GEMINI_PACE,
 				GEMINI_ACCENT: TTS_GEMINI_ACCENT,
 				GEMINI_TEMPERATURE: TTS_GEMINI_TEMPERATURE,
+				QWEN_API_BASE_URL: TTS_QWEN_API_BASE_URL,
+				QWEN_API_KEY: TTS_QWEN_API_KEY,
+				QWEN_PARAMS: qwenParams,
 				API_KEY: TTS_API_KEY,
 				ENGINE: TTS_ENGINE,
 				MODEL: TTS_MODEL,
@@ -176,6 +185,10 @@
 			TTS_GEMINI_PACE = res.tts.GEMINI_PACE || '';
 			TTS_GEMINI_ACCENT = res.tts.GEMINI_ACCENT || '';
 			TTS_GEMINI_TEMPERATURE = res.tts.GEMINI_TEMPERATURE ?? 1;
+			TTS_QWEN_API_BASE_URL =
+				res.tts.QWEN_API_BASE_URL || 'https://dashscope.aliyuncs.com/api/v1';
+			TTS_QWEN_API_KEY = res.tts.QWEN_API_KEY || '';
+			TTS_QWEN_PARAMS = JSON.stringify(res?.tts?.QWEN_PARAMS ?? '', null, 2);
 			TTS_API_KEY = res.tts.API_KEY;
 
 			TTS_ENGINE = res.tts.ENGINE;
@@ -375,6 +388,11 @@
 									TTS_MODEL = 'gemini-3.1-flash-tts-preview';
 									TTS_GEMINI_API_BASE_URL =
 										TTS_GEMINI_API_BASE_URL || 'https://generativelanguage.googleapis.com';
+								} else if (selectedEngine === 'qwen') {
+									TTS_VOICE = 'Cherry';
+									TTS_MODEL = 'qwen3-tts-flash';
+									TTS_QWEN_API_BASE_URL =
+										TTS_QWEN_API_BASE_URL || 'https://dashscope.aliyuncs.com/api/v1';
 								} else {
 									TTS_VOICE = '';
 									TTS_MODEL = '';
@@ -388,6 +406,7 @@
 							<option value="">{$i18n.t('Web API')}</option>
 							<option value="openai">{$i18n.t('OpenAI')}</option>
 							<option value="gemini">{$i18n.t('Gemini')}</option>
+							<option value="qwen">{$i18n.t('Qwen')}</option>
 							<option value="azure">{$i18n.t('Azure AI Speech')}</option>
 						</select>
 					</div>
@@ -419,6 +438,23 @@
 							<SensitiveInput
 								placeholder={$i18n.t('Gemini API Key')}
 								bind:value={TTS_GEMINI_API_KEY}
+								required
+							/>
+						</div>
+					</div>
+				{:else if TTS_ENGINE === 'qwen'}
+					<div>
+						<div class="mt-1 flex gap-2 mb-1">
+							<input
+								class="flex-1 w-full bg-transparent outline-hidden"
+								placeholder={$i18n.t('Qwen Base URL')}
+								bind:value={TTS_QWEN_API_BASE_URL}
+								required
+							/>
+
+							<SensitiveInput
+								placeholder={$i18n.t('Qwen API Key')}
+								bind:value={TTS_QWEN_API_KEY}
 								required
 							/>
 						</div>
@@ -703,6 +739,63 @@
 											className="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 											bind:value={TTS_GEMINI_PARAMS}
 											placeholder={$i18n.t('Enter additional parameters in JSON format')}
+											minSize={100}
+										/>
+									</div>
+								</div>
+							</div>
+						</div>
+					{:else if TTS_ENGINE === 'qwen'}
+						<div class=" flex gap-2">
+							<div class="w-full">
+								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('TTS Voice')}</div>
+								<div class="flex w-full">
+									<div class="flex-1">
+										<input
+											list="voice-list"
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											bind:value={TTS_VOICE}
+											placeholder={$i18n.t('Select a voice')}
+										/>
+
+										<datalist id="voice-list">
+											{#each voices as voice}
+												<option value={voice.id}>{voice.name}</option>
+											{/each}
+										</datalist>
+									</div>
+								</div>
+							</div>
+							<div class="w-full">
+								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('TTS Model')}</div>
+								<div class="flex w-full">
+									<div class="flex-1">
+										<input
+											list="tts-model-list"
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											bind:value={TTS_MODEL}
+											placeholder={$i18n.t('Select a model')}
+										/>
+
+										<datalist id="tts-model-list">
+											{#each models as model}
+												<option value={model.id} class="bg-gray-50 dark:bg-gray-700"></option>
+											{/each}
+										</datalist>
+									</div>
+								</div>
+							</div>
+						</div>
+
+						<div class="mt-2 mb-1 text-xs text-gray-400 dark:text-gray-500">
+							<div class="w-full">
+								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('Additional Parameters')}</div>
+								<div class="flex w-full">
+									<div class="flex-1">
+										<Textarea
+											className="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											bind:value={TTS_QWEN_PARAMS}
+											placeholder={$i18n.t('Enter additional input parameters in JSON format')}
 											minSize={100}
 										/>
 									</div>

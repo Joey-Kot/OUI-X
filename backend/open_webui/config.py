@@ -3736,6 +3736,30 @@ AUDIO_TTS_GEMINI_TEMPERATURE = PersistentConfig(
     float(os.getenv("AUDIO_TTS_GEMINI_TEMPERATURE", "1")),
 )
 
+audio_tts_qwen_params = os.getenv("AUDIO_TTS_QWEN_PARAMS", "")
+try:
+    audio_tts_qwen_params = json.loads(audio_tts_qwen_params)
+except json.JSONDecodeError:
+    audio_tts_qwen_params = {}
+
+AUDIO_TTS_QWEN_API_BASE_URL = PersistentConfig(
+    "AUDIO_TTS_QWEN_API_BASE_URL",
+    "audio.tts.qwen.api_base_url",
+    os.getenv("AUDIO_TTS_QWEN_API_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"),
+)
+
+AUDIO_TTS_QWEN_API_KEY = PersistentConfig(
+    "AUDIO_TTS_QWEN_API_KEY",
+    "audio.tts.qwen.api_key",
+    os.getenv("AUDIO_TTS_QWEN_API_KEY", ""),
+)
+
+AUDIO_TTS_QWEN_PARAMS = PersistentConfig(
+    "AUDIO_TTS_QWEN_PARAMS",
+    "audio.tts.qwen.params",
+    audio_tts_qwen_params,
+)
+
 
 AUDIO_TTS_API_KEY = PersistentConfig(
     "AUDIO_TTS_API_KEY",

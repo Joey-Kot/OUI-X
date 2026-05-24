@@ -65,6 +65,11 @@ GEMINI_TTS_MODELS = [
     {"id": "gemini-2.5-pro-preview-tts"},
 ]
 
+QWEN_TTS_MODELS = [
+    {"id": "qwen3-tts-flash"},
+    {"id": "qwen3-tts-instruct-flash"},
+]
+
 GEMINI_TTS_VOICES = {
     "Zephyr": "Zephyr - Bright",
     "Puck": "Puck - Upbeat",
@@ -96,6 +101,57 @@ GEMINI_TTS_VOICES = {
     "Sadachbia": "Sadachbia - Lively",
     "Sadaltager": "Sadaltager - Knowledgeable",
     "Sulafat": "Sulafat - Higher-pitched",
+}
+
+QWEN_TTS_VOICES = {
+    "Cherry": "Cherry - Sunny, positive, friendly female voice",
+    "Serena": "Serena - Gentle female voice",
+    "Ethan": "Ethan - Warm, energetic male voice",
+    "Chelsie": "Chelsie - Anime-style female voice",
+    "Momo": "Momo - Playful female voice",
+    "Vivian": "Vivian - Cute, spirited female voice",
+    "Moon": "Moon - Free-spirited male voice",
+    "Maia": "Maia - Intellectual and gentle female voice",
+    "Kai": "Kai - Relaxed male voice",
+    "Nofish": "Nofish - Designer-style male voice",
+    "Bella": "Bella - Little-girl female voice",
+    "Jennifer": "Jennifer - Cinematic American female voice",
+    "Ryan": "Ryan - Dramatic, rhythmic male voice",
+    "Katerina": "Katerina - Mature female voice",
+    "Aiden": "Aiden - American young male voice",
+    "Eldric Sage": "Eldric Sage - Calm, wise elder male voice",
+    "Mia": "Mia - Sweet and obedient female voice",
+    "Mochi": "Mochi - Clever childlike male voice",
+    "Bellona": "Bellona - Loud, clear, vivid female voice",
+    "Vincent": "Vincent - Hoarse, rugged male voice",
+    "Bunny": "Bunny - Cute little-girl female voice",
+    "Neil": "Neil - Professional news anchor male voice",
+    "Elias": "Elias - Knowledge narrator female voice",
+    "Arthur": "Arthur - Rustic elder male voice",
+    "Nini": "Nini - Soft, sweet girl-next-door female voice",
+    "Seren": "Seren - Calm sleep-aid female voice",
+    "Pip": "Pip - Mischievous childlike male voice",
+    "Stella": "Stella - Sweet magical-girl female voice",
+    "Bodega": "Bodega - Warm Spanish male voice",
+    "Sonrisa": "Sonrisa - Cheerful Latin female voice",
+    "Alek": "Alek - Russian-accented male voice",
+    "Dolce": "Dolce - Lazy Italian male voice",
+    "Sohee": "Sohee - Expressive Korean female voice",
+    "Ono Anna": "Ono Anna - Playful Japanese female voice",
+    "Lenn": "Lenn - German young male voice",
+    "Emilien": "Emilien - Romantic French male voice",
+    "Andre": "Andre - Magnetic, steady male voice",
+    "Radio Gol": "Radio Gol - Football commentator male voice",
+    "Jada": "Jada - Shanghainese female voice",
+    "Dylan": "Dylan - Beijing male voice",
+    "Li": "Li - Nanjing male voice",
+    "Marcus": "Marcus - Shaanxi male voice",
+    "Roy": "Roy - Minnan male voice",
+    "Peter": "Peter - Tianjin crosstalk male voice",
+    "Sunny": "Sunny - Sichuan female voice",
+    "Eric": "Eric - Sichuan male voice",
+    "Rocky": "Rocky - Cantonese male voice",
+    "Kiki": "Kiki - Cantonese female voice",
 }
 
 GEMINI_TTS_STYLE_PROMPTS = {
@@ -245,6 +301,30 @@ def prepare_gemini_audio_file(audio_data: bytes, mime_type: str) -> tuple[bytes,
     return audio_data, file_extension, mime_type
 
 
+def build_qwen_tts_url(api_base_url: str) -> str:
+    base_url = (api_base_url or "https://dashscope.aliyuncs.com/api/v1").rstrip("/")
+    generation_path = "/services/aigc/multimodal-generation/generation"
+
+    if base_url.endswith(generation_path):
+        return base_url
+
+    if not base_url.endswith("/api/v1"):
+        base_url = f"{base_url}/api/v1"
+
+    return f"{base_url}{generation_path}"
+
+
+def extract_qwen_audio(response_data):
+    audio = response_data.get("output", {}).get("audio", {})
+    if not audio:
+        return None, None
+
+    if audio.get("data"):
+        return base64.b64decode(audio["data"]), None
+
+    return None, audio.get("url")
+
+
 def is_audio_conversion_required(file_path):
     """
     Check if the given audio file needs conversion to mp3.
@@ -312,6 +392,9 @@ class TTSConfigForm(BaseModel):
     GEMINI_PACE: str = ""
     GEMINI_ACCENT: str = ""
     GEMINI_TEMPERATURE: float = 1
+    QWEN_API_BASE_URL: str = "https://dashscope.aliyuncs.com/api/v1"
+    QWEN_API_KEY: str = ""
+    QWEN_PARAMS: Optional[dict] = None
     API_KEY: str
     ENGINE: str
     MODEL: str
@@ -356,6 +439,9 @@ async def get_audio_config(request: Request, user=Depends(get_admin_user)):
             "GEMINI_PACE": request.app.state.config.TTS_GEMINI_PACE,
             "GEMINI_ACCENT": request.app.state.config.TTS_GEMINI_ACCENT,
             "GEMINI_TEMPERATURE": request.app.state.config.TTS_GEMINI_TEMPERATURE,
+            "QWEN_API_BASE_URL": request.app.state.config.TTS_QWEN_API_BASE_URL,
+            "QWEN_API_KEY": request.app.state.config.TTS_QWEN_API_KEY,
+            "QWEN_PARAMS": request.app.state.config.TTS_QWEN_PARAMS,
             "API_KEY": request.app.state.config.TTS_API_KEY,
             "ENGINE": request.app.state.config.TTS_ENGINE,
             "MODEL": request.app.state.config.TTS_MODEL,
@@ -396,6 +482,9 @@ async def update_audio_config(
     request.app.state.config.TTS_GEMINI_PACE = form_data.tts.GEMINI_PACE
     request.app.state.config.TTS_GEMINI_ACCENT = form_data.tts.GEMINI_ACCENT
     request.app.state.config.TTS_GEMINI_TEMPERATURE = form_data.tts.GEMINI_TEMPERATURE
+    request.app.state.config.TTS_QWEN_API_BASE_URL = form_data.tts.QWEN_API_BASE_URL
+    request.app.state.config.TTS_QWEN_API_KEY = form_data.tts.QWEN_API_KEY
+    request.app.state.config.TTS_QWEN_PARAMS = form_data.tts.QWEN_PARAMS
     request.app.state.config.TTS_API_KEY = form_data.tts.API_KEY
     request.app.state.config.TTS_ENGINE = form_data.tts.ENGINE
     request.app.state.config.TTS_MODEL = form_data.tts.MODEL
@@ -442,6 +531,9 @@ async def update_audio_config(
             "GEMINI_PACE": request.app.state.config.TTS_GEMINI_PACE,
             "GEMINI_ACCENT": request.app.state.config.TTS_GEMINI_ACCENT,
             "GEMINI_TEMPERATURE": request.app.state.config.TTS_GEMINI_TEMPERATURE,
+            "QWEN_API_BASE_URL": request.app.state.config.TTS_QWEN_API_BASE_URL,
+            "QWEN_API_KEY": request.app.state.config.TTS_QWEN_API_KEY,
+            "QWEN_PARAMS": request.app.state.config.TTS_QWEN_PARAMS,
             "API_KEY": request.app.state.config.TTS_API_KEY,
             "SPLIT_ON": request.app.state.config.TTS_SPLIT_ON,
             "AZURE_SPEECH_REGION": request.app.state.config.TTS_AZURE_SPEECH_REGION,
@@ -485,13 +577,21 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                 "temperature": request.app.state.config.TTS_GEMINI_TEMPERATURE,
             }
         )
+    elif request.app.state.config.TTS_ENGINE == "qwen":
+        cache_config.update(
+            {
+                "voice": request.app.state.config.TTS_VOICE,
+                "api_base_url": request.app.state.config.TTS_QWEN_API_BASE_URL,
+                "params": request.app.state.config.TTS_QWEN_PARAMS,
+            }
+        )
 
     name = hashlib.sha256(
         body + json.dumps(cache_config, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
 
     file_extension = (
-        "wav" if request.app.state.config.TTS_ENGINE == "gemini" else "mp3"
+        "wav" if request.app.state.config.TTS_ENGINE in {"gemini", "qwen"} else "mp3"
     )
     file_path = SPEECH_CACHE_DIR.joinpath(f"{name}.{file_extension}")
     file_body_path = SPEECH_CACHE_DIR.joinpath(f"{name}.json")
@@ -667,6 +767,113 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
                     async with aiofiles.open(file_body_path, "w") as f:
                         await f.write(json.dumps(gemini_payload))
+
+                    return FileResponse(file_path, media_type=media_type)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            log.exception(e)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Open WebUI: Server Connection Error",
+            )
+
+    elif request.app.state.config.TTS_ENGINE == "qwen":
+        api_key = request.app.state.config.TTS_QWEN_API_KEY
+        if not api_key:
+            raise HTTPException(status_code=400, detail="Qwen API key is required")
+
+        model = request.app.state.config.TTS_MODEL or "qwen3-tts-flash"
+        voice = payload.get("voice") or request.app.state.config.TTS_VOICE or "Cherry"
+        transcript = payload.get("input", "")
+
+        qwen_payload = {
+            "model": model,
+            "input": {
+                **(request.app.state.config.TTS_QWEN_PARAMS or {}),
+                "text": transcript,
+                "voice": voice,
+            },
+        }
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
+            async with aiohttp.ClientSession(
+                timeout=timeout, trust_env=True
+            ) as session:
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                }
+                if ENABLE_FORWARD_USER_INFO_HEADERS:
+                    headers = include_user_info_headers(headers, user)
+
+                async with session.post(
+                    url=build_qwen_tts_url(
+                        request.app.state.config.TTS_QWEN_API_BASE_URL
+                    ),
+                    json=qwen_payload,
+                    headers=headers,
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                ) as r:
+                    response_text = await r.text()
+
+                    try:
+                        response_data = json.loads(response_text)
+                    except json.JSONDecodeError:
+                        response_data = None
+
+                    if r.status >= 400:
+                        detail = response_text
+                        if isinstance(response_data, dict):
+                            detail = response_data.get("message") or detail
+                        raise HTTPException(
+                            status_code=r.status, detail=f"External: {detail}"
+                        )
+
+                    if response_data is None:
+                        raise ValueError("Invalid JSON response from Qwen TTS")
+
+                    status_code = response_data.get("status_code")
+                    if status_code and status_code >= 400:
+                        detail = response_data.get("message") or response_text
+                        raise HTTPException(
+                            status_code=status_code, detail=f"External: {detail}"
+                        )
+
+                    audio_data, audio_url = extract_qwen_audio(response_data)
+                    media_type = "audio/wav"
+
+                    if audio_url:
+                        async with session.get(
+                            audio_url, ssl=AIOHTTP_CLIENT_SESSION_SSL
+                        ) as audio_response:
+                            audio_response.raise_for_status()
+                            audio_data = await audio_response.read()
+                            content_type = audio_response.headers.get(
+                                "Content-Type", ""
+                            ).split(";", 1)[0]
+                            media_type = content_type or media_type
+                            if media_type in {
+                                "application/octet-stream",
+                                "binary/octet-stream",
+                            }:
+                                media_type = (
+                                    mimetypes.guess_type(
+                                        audio_url.split("?", 1)[0]
+                                    )[0]
+                                    or media_type
+                                )
+
+                    if not audio_data:
+                        raise ValueError("No audio data returned from Qwen TTS")
+
+                    async with aiofiles.open(file_path, "wb") as f:
+                        await f.write(audio_data)
+
+                    async with aiofiles.open(file_body_path, "w") as f:
+                        await f.write(json.dumps(qwen_payload))
 
                     return FileResponse(file_path, media_type=media_type)
 
@@ -1126,6 +1333,8 @@ def get_available_models(request: Request) -> list[dict]:
             available_models = [{"id": "tts-1"}, {"id": "tts-1-hd"}]
     elif request.app.state.config.TTS_ENGINE == "gemini":
         available_models = GEMINI_TTS_MODELS
+    elif request.app.state.config.TTS_ENGINE == "qwen":
+        available_models = QWEN_TTS_MODELS
     return available_models
 
 
@@ -1171,6 +1380,8 @@ def get_available_voices(request) -> dict:
             }
     elif request.app.state.config.TTS_ENGINE == "gemini":
         available_voices = GEMINI_TTS_VOICES
+    elif request.app.state.config.TTS_ENGINE == "qwen":
+        available_voices = QWEN_TTS_VOICES
     elif request.app.state.config.TTS_ENGINE == "azure":
         try:
             region = request.app.state.config.TTS_AZURE_SPEECH_REGION
