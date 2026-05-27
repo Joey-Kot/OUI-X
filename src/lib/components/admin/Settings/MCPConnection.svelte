@@ -53,7 +53,6 @@
 
 				<div class="capitalize outline-hidden w-full bg-transparent">
 					{connection?.info?.name ?? connection?.url}
-					<span class="text-gray-500">{connection?.info?.id ?? ''}</span>
 				</div>
 			</div>
 		</div>

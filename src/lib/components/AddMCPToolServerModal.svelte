@@ -46,6 +46,43 @@
 	let loading = false;
 	let verifying = false;
 
+	const generateConnectionId = () => {
+		const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+		const values = new Uint32Array(6);
+		const crypto = globalThis.crypto;
+
+		if (crypto?.getRandomValues) {
+			crypto.getRandomValues(values);
+			return Array.from(values, (value) => alphabet[value % alphabet.length]).join('');
+		}
+
+		return Array.from(
+			{ length: 6 },
+			() => alphabet[Math.floor(Math.random() * alphabet.length)]
+		).join('');
+	};
+
+	const reset = () => {
+		url = '';
+		transport = 'streamable_http';
+		auth_type = 'none';
+		headers = '';
+		key = '';
+
+		id = generateConnectionId();
+		name = '';
+		description = '';
+		oauthScope = '';
+		oauthClientInfo = null;
+
+		enable = true;
+		accessControl = {};
+		toolsConfig = {};
+
+		verified = false;
+		verifiedTools = [];
+	};
+
 	const parseHeaders = () => {
 		if (!headers) return undefined;
 		try {
@@ -139,8 +176,12 @@
 	};
 
 	const registerOAuthClientHandler = async () => {
-		if (!url || !id) {
-			toast.error($i18n.t('Please enter a valid URL and ID'));
+		if (!id) {
+			id = generateConnectionId();
+		}
+
+		if (!url) {
+			toast.error($i18n.t('Please enter a valid URL'));
 			return;
 		}
 
@@ -191,6 +232,10 @@
 		loading = true;
 		url = url.replace(/\/$/, '');
 
+		if (!id) {
+			id = generateConnectionId();
+		}
+
 		if (id.includes(':') || id.includes('|')) {
 			toast.error($i18n.t('ID cannot contain ":" or "|" characters'));
 			loading = false;
@@ -223,7 +268,10 @@
 	};
 
 	const init = () => {
-		if (!connection) return;
+		if (!connection) {
+			reset();
+			return;
+		}
 
 		url = connection?.url ?? '';
 		transport = connection?.transport ?? 'streamable_http';
@@ -231,7 +279,7 @@
 		headers = connection?.headers ? JSON.stringify(connection.headers, null, 2) : '';
 		key = connection?.key ?? '';
 
-		id = connection?.info?.id ?? '';
+		id = connection?.info?.id ?? generateConnectionId();
 		name = connection?.info?.name ?? '';
 		description = connection?.info?.description ?? '';
 		oauthScope = connection?.info?.oauth_scope ?? '';
@@ -332,9 +380,6 @@
 
 		<label class="text-xs text-gray-500">{$i18n.t('Headers')}</label>
 		<Textarea className="w-full text-sm outline-hidden" bind:value={headers} placeholder={$i18n.t('Enter additional headers in JSON format')} required={false} minSize={30} />
-
-		<label class="text-xs text-gray-500">{$i18n.t('ID')}</label>
-		<input class="w-full text-sm bg-transparent outline-hidden" type="text" bind:value={id} placeholder={$i18n.t('Enter ID')} required />
 
 		<label class="text-xs text-gray-500">{$i18n.t('Name')}</label>
 		<input class="w-full text-sm bg-transparent outline-hidden" type="text" bind:value={name} placeholder={$i18n.t('Enter name')} required />
