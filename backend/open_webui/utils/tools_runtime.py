@@ -74,6 +74,16 @@ def _normalize_spec(spec: dict, name: str | None = None) -> dict:
     return normalized
 
 
+def _dedupe_registry_name(registry: dict[str, Any], name: str) -> str:
+    if name not in registry:
+        return name
+
+    idx = 2
+    while f"{name}_v{idx}" in registry:
+        idx += 1
+    return f"{name}_v{idx}"
+
+
 async def build_local_registry(
     request,
     tool_ids: list[str] | None,
@@ -236,7 +246,6 @@ async def build_mcp_registry(
         client: MCPClient,
         client_key: str,
         server_id: str,
-        tool_name_prefix: str,
         tools_config: dict,
         scope: str,
         transport: str,
@@ -247,7 +256,10 @@ async def build_mcp_registry(
                 continue
 
             upstream_name = tool_spec.get("name", "")
-            function_name = f"{tool_name_prefix}_{upstream_name}"
+            if not upstream_name:
+                continue
+
+            function_name = _dedupe_registry_name(registry, upstream_name)
 
             async def tool_function(_name=upstream_name, **kwargs):
                 return await client.call_tool(_name, function_args=kwargs)
@@ -262,6 +274,8 @@ async def build_mcp_registry(
                     "client_key": client_key,
                     "scope": scope,
                     "transport": transport,
+                    "upstream_name": upstream_name,
+                    "display_name": upstream_name,
                 },
             )
 
@@ -301,7 +315,6 @@ async def build_mcp_registry(
                     client=client,
                     client_key=client_key,
                     server_id=server_id,
-                    tool_name_prefix=f"user_{server_id}",
                     tools_config=connection.get("config", {}).get("tools", {}) or {},
                     scope="user",
                     transport=transport,
@@ -346,7 +359,6 @@ async def build_mcp_registry(
                     client=client,
                     client_key=server_id,
                     server_id=server_id,
-                    tool_name_prefix=server_id,
                     tools_config=connection.get("config", {}).get("tools", {}) or {},
                     scope="admin",
                     transport=transport,
@@ -453,6 +465,7 @@ def registry_to_legacy_tools(registry: dict[str, ToolRegistryEntry]) -> dict[str
             "tool_id": meta.get("tool_id"),
             "metadata": meta.get("metadata", {}),
             "client": meta.get("client"),
+            "display_name": meta.get("display_name", name),
         }
     return tools
 

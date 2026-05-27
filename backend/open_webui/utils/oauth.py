@@ -279,6 +279,27 @@ def get_discovery_urls(server_url) -> list[str]:
     return urls
 
 
+def get_protected_resource_metadata_urls(server_url) -> list[str]:
+    parsed, base_url = get_parsed_and_base_url(server_url)
+
+    urls = []
+
+    if parsed.path and parsed.path != "/":
+        resource_path = parsed.path.rstrip("/")
+        urls.append(
+            urllib.parse.urljoin(
+                base_url,
+                f"/.well-known/oauth-protected-resource{resource_path}",
+            )
+        )
+
+    urls.append(
+        urllib.parse.urljoin(base_url, "/.well-known/oauth-protected-resource")
+    )
+
+    return urls
+
+
 # TODO: Some OAuth providers require Initial Access Tokens (IATs) for dynamic client registration.
 # This is not currently supported.
 async def get_oauth_client_info_with_dynamic_client_registration(
@@ -286,10 +307,13 @@ async def get_oauth_client_info_with_dynamic_client_registration(
     client_id: str,
     oauth_server_url: str,
     oauth_server_key: Optional[str] = None,
+    scope: Optional[str] = None,
 ) -> OAuthClientInformationFull:
     try:
         oauth_server_metadata = None
         oauth_server_metadata_url = None
+        protected_resource_metadata = None
+        authorization_server_url = None
 
         redirect_base_url = (
             str(request.app.state.config.WEBUI_URL or request.base_url)
@@ -300,10 +324,62 @@ async def get_oauth_client_info_with_dynamic_client_registration(
             redirect_uris=[f"{redirect_base_url}/oauth/clients/{client_id}/callback"],
             grant_types=["authorization_code", "refresh_token"],
             response_types=["code"],
+            scope=scope,
         )
 
+        for url in get_protected_resource_metadata_urls(oauth_server_url):
+            async with aiohttp.ClientSession(trust_env=True) as session:
+                async with session.get(
+                    url, ssl=AIOHTTP_CLIENT_SESSION_SSL
+                ) as protected_resource_metadata_response:
+                    if protected_resource_metadata_response.status != 200:
+                        continue
+
+                    try:
+                        protected_resource_metadata = (
+                            await protected_resource_metadata_response.json()
+                        )
+                    except Exception as e:
+                        log.error(
+                            f"Error parsing OAuth protected resource metadata from {url}: {e}"
+                        )
+                        continue
+
+                    scopes_supported = protected_resource_metadata.get(
+                        "scopes_supported"
+                    )
+                    if (
+                        oauth_client_metadata.scope is None
+                        and isinstance(scopes_supported, list)
+                    ):
+                        supported_scopes = [
+                            supported_scope
+                            for supported_scope in scopes_supported
+                            if isinstance(supported_scope, str) and supported_scope
+                        ]
+                        if supported_scopes:
+                            oauth_client_metadata.scope = " ".join(supported_scopes)
+
+                    authorization_servers = protected_resource_metadata.get(
+                        "authorization_servers"
+                    )
+                    if isinstance(authorization_servers, list):
+                        for authorization_server in authorization_servers:
+                            if (
+                                isinstance(authorization_server, str)
+                                and authorization_server
+                            ):
+                                authorization_server_url = authorization_server
+                                break
+
+                    break
+
         # Attempt to fetch OAuth server metadata to get registration endpoint & scopes
-        discovery_urls = get_discovery_urls(oauth_server_url)
+        discovery_urls = []
+        if authorization_server_url:
+            discovery_urls.extend(get_discovery_urls(authorization_server_url))
+        discovery_urls.extend(get_discovery_urls(oauth_server_url))
+        discovery_urls = list(dict.fromkeys(discovery_urls))
         for url in discovery_urls:
             async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(
@@ -319,9 +395,16 @@ async def get_oauth_client_info_with_dynamic_client_registration(
                                 oauth_client_metadata.scope is None
                                 and oauth_server_metadata.scopes_supported is not None
                             ):
-                                oauth_client_metadata.scope = " ".join(
-                                    oauth_server_metadata.scopes_supported
-                                )
+                                supported_scopes = [
+                                    supported_scope
+                                    for supported_scope in oauth_server_metadata.scopes_supported
+                                    if isinstance(supported_scope, str)
+                                    and supported_scope
+                                ]
+                                if supported_scopes:
+                                    oauth_client_metadata.scope = " ".join(
+                                        supported_scopes
+                                    )
 
                             if (
                                 oauth_server_metadata.token_endpoint_auth_methods_supported
@@ -367,9 +450,21 @@ async def get_oauth_client_info_with_dynamic_client_registration(
                         k: (None if v == "" else v)
                         for k, v in registration_response_json.items()
                     }
+                    oauth_client_info_data = oauth_client_metadata.model_dump(
+                        exclude_none=True,
+                        mode="json",
+                        by_alias=True,
+                    )
+                    oauth_client_info_data.update(
+                        {
+                            k: v
+                            for k, v in registration_response_json.items()
+                            if v is not None
+                        }
+                    )
                     oauth_client_info = OAuthClientInformationFull.model_validate(
                         {
-                            **registration_response_json,
+                            **oauth_client_info_data,
                             **{"issuer": oauth_server_metadata_url},
                             **{"server_metadata": oauth_server_metadata},
                         }

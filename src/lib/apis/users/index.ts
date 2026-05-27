@@ -303,7 +303,7 @@ export const verifyUserMCPToolServerConnection = async (token: string, connectio
 
 export const registerUserMCPOAuthClient = async (
 	token: string,
-	formData: { url: string; client_id: string }
+	formData: { url: string; client_id: string; scope?: string }
 ) => {
 	let error = null;
 
