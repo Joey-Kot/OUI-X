@@ -599,42 +599,85 @@
 		await updateChat();
 	};
 
-	const deleteMessage = async (messageId) => {
-		const messageToDelete = history.messages[messageId];
+	const getDeepestMessageId = (messageId: string | null) => {
+		const messagesById = (history as any).messages ?? {};
+		let currentMessageId: string | null = messageId;
+		let childrenIds =
+			currentMessageId === null
+				? Object.values(messagesById)
+						.filter((message: any) => message.parentId === null)
+						.map((message: any) => message.id)
+				: (messagesById[currentMessageId]?.childrenIds ?? []);
+
+		while (childrenIds.length !== 0) {
+			const nextMessageId = childrenIds.at(-1);
+			if (!nextMessageId) {
+				break;
+			}
+
+			currentMessageId = nextMessageId;
+			childrenIds = messagesById[nextMessageId]?.childrenIds ?? [];
+		}
+
+		return currentMessageId;
+	};
+
+	const restoreScrollTop = (element: HTMLElement | null, scrollTop: number) => {
+		if (!element) {
+			return;
+		}
+
+		element.scrollTop = Math.min(scrollTop, Math.max(0, element.scrollHeight - element.clientHeight));
+		updateViewportMetrics();
+	};
+
+	const deleteMessage = async (messageId: string) => {
+		const element = document.getElementById('messages-container');
+		const previousScrollTop = element?.scrollTop ?? 0;
+		const messagesById = (history as any).messages ?? {};
+		const messageToDelete = messagesById[messageId];
+		if (!messageToDelete) {
+			return;
+		}
+
 		const parentMessageId = messageToDelete.parentId;
 		const childMessageIds = messageToDelete.childrenIds ?? [];
 
 		// Collect all grandchildren
 		const grandchildrenIds = childMessageIds.flatMap(
-			(childId) => history.messages[childId]?.childrenIds ?? []
+			(childId: string) => messagesById[childId]?.childrenIds ?? []
 		);
 
 		// Update parent's children
-		if (parentMessageId && history.messages[parentMessageId]) {
-			history.messages[parentMessageId].childrenIds = [
-				...history.messages[parentMessageId].childrenIds.filter((id) => id !== messageId),
+		if (parentMessageId && messagesById[parentMessageId]) {
+			messagesById[parentMessageId].childrenIds = [
+				...messagesById[parentMessageId].childrenIds.filter((id: string) => id !== messageId),
 				...grandchildrenIds
 			];
 		}
 
 		// Update grandchildren's parent
-		grandchildrenIds.forEach((grandchildId) => {
-			if (history.messages[grandchildId]) {
-				history.messages[grandchildId].parentId = parentMessageId;
+		grandchildrenIds.forEach((grandchildId: string) => {
+			if (messagesById[grandchildId]) {
+				messagesById[grandchildId].parentId = parentMessageId;
 			}
 		});
 
 		// Delete the message and its children
-		[messageId, ...childMessageIds].forEach((id) => {
-			delete history.messages[id];
+		[messageId, ...childMessageIds].forEach((id: string) => {
+			delete messagesById[id];
 		});
 
-		await tick();
+		(history as any).currentId = getDeepestMessageId(parentMessageId);
 
-		showMessage({ id: parentMessageId });
+		history = history;
+		await tick();
+		restoreScrollTop(element, previousScrollTop);
 
 		// Update the chat
 		await updateChat();
+		await tick();
+		restoreScrollTop(element, previousScrollTop);
 	};
 
 	const triggerScroll = () => {
