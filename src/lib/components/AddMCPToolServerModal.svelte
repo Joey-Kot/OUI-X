@@ -33,6 +33,7 @@
 	let id = '';
 	let name = '';
 	let description = '';
+	let oauthScope = '';
 	let oauthClientInfo = null;
 
 	let enable = true;
@@ -70,6 +71,7 @@
 			id,
 			name,
 			description,
+			...(oauthScope ? { oauth_scope: oauthScope } : {}),
 			...(oauthClientInfo ? { oauth_client_info: oauthClientInfo } : {})
 		},
 		config: {
@@ -103,6 +105,19 @@
 
 		if (!res) return;
 
+		if (res.need_authorization) {
+			verified = false;
+			verifiedTools = [];
+			if (res.authorization_url && oauthClientInfo) {
+				const authorizationUrl = new URL(res.authorization_url, window.location.origin).toString();
+				window.open(authorizationUrl, '_blank', 'noopener');
+				toast.info($i18n.t('Authorization required'));
+			} else {
+				toast.error($i18n.t('Please register the OAuth client'));
+			}
+			return;
+		}
+
 		if (res.oauth_server_metadata) {
 			verified = false;
 			verifiedTools = [];
@@ -130,12 +145,19 @@
 		}
 
 		const registerClient = userScoped ? registerUserMCPOAuthClient : registerOAuthClient;
+		let authorizationWindow: Window | null = null;
+		try {
+			authorizationWindow = window.open('about:blank', '_blank');
+		} catch {
+			authorizationWindow = null;
+		}
 
 		const res = await registerClient(
 			localStorage.token,
 			{
 				url,
-				client_id: id
+				client_id: id,
+				...(oauthScope ? { scope: oauthScope } : {})
 			},
 			userScoped ? undefined : 'mcp'
 		).catch(() => {
@@ -143,8 +165,24 @@
 			return null;
 		});
 
+		if (!res) {
+			authorizationWindow?.close();
+			return;
+		}
+
 		if (res) {
 			oauthClientInfo = res?.oauth_client_info ?? null;
+			if (res?.need_authorization && res?.authorization_url) {
+				const authorizationUrl = new URL(res.authorization_url, window.location.origin).toString();
+				if (authorizationWindow) {
+					authorizationWindow.opener = null;
+					authorizationWindow.location.href = authorizationUrl;
+				} else {
+					window.open(authorizationUrl, '_blank', 'noopener');
+				}
+			} else {
+				authorizationWindow?.close();
+			}
 			toast.success($i18n.t('Registration successful'));
 		}
 	};
@@ -196,6 +234,7 @@
 		id = connection?.info?.id ?? '';
 		name = connection?.info?.name ?? '';
 		description = connection?.info?.description ?? '';
+		oauthScope = connection?.info?.oauth_scope ?? '';
 		oauthClientInfo = connection?.info?.oauth_client_info ?? null;
 
 		enable = connection?.config?.enable ?? true;
@@ -272,7 +311,7 @@
 
 		<label class="text-xs text-gray-500">{$i18n.t('Auth')}</label>
 		<div class="flex gap-2">
-			<select class="text-sm bg-transparent" bind:value={auth_type}>
+			<select class="min-w-24 text-sm bg-transparent" bind:value={auth_type}>
 				<option value="none">{$i18n.t('None')}</option>
 				<option value="bearer">{$i18n.t('Bearer')}</option>
 				<option value="session">{$i18n.t('Session')}</option>
@@ -285,6 +324,11 @@
 				<button type="button" class="text-xs underline" on:click={registerOAuthClientHandler}>{$i18n.t('Register Client')}</button>
 			{/if}
 		</div>
+
+		{#if auth_type === 'oauth_2.1'}
+			<label class="text-xs text-gray-500">{$i18n.t('Scope')}</label>
+			<input class="w-full text-sm bg-transparent outline-hidden" type="text" bind:value={oauthScope} placeholder={$i18n.t('Optional OAuth scopes')} />
+		{/if}
 
 		<label class="text-xs text-gray-500">{$i18n.t('Headers')}</label>
 		<Textarea className="w-full text-sm outline-hidden" bind:value={headers} placeholder={$i18n.t('Enter additional headers in JSON format')} required={false} minSize={30} />

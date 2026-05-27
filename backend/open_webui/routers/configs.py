@@ -93,6 +93,15 @@ class OAuthClientRegistrationForm(BaseModel):
     url: str
     client_id: str
     client_name: Optional[str] = None
+    scope: Optional[str] = None
+
+
+def _get_oauth_authorization_url(oauth_client_id: str) -> str:
+    return f"/oauth/clients/{oauth_client_id}/authorize"
+
+
+def _get_mcp_oauth_client_id(server_id: str) -> str:
+    return server_id if server_id.startswith("mcp:") else f"mcp:{server_id}"
 
 
 @router.post("/oauth/clients/register")
@@ -109,11 +118,17 @@ async def register_oauth_client(
 
         oauth_client_info = (
             await get_oauth_client_info_with_dynamic_client_registration(
-                request, oauth_client_id, form_data.url
+                request, oauth_client_id, form_data.url, scope=form_data.scope
             )
+        )
+        request.app.state.oauth_client_manager.remove_client(oauth_client_id)
+        request.app.state.oauth_client_manager.add_client(
+            oauth_client_id, oauth_client_info
         )
         return {
             "status": True,
+            "need_authorization": True,
+            "authorization_url": _get_oauth_authorization_url(oauth_client_id),
             "oauth_client_info": encrypt_data(
                 oauth_client_info.model_dump(mode="json")
             ),
@@ -305,6 +320,7 @@ async def verify_mcp_tool_servers_config(
     Verify the connection to an MCP tool server.
     """
 
+    oauth_server_metadata = None
     if form_data.auth_type == "oauth_2.1":
         discovery_urls = get_discovery_urls(form_data.url)
         for discovery_url in discovery_urls:
@@ -320,12 +336,7 @@ async def verify_mcp_tool_servers_config(
                             oauth_server_metadata = OAuthMetadata.model_validate(
                                 await oauth_server_metadata_response.json()
                             )
-                            return {
-                                "status": True,
-                                "oauth_server_metadata": oauth_server_metadata.model_dump(
-                                    mode="json"
-                                ),
-                            }
+                            break
                         except Exception as e:
                             log.info(
                                 f"Failed to parse OAuth 2.1 discovery document: {e}"
@@ -335,23 +346,58 @@ async def verify_mcp_tool_servers_config(
                                 detail=f"Failed to parse OAuth 2.1 discovery document from {discovery_url}",
                             )
 
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to fetch OAuth 2.1 discovery document from {discovery_urls}",
-        )
+            if oauth_server_metadata:
+                break
+
+        if oauth_server_metadata is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to fetch OAuth 2.1 discovery document from {discovery_urls}",
+            )
 
     client = MCPClient()
     try:
         timeout_seconds = _normalize_tool_call_timeout(
             getattr(request.app.state.config, "TOOL_CALL_TIMEOUT_SECONDS", 60)
         )
-        headers = await _get_connection_headers(
-            request,
-            user,
-            form_data.auth_type,
-            form_data.key,
-            form_data.headers,
-        )
+        if form_data.auth_type == "oauth_2.1":
+            server_id = form_data.info.get("id", "")
+            oauth_client_id = _get_mcp_oauth_client_id(server_id) if server_id else ""
+            oauth_token = (
+                await request.app.state.oauth_client_manager.get_oauth_token(
+                    user.id, oauth_client_id
+                )
+                if oauth_client_id
+                else None
+            )
+
+            if not oauth_token or not oauth_token.get("access_token"):
+                return {
+                    "status": True,
+                    "need_authorization": True,
+                    "authorization_url": (
+                        _get_oauth_authorization_url(oauth_client_id)
+                        if oauth_client_id
+                        else None
+                    ),
+                    "oauth_server_metadata": oauth_server_metadata.model_dump(
+                        mode="json"
+                    )
+                    if oauth_server_metadata
+                    else None,
+                }
+
+            headers = {"Authorization": f"Bearer {oauth_token.get('access_token')}"}
+            if form_data.headers and isinstance(form_data.headers, dict):
+                headers.update(form_data.headers)
+        else:
+            headers = await _get_connection_headers(
+                request,
+                user,
+                form_data.auth_type,
+                form_data.key,
+                form_data.headers,
+            )
 
         await client.connect(
             form_data.url,

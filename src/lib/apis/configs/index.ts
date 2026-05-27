@@ -263,6 +263,7 @@ type RegisterOAuthClientForm = {
 	url: string;
 	client_id: string;
 	client_name?: string;
+	scope?: string;
 };
 
 export const registerOAuthClient = async (
