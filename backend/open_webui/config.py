@@ -3792,6 +3792,12 @@ AUDIO_TTS_SPLIT_ON = PersistentConfig(
     os.getenv("AUDIO_TTS_SPLIT_ON", "punctuation"),
 )
 
+AUDIO_TTS_STREAM_RESPONSE = PersistentConfig(
+    "AUDIO_TTS_STREAM_RESPONSE",
+    "audio.tts.stream_response",
+    os.getenv("AUDIO_TTS_STREAM_RESPONSE", "False").lower() == "true",
+)
+
 AUDIO_TTS_OUTPUT_FORMAT = PersistentConfig(
     "AUDIO_TTS_OUTPUT_FORMAT",
     "audio.tts.output_format",

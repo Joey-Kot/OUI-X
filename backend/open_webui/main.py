@@ -205,6 +205,7 @@ from open_webui.config import (
     AUDIO_TTS_QWEN_PARAMS,
     AUDIO_TTS_API_KEY,
     AUDIO_TTS_SPLIT_ON,
+    AUDIO_TTS_STREAM_RESPONSE,
     AUDIO_TTS_OUTPUT_FORMAT,
     AUDIO_TTS_AZURE_SPEECH_REGION,
     AUDIO_TTS_AZURE_SPEECH_BASE_URL,
@@ -1207,6 +1208,7 @@ app.state.config.TTS_QWEN_PARAMS = AUDIO_TTS_QWEN_PARAMS
 
 app.state.config.TTS_API_KEY = AUDIO_TTS_API_KEY
 app.state.config.TTS_SPLIT_ON = AUDIO_TTS_SPLIT_ON
+app.state.config.TTS_STREAM_RESPONSE = AUDIO_TTS_STREAM_RESPONSE
 app.state.config.TTS_OUTPUT_FORMAT = AUDIO_TTS_OUTPUT_FORMAT
 
 
@@ -2198,6 +2200,7 @@ async def get_app_config(request: Request):
                         "engine": app.state.config.TTS_ENGINE,
                         "voice": app.state.config.TTS_VOICE,
                         "split_on": app.state.config.TTS_SPLIT_ON,
+                        "stream_response": app.state.config.TTS_STREAM_RESPONSE,
                         "output_format": app.state.config.TTS_OUTPUT_FORMAT,
                     },
                     "stt": {

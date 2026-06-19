@@ -29,8 +29,9 @@ from fastapi import (
     APIRouter,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 
 from open_webui.utils.misc import strict_match_mime_type
@@ -243,17 +244,21 @@ def parse_audio_mime_type(mime_type: str) -> dict[str, int]:
 
 
 def convert_to_wav(audio_data: bytes, mime_type: str) -> bytes:
+    return build_wav_header(mime_type, len(audio_data)) + audio_data
+
+
+def build_wav_header(mime_type: str, data_size: Optional[int] = None) -> bytes:
     parameters = parse_audio_mime_type(mime_type)
     bits_per_sample = parameters["bits_per_sample"]
     sample_rate = parameters["rate"]
     num_channels = 1
-    data_size = len(audio_data)
+    data_size = data_size if data_size is not None else 0xFFFFFFFF
     bytes_per_sample = bits_per_sample // 8
     block_align = num_channels * bytes_per_sample
     byte_rate = sample_rate * block_align
-    chunk_size = 36 + data_size
+    chunk_size = 36 + data_size if data_size <= 0xFFFFFFFF - 36 else 0xFFFFFFFF
 
-    header = struct.pack(
+    return struct.pack(
         "<4sI4s4sIHHIIHH4sI",
         b"RIFF",
         chunk_size,
@@ -269,7 +274,81 @@ def convert_to_wav(audio_data: bytes, mime_type: str) -> bytes:
         b"data",
         data_size,
     )
-    return header + audio_data
+
+
+async def cleanup_response(
+    response: Optional[aiohttp.ClientResponse],
+    session: Optional[aiohttp.ClientSession],
+):
+    if response:
+        response.close()
+    if session:
+        await session.close()
+
+
+async def iter_sse_json(stream: aiohttp.StreamReader):
+    buffer = ""
+    data_lines = []
+
+    async for chunk, _ in stream.iter_chunks():
+        if not chunk:
+            continue
+
+        buffer += chunk.decode("utf-8", errors="ignore")
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            line = line.rstrip("\r")
+
+            if not line:
+                if data_lines:
+                    data = "\n".join(data_lines).strip()
+                    data_lines = []
+                    if data and data != "[DONE]":
+                        yield json.loads(data)
+                continue
+
+            if line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+
+    if data_lines:
+        data = "\n".join(data_lines).strip()
+        if data and data != "[DONE]":
+            yield json.loads(data)
+
+
+async def stream_raw_audio_chunks(stream: aiohttp.StreamReader):
+    async for chunk, _ in stream.iter_chunks():
+        if chunk:
+            yield chunk
+
+
+async def stream_gemini_audio_chunks(stream: aiohttp.StreamReader):
+    yield build_wav_header("audio/L16;rate=24000")
+
+    async for response_data in iter_sse_json(stream):
+        audio_data, _ = extract_gemini_audio(response_data)
+        if audio_data:
+            yield audio_data
+
+
+async def stream_qwen_audio_chunks(stream: aiohttp.StreamReader):
+    sent_header = False
+
+    async for response_data in iter_sse_json(stream):
+        status_code = response_data.get("status_code")
+        if status_code and status_code >= 400:
+            raise ValueError(response_data.get("message") or "Qwen TTS stream error")
+
+        audio_data, _ = extract_qwen_audio(response_data)
+        if not audio_data:
+            continue
+
+        if not sent_header:
+            sent_header = True
+            if not audio_data.startswith(b"RIFF"):
+                yield build_wav_header("audio/L16;rate=24000")
+
+        yield audio_data
 
 
 def build_gemini_tts_prompt(
@@ -537,6 +616,7 @@ class TTSConfigForm(BaseModel):
     MODEL: str
     VOICE: str
     SPLIT_ON: str
+    STREAM_RESPONSE: bool = False
     OUTPUT_FORMAT: str = "default"
     AZURE_SPEECH_REGION: str
     AZURE_SPEECH_BASE_URL: str
@@ -585,6 +665,7 @@ async def get_audio_config(request: Request, user=Depends(get_admin_user)):
             "MODEL": request.app.state.config.TTS_MODEL,
             "VOICE": request.app.state.config.TTS_VOICE,
             "SPLIT_ON": request.app.state.config.TTS_SPLIT_ON,
+            "STREAM_RESPONSE": request.app.state.config.TTS_STREAM_RESPONSE,
             "OUTPUT_FORMAT": request.app.state.config.TTS_OUTPUT_FORMAT,
             "AZURE_SPEECH_REGION": request.app.state.config.TTS_AZURE_SPEECH_REGION,
             "AZURE_SPEECH_BASE_URL": request.app.state.config.TTS_AZURE_SPEECH_BASE_URL,
@@ -629,6 +710,7 @@ async def update_audio_config(
     request.app.state.config.TTS_MODEL = form_data.tts.MODEL
     request.app.state.config.TTS_VOICE = form_data.tts.VOICE
     request.app.state.config.TTS_SPLIT_ON = form_data.tts.SPLIT_ON
+    request.app.state.config.TTS_STREAM_RESPONSE = form_data.tts.STREAM_RESPONSE
     request.app.state.config.TTS_OUTPUT_FORMAT = normalize_tts_output_format(
         form_data.tts.OUTPUT_FORMAT
     )
@@ -678,6 +760,7 @@ async def update_audio_config(
             "QWEN_PARAMS": request.app.state.config.TTS_QWEN_PARAMS,
             "API_KEY": request.app.state.config.TTS_API_KEY,
             "SPLIT_ON": request.app.state.config.TTS_SPLIT_ON,
+            "STREAM_RESPONSE": request.app.state.config.TTS_STREAM_RESPONSE,
             "OUTPUT_FORMAT": request.app.state.config.TTS_OUTPUT_FORMAT,
             "AZURE_SPEECH_REGION": request.app.state.config.TTS_AZURE_SPEECH_REGION,
             "AZURE_SPEECH_BASE_URL": request.app.state.config.TTS_AZURE_SPEECH_BASE_URL,
@@ -704,6 +787,9 @@ async def speech(request: Request, user=Depends(get_verified_user)):
     tts_output_format = normalize_tts_output_format(
         request.app.state.config.TTS_OUTPUT_FORMAT
     )
+    tts_stream_response = bool(
+        getattr(request.app.state.config, "TTS_STREAM_RESPONSE", False)
+    ) and request.app.state.config.TTS_ENGINE in {"openai", "gemini", "qwen"}
     cache_config = {
         "engine": request.app.state.config.TTS_ENGINE,
         "model": request.app.state.config.TTS_MODEL,
@@ -757,7 +843,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
     file_body_path = SPEECH_CACHE_DIR.joinpath(f"{name}.json")
 
     # Check if the file already exists in the cache
-    if file_path.is_file():
+    if not tts_stream_response and file_path.is_file():
         return FileResponse(
             file_path, media_type=get_tts_output_format_media_type(tts_output_format)
         )
@@ -782,6 +868,63 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             "input": transcript,
             "voice": parse_openai_tts_voice(voice),
         }
+
+        if tts_stream_response:
+            session = None
+            r = None
+            try:
+                timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
+                session = aiohttp.ClientSession(timeout=timeout, trust_env=True)
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {request.app.state.config.TTS_OPENAI_API_KEY}",
+                }
+                if ENABLE_FORWARD_USER_INFO_HEADERS:
+                    headers = include_user_info_headers(headers, user)
+
+                r = await session.post(
+                    url=build_openai_tts_url(
+                        request.app.state.config.TTS_OPENAI_API_BASE_URL
+                    ),
+                    json=openai_payload,
+                    headers=headers,
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                )
+
+                if r.status >= 400:
+                    response_text = await r.text()
+                    detail = response_text
+                    try:
+                        res = json.loads(response_text)
+                        if "error" in res:
+                            detail = res["error"]
+                    except json.JSONDecodeError:
+                        pass
+                    raise HTTPException(
+                        status_code=r.status, detail=f"External: {detail}"
+                    )
+
+                media_type = (
+                    r.headers.get("Content-Type", "").split(";", 1)[0]
+                    or default_media_type
+                )
+                return StreamingResponse(
+                    stream_raw_audio_chunks(r.content),
+                    media_type=media_type,
+                    background=BackgroundTask(
+                        cleanup_response, response=r, session=session
+                    ),
+                )
+            except HTTPException:
+                await cleanup_response(r, session)
+                raise
+            except Exception as e:
+                await cleanup_response(r, session)
+                log.exception(e)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Open WebUI: Server Connection Error",
+                )
 
         try:
             timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
@@ -897,6 +1040,56 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         if not base_url.endswith("/v1beta"):
             base_url = f"{base_url}/v1beta"
 
+        if tts_stream_response:
+            session = None
+            r = None
+            try:
+                timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
+                session = aiohttp.ClientSession(timeout=timeout, trust_env=True)
+                headers = {"Content-Type": "application/json"}
+                if ENABLE_FORWARD_USER_INFO_HEADERS:
+                    headers = include_user_info_headers(headers, user)
+
+                r = await session.post(
+                    url=f"{base_url}/models/{model}:streamGenerateContent",
+                    params={"key": api_key, "alt": "sse"},
+                    json=gemini_payload,
+                    headers=headers,
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                )
+
+                if r.status >= 400:
+                    response_text = await r.text()
+                    detail = response_text
+                    try:
+                        res = json.loads(response_text)
+                        if "error" in res:
+                            error = res["error"]
+                            detail = error.get("message", error)
+                    except json.JSONDecodeError:
+                        pass
+                    raise HTTPException(
+                        status_code=r.status, detail=f"External: {detail}"
+                    )
+
+                return StreamingResponse(
+                    stream_gemini_audio_chunks(r.content),
+                    media_type="audio/wav",
+                    background=BackgroundTask(
+                        cleanup_response, response=r, session=session
+                    ),
+                )
+            except HTTPException:
+                await cleanup_response(r, session)
+                raise
+            except Exception as e:
+                await cleanup_response(r, session)
+                log.exception(e)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Open WebUI: Server Connection Error",
+                )
+
         try:
             timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
             async with aiohttp.ClientSession(
@@ -980,6 +1173,59 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                 "voice": voice,
             },
         }
+
+        if tts_stream_response:
+            session = None
+            r = None
+            try:
+                timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
+                session = aiohttp.ClientSession(timeout=timeout, trust_env=True)
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                    "X-DashScope-SSE": "enable",
+                }
+                if ENABLE_FORWARD_USER_INFO_HEADERS:
+                    headers = include_user_info_headers(headers, user)
+
+                r = await session.post(
+                    url=build_qwen_tts_url(
+                        request.app.state.config.TTS_QWEN_API_BASE_URL
+                    ),
+                    json=qwen_payload,
+                    headers=headers,
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                )
+
+                if r.status >= 400:
+                    response_text = await r.text()
+                    detail = response_text
+                    try:
+                        response_data = json.loads(response_text)
+                        detail = response_data.get("message") or detail
+                    except json.JSONDecodeError:
+                        pass
+                    raise HTTPException(
+                        status_code=r.status, detail=f"External: {detail}"
+                    )
+
+                return StreamingResponse(
+                    stream_qwen_audio_chunks(r.content),
+                    media_type="audio/wav",
+                    background=BackgroundTask(
+                        cleanup_response, response=r, session=session
+                    ),
+                )
+            except HTTPException:
+                await cleanup_response(r, session)
+                raise
+            except Exception as e:
+                await cleanup_response(r, session)
+                log.exception(e)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Open WebUI: Server Connection Error",
+                )
 
         try:
             timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)

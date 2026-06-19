@@ -1577,6 +1577,7 @@
 	"Stop Sequence": "停止序列 (Stop Sequence)",
 	"Stream Chat Response": "流式对话响应 (Stream Chat Response)",
 	"Style": "风格",
+	"Stream Responses": "流式响应",
 	"Stream Delta Chunk Size": "流式增量输出的分块大小（Stream Delta Chunk Size）",
 	"Streamable HTTP": "流式 HTTP",
 	"Strikethrough": "删除线",

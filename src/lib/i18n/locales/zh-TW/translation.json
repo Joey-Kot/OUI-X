@@ -1551,6 +1551,7 @@
 	"Stop Generating": "停止生成",
 	"Stop Sequence": "停止序列",
 	"Stream Chat Response": "串流式對話回應",
+	"Stream Responses": "串流式回應",
 	"Stream Delta Chunk Size": "串流增量輸出的分塊大小（Stream Delta Chunk Size）",
 	"Streamable HTTP": "串流 HTTP",
 	"Strikethrough": "刪除線",

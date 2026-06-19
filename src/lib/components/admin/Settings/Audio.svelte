@@ -13,6 +13,7 @@
 	import { config } from '$lib/stores';
 
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
+	import Switch from '$lib/components/common/Switch.svelte';
 
 	import { TTS_OUTPUT_FORMAT, TTS_RESPONSE_SPLIT } from '$lib/types';
 
@@ -47,6 +48,7 @@
 	let TTS_QWEN_API_KEY = '';
 	let TTS_QWEN_PARAMS = '';
 	let TTS_SPLIT_ON: TTS_RESPONSE_SPLIT = TTS_RESPONSE_SPLIT.PUNCTUATION;
+	let TTS_STREAM_RESPONSE = false;
 	let TTS_OUTPUT_FORMAT_VALUE: TTS_OUTPUT_FORMAT = TTS_OUTPUT_FORMAT.DEFAULT;
 	let TTS_AZURE_SPEECH_REGION = '';
 	let TTS_AZURE_SPEECH_BASE_URL = '';
@@ -147,6 +149,7 @@
 				AZURE_SPEECH_BASE_URL: TTS_AZURE_SPEECH_BASE_URL,
 				AZURE_SPEECH_OUTPUT_FORMAT: TTS_AZURE_SPEECH_OUTPUT_FORMAT,
 				SPLIT_ON: TTS_SPLIT_ON,
+				STREAM_RESPONSE: TTS_STREAM_RESPONSE,
 				OUTPUT_FORMAT: TTS_OUTPUT_FORMAT_VALUE
 			},
 			stt: {
@@ -187,8 +190,7 @@
 			TTS_GEMINI_PACE = res.tts.GEMINI_PACE || '';
 			TTS_GEMINI_ACCENT = res.tts.GEMINI_ACCENT || '';
 			TTS_GEMINI_TEMPERATURE = res.tts.GEMINI_TEMPERATURE ?? 1;
-			TTS_QWEN_API_BASE_URL =
-				res.tts.QWEN_API_BASE_URL || 'https://dashscope.aliyuncs.com/api/v1';
+			TTS_QWEN_API_BASE_URL = res.tts.QWEN_API_BASE_URL || 'https://dashscope.aliyuncs.com/api/v1';
 			TTS_QWEN_API_KEY = res.tts.QWEN_API_KEY || '';
 			TTS_QWEN_PARAMS = JSON.stringify(res?.tts?.QWEN_PARAMS ?? '', null, 2);
 			TTS_API_KEY = res.tts.API_KEY;
@@ -198,6 +200,7 @@
 			TTS_VOICE = res.tts.VOICE;
 
 			TTS_SPLIT_ON = res.tts.SPLIT_ON || TTS_RESPONSE_SPLIT.PUNCTUATION;
+			TTS_STREAM_RESPONSE = res.tts.STREAM_RESPONSE ?? false;
 			TTS_OUTPUT_FORMAT_VALUE = res.tts.OUTPUT_FORMAT || TTS_OUTPUT_FORMAT.DEFAULT;
 
 			TTS_AZURE_SPEECH_REGION = res.tts.AZURE_SPEECH_REGION;
@@ -658,7 +661,9 @@
 									<option value="Promo/Hype">
 										High energy, punchy consonants, elongated vowels on excitement words.
 									</option>
-									<option value="Deadpan">Flat affect, minimal pitch variation, dry delivery.</option>
+									<option value="Deadpan"
+										>Flat affect, minimal pitch variation, dry delivery.</option
+									>
 								</datalist>
 							</div>
 
@@ -871,6 +876,13 @@
 					{$i18n.t(
 						"Control how message text is split for TTS requests. 'Punctuation' splits into sentences, 'paragraphs' splits into paragraphs, and 'none' keeps the message as a single string."
 					)}
+				</div>
+
+				<div class="pt-0.5 flex w-full justify-between">
+					<div class="self-center text-xs font-medium">{$i18n.t('Stream Responses')}</div>
+					<div class="flex items-center relative">
+						<Switch bind:state={TTS_STREAM_RESPONSE} />
+					</div>
 				</div>
 
 				<div class="pt-0.5 flex w-full justify-between">
