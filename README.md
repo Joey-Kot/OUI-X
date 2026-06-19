@@ -15,6 +15,7 @@ OUI-X 是基于 **Open WebUI** 的二次开发分支，目标是：
 * **面向 Responses API**：新增 OpenAI Responses API 的适配层，支持对话、图片输入、工具调用与 reasoning/thinking 的展示。
 * **连接与协议收敛**：连接 provider 已收敛为 `openai` / `openai_responses` 两类；Responses/Chat 采用并行原生链路，但路由决策与 payload 构建统一由后端适配层收敛；`Local Connection` 与 `Azure OpenAI provider` 均已下线为历史兼容语义。
 * **前端性能优化**：做了一系列修改优化，减少因前端性能问题造成的卡顿。
+* **TTS 体验增强**：补充 OpenAI / Gemini / Qwen 云端 TTS，支持流式合成、统一音频输出格式转换与可控文本切分。
 * **其他一些小而美的优化**： 此处不一一列举。
 
 ## 新增了什么？
@@ -587,6 +588,36 @@ PDF 导出从旧方案重构为“Markdown 渲染打印”：
 * 输出格式转换作为服务商无关的后处理步骤，适用于 OpenAI、Gemini、Qwen 等服务端 TTS 引擎
 * 后端基于现有 `pydub` / ffmpeg 音频处理链路完成转码
 * 输出格式会纳入 TTS 缓存 key，避免不同格式复用同一份缓存音频
+
+#### 12.5 TTS 流式响应
+
+* 在 `Settings -> Audio -> Text-to-Speech` 中新增 `Stream Responses` 开关
+* 配置项为 `AUDIO_TTS_STREAM_RESPONSE` / `audio.tts.stream_response`，默认关闭
+* 关闭时保持原有行为：
+  * 继续等待完整音频生成
+  * 继续使用缓存、转码与 `FileResponse` 返回链路
+* 开启时仅对以下服务端 TTS 引擎生效：
+  * OpenAI：使用 Speech API 的 chunked audio streaming，直接透传上游音频字节流
+  * Gemini：调用 `streamGenerateContent` 并通过 SSE 解析 base64 PCM 音频块，包装为 WAV 流返回
+  * Qwen：启用 DashScope SSE 流式响应，解析 `output.audio.data` base64 音频块，包装为 WAV 流返回
+* Gemini / Qwen 在流式模式下会跳过完整文件缓存与输出格式转码，以保留首包延迟收益
+* 该配置会通过 `/audio/config`、`/audio/config/update` 与 `/api/config` 下发到前端运行时配置，普通朗读与流式自动朗读入口共享同一开关
+
+#### 12.6 TTS 文本切分
+
+* `Settings -> Audio -> Text-to-Speech` 中的 `Response splitting` 已调整为 `Text splitting`
+* 原 `punctuation` / `paragraphs` / `none` 三种固定模式已移除
+* `AUDIO_TTS_SPLIT_ON` / `audio.tts.split_on` 改为正整数，表示单段 TTS 文本字符数上限
+* 默认值从 `punctuation` 调整为 `300`
+* 前端保存前会校验输入必须为正整数，后端配置表单通过 `Field(gt=0)` 做服务端校验
+* 新分段算法在字符上限前按优先级选择切点：
+  * 句号类标点
+  * 问号 / 感叹号
+  * 逗号类标点
+  * 完整闭合的引号边界
+  * 找不到合适标点时按字符上限硬切
+* 保留三反引号代码块保护逻辑，避免在代码块内部误切
+* 普通朗读与流式自动朗读入口都使用新的数值型切分上限
 
 ## 移除了什么？
 
