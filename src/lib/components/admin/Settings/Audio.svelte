@@ -15,7 +15,7 @@
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
 	import Switch from '$lib/components/common/Switch.svelte';
 
-	import { TTS_OUTPUT_FORMAT, TTS_RESPONSE_SPLIT } from '$lib/types';
+	import { TTS_OUTPUT_FORMAT } from '$lib/types';
 
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
@@ -47,7 +47,7 @@
 	let TTS_QWEN_API_BASE_URL = '';
 	let TTS_QWEN_API_KEY = '';
 	let TTS_QWEN_PARAMS = '';
-	let TTS_SPLIT_ON: TTS_RESPONSE_SPLIT = TTS_RESPONSE_SPLIT.PUNCTUATION;
+	let TTS_SPLIT_ON = 300;
 	let TTS_STREAM_RESPONSE = false;
 	let TTS_OUTPUT_FORMAT_VALUE: TTS_OUTPUT_FORMAT = TTS_OUTPUT_FORMAT.DEFAULT;
 	let TTS_AZURE_SPEECH_REGION = '';
@@ -124,6 +124,13 @@
 			return;
 		}
 
+		const ttsSplitOn = Number(TTS_SPLIT_ON);
+		if (!Number.isInteger(ttsSplitOn) || ttsSplitOn <= 0) {
+			toast.error($i18n.t('Text splitting must be a positive integer'));
+			return;
+		}
+		TTS_SPLIT_ON = ttsSplitOn;
+
 		const res = await updateAudioConfig(localStorage.token, {
 			tts: {
 				OPENAI_API_BASE_URL: TTS_OPENAI_API_BASE_URL,
@@ -148,7 +155,7 @@
 				AZURE_SPEECH_REGION: TTS_AZURE_SPEECH_REGION,
 				AZURE_SPEECH_BASE_URL: TTS_AZURE_SPEECH_BASE_URL,
 				AZURE_SPEECH_OUTPUT_FORMAT: TTS_AZURE_SPEECH_OUTPUT_FORMAT,
-				SPLIT_ON: TTS_SPLIT_ON,
+				SPLIT_ON: ttsSplitOn,
 				STREAM_RESPONSE: TTS_STREAM_RESPONSE,
 				OUTPUT_FORMAT: TTS_OUTPUT_FORMAT_VALUE
 			},
@@ -199,7 +206,7 @@
 			TTS_MODEL = res.tts.MODEL;
 			TTS_VOICE = res.tts.VOICE;
 
-			TTS_SPLIT_ON = res.tts.SPLIT_ON || TTS_RESPONSE_SPLIT.PUNCTUATION;
+			TTS_SPLIT_ON = Number(res.tts.SPLIT_ON) || 300;
 			TTS_STREAM_RESPONSE = res.tts.STREAM_RESPONSE ?? false;
 			TTS_OUTPUT_FORMAT_VALUE = res.tts.OUTPUT_FORMAT || TTS_OUTPUT_FORMAT.DEFAULT;
 
@@ -857,24 +864,21 @@
 				</div>
 
 				<div class="pt-0.5 flex w-full justify-between">
-					<div class="self-center text-xs font-medium">{$i18n.t('Response splitting')}</div>
+					<div class="self-center text-xs font-medium">{$i18n.t('Text splitting')}</div>
 					<div class="flex items-center relative">
-						<select
-							class="dark:bg-gray-900 w-fit pr-8 cursor-pointer rounded-sm px-2 p-1 text-xs bg-transparent outline-hidden text-right"
-							aria-label={$i18n.t('Select how to split message text for TTS requests')}
+						<input
+							class="dark:bg-gray-900 w-24 rounded-sm px-2 p-1 text-xs bg-transparent outline-hidden text-right"
+							aria-label={$i18n.t('Maximum characters per TTS text segment')}
 							bind:value={TTS_SPLIT_ON}
-						>
-							{#each Object.values(TTS_RESPONSE_SPLIT) as split}
-								<option value={split}
-									>{$i18n.t(split.charAt(0).toUpperCase() + split.slice(1))}</option
-								>
-							{/each}
-						</select>
+							type="number"
+							min="1"
+							step="1"
+						/>
 					</div>
 				</div>
 				<div class="mt-2 mb-1 text-xs text-gray-400 dark:text-gray-500">
 					{$i18n.t(
-						"Control how message text is split for TTS requests. 'Punctuation' splits into sentences, 'paragraphs' splits into paragraphs, and 'none' keeps the message as a single string."
+						'Maximum characters per TTS text segment. Text is split before this limit using punctuation when possible.'
 					)}
 				</div>
 

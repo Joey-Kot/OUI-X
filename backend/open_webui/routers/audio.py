@@ -30,7 +30,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 
@@ -615,7 +615,7 @@ class TTSConfigForm(BaseModel):
     ENGINE: str
     MODEL: str
     VOICE: str
-    SPLIT_ON: str
+    SPLIT_ON: int = Field(300, gt=0)
     STREAM_RESPONSE: bool = False
     OUTPUT_FORMAT: str = "default"
     AZURE_SPEECH_REGION: str

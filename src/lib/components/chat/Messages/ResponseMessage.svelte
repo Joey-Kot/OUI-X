@@ -271,7 +271,7 @@
 			loadingSpeech = true;
 			const messageContentParts: string[] = getMessageContentParts(
 				content,
-				$config?.audio?.tts?.split_on ?? 'punctuation'
+				$config?.audio?.tts?.split_on ?? 300
 			);
 
 			if (!messageContentParts.length) {

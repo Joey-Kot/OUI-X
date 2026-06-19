@@ -13,8 +13,6 @@ dayjs.extend(isToday);
 dayjs.extend(isYesterday);
 dayjs.extend(localizedFormat);
 
-import { TTS_RESPONSE_SPLIT } from '$lib/types';
-
 import mammoth from 'mammoth';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
@@ -919,86 +917,141 @@ export const processDetails = (content) => {
 
 // This regular expression matches code blocks marked by triple backticks
 const codeBlockRegex = /```[\s\S]*?```/g;
+const DEFAULT_TTS_TEXT_SPLIT_LENGTH = 300;
+const TTS_PERIODS = new Set(['.', '。', '．', '｡', '۔', '።', '।', '॥', '։', '။', '។', '᠃', '᠉']);
+const TTS_QUESTIONS = new Set(['?', '？', '¿', '؟', '՞']);
+const TTS_EXCLAMATIONS = new Set(['!', '！', '¡', '՜']);
+const TTS_COMMAS = new Set([',', '，', '、', '､', ';', '；', '؛', ':', '：']);
+const TTS_QUOTE_PAIRS = [
+	['“', '”'],
+	['‘', '’'],
+	['「', '」'],
+	['『', '』'],
+	['《', '》'],
+	['〈', '〉'],
+	['«', '»'],
+	['‹', '›']
+];
+const TTS_SYMMETRIC_QUOTES = new Set(['"']);
+const TTS_CLOSING_QUOTES = new Set([
+	...TTS_QUOTE_PAIRS.map(([, close]) => close),
+	...TTS_SYMMETRIC_QUOTES
+]);
 
-export const extractSentences = (text: string) => {
+const protectCodeBlocks = (text: string) => {
 	const codeBlocks: string[] = [];
 	let index = 0;
 
-	// Temporarily replace code blocks with placeholders and store the blocks separately
 	text = text.replace(codeBlockRegex, (match) => {
-		const placeholder = `\u0000${index}\u0000`; // Use a unique placeholder
+		const placeholder = `\u0000${index}\u0000`;
 		codeBlocks[index++] = match;
 		return placeholder;
 	});
 
-	// Split the modified text into sentences based on common punctuation marks, avoiding these blocks
-	let sentences = text.split(/(?<=[.!?])\s+/);
-
-	// Restore code blocks and process sentences
-	sentences = sentences.map((sentence) => {
-		// Check if the sentence includes a placeholder for a code block
-		return sentence.replace(/\u0000(\d+)\u0000/g, (_, idx) => codeBlocks[idx]);
-	});
-
-	return sentences.map(cleanText).filter(Boolean);
+	return { text, codeBlocks };
 };
 
-export const extractParagraphsForAudio = (text: string) => {
-	const codeBlocks: string[] = [];
-	let index = 0;
-
-	// Temporarily replace code blocks with placeholders and store the blocks separately
-	text = text.replace(codeBlockRegex, (match) => {
-		const placeholder = `\u0000${index}\u0000`; // Use a unique placeholder
-		codeBlocks[index++] = match;
-		return placeholder;
-	});
-
-	// Split the modified text into paragraphs based on newlines, avoiding these blocks
-	let paragraphs = text.split(/\n+/);
-
-	// Restore code blocks and process paragraphs
-	paragraphs = paragraphs.map((paragraph) => {
-		// Check if the paragraph includes a placeholder for a code block
-		return paragraph.replace(/\u0000(\d+)\u0000/g, (_, idx) => codeBlocks[idx]);
-	});
-
-	return paragraphs.map(cleanText).filter(Boolean);
+const restoreCodeBlocks = (text: string, codeBlocks: string[]) => {
+	return text.replace(/\u0000(\d+)\u0000/g, (_, idx) => codeBlocks[idx]);
 };
 
-export const extractSentencesForAudio = (text: string) => {
-	return extractSentences(text).reduce((mergedTexts, currentText) => {
-		const lastIndex = mergedTexts.length - 1;
-		if (lastIndex >= 0) {
-			const previousText = mergedTexts[lastIndex];
-			const wordCount = previousText.split(/\s+/).length;
-			const charCount = previousText.length;
-			if (wordCount < 4 || charCount < 50) {
-				mergedTexts[lastIndex] = previousText + ' ' + currentText;
-			} else {
-				mergedTexts.push(currentText);
+const hasBalancedQuotes = (text: string) => {
+	for (const [open, close] of TTS_QUOTE_PAIRS) {
+		let depth = 0;
+		for (const char of text) {
+			if (char === open) {
+				depth += 1;
+			} else if (char === close) {
+				if (depth === 0) {
+					return false;
+				}
+				depth -= 1;
 			}
-		} else {
-			mergedTexts.push(currentText);
 		}
-		return mergedTexts;
-	}, [] as string[]);
+		if (depth !== 0) {
+			return false;
+		}
+	}
+
+	for (const quote of TTS_SYMMETRIC_QUOTES) {
+		const count = Array.from(text).filter((char) => char === quote).length;
+		if (count % 2 !== 0) {
+			return false;
+		}
+	}
+
+	return true;
 };
 
-export const getMessageContentParts = (content: string, splitOn: string = 'punctuation') => {
-	const messageContentParts: string[] = [];
+const extendPastClosingQuotes = (text: string, splitIndex: number, maxLength: number) => {
+	let index = splitIndex;
+	while (index < text.length && index < maxLength) {
+		const char = text[index];
+		if (!TTS_CLOSING_QUOTES.has(char)) {
+			break;
+		}
+		index += 1;
+	}
+	return index;
+};
 
-	switch (splitOn) {
-		default:
-		case TTS_RESPONSE_SPLIT.PUNCTUATION:
-			messageContentParts.push(...extractSentencesForAudio(content));
-			break;
-		case TTS_RESPONSE_SPLIT.PARAGRAPHS:
-			messageContentParts.push(...extractParagraphsForAudio(content));
-			break;
-		case TTS_RESPONSE_SPLIT.NONE:
-			messageContentParts.push(cleanText(content));
-			break;
+const findTextSplitIndex = (text: string, maxLength: number) => {
+	const upperBound = Math.min(maxLength, text.length);
+	const punctuationGroups = [
+		TTS_PERIODS,
+		new Set([...TTS_QUESTIONS, ...TTS_EXCLAMATIONS]),
+		TTS_COMMAS,
+		TTS_CLOSING_QUOTES
+	];
+
+	for (const punctuationGroup of punctuationGroups) {
+		for (let index = upperBound - 1; index >= 0; index -= 1) {
+			const char = text[index];
+			if (!punctuationGroup.has(char)) {
+				continue;
+			}
+
+			const splitIndex = TTS_CLOSING_QUOTES.has(char)
+				? index + 1
+				: extendPastClosingQuotes(text, index + 1, upperBound);
+			if (splitIndex > upperBound) {
+				continue;
+			}
+
+			const candidate = text.slice(0, splitIndex);
+			if (candidate.trim() && hasBalancedQuotes(candidate)) {
+				return splitIndex;
+			}
+		}
+	}
+
+	return upperBound;
+};
+
+export const getMessageContentParts = (
+	content: string,
+	maxLength: number = DEFAULT_TTS_TEXT_SPLIT_LENGTH
+) => {
+	const splitLength = Number(maxLength);
+	const safeMaxLength =
+		Number.isInteger(splitLength) && splitLength > 0 ? splitLength : DEFAULT_TTS_TEXT_SPLIT_LENGTH;
+	const { text: protectedText, codeBlocks } = protectCodeBlocks(content);
+	const messageContentParts: string[] = [];
+	let remainingText = protectedText.trim();
+
+	while (remainingText.length > safeMaxLength) {
+		const splitIndex = findTextSplitIndex(remainingText, safeMaxLength);
+		const part = restoreCodeBlocks(remainingText.slice(0, splitIndex), codeBlocks);
+		const cleanedPart = cleanText(part);
+		if (cleanedPart) {
+			messageContentParts.push(cleanedPart);
+		}
+		remainingText = remainingText.slice(splitIndex).trimStart();
+	}
+
+	const finalPart = cleanText(restoreCodeBlocks(remainingText, codeBlocks));
+	if (finalPart) {
+		messageContentParts.push(finalPart);
 	}
 
 	return messageContentParts;

@@ -530,7 +530,7 @@
 
 			const messageContentParts = getMessageContentParts(
 				normalizedContent,
-				$config?.audio?.tts?.split_on ?? 'punctuation'
+				$config?.audio?.tts?.split_on ?? 300
 			);
 
 			if (!messageContentParts.length) {

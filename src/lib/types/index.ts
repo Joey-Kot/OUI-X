@@ -8,12 +8,6 @@ export type Banner = {
 	timestamp: number;
 };
 
-export enum TTS_RESPONSE_SPLIT {
-	PUNCTUATION = 'punctuation',
-	PARAGRAPHS = 'paragraphs',
-	NONE = 'none'
-}
-
 export enum TTS_OUTPUT_FORMAT {
 	DEFAULT = 'default',
 	WEBM = 'webm',
